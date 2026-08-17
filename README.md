@@ -33,10 +33,6 @@
 
 浏览器需要允许用户脚本在 B 站页面运行，并允许脚本加载 jsDelivr 上的 GIF.js 依赖。录制和编码过程会占用较多 CPU 与内存，片段越长、分辨率越高，生成时间和文件大小越大。
 
-## 依赖与许可证
-
-本项目以 MIT 许可证发布，详见 [LICENSE](LICENSE)。GIF 编码使用 [gif.js 0.2.0](https://github.com/jnordberg/gif.js)，同样以 MIT 许可证发布，并通过 jsDelivr 加载。
-
 ## 反馈
 
 请在 GitHub Issues 中提交可复现的问题，并附上浏览器、用户脚本管理器和 B 站页面类型等信息。
