@@ -31,6 +31,8 @@
   const MAX_EXPORT_FRAMES = 900;
   const ENCODE_TIMEOUT_MS = 600_000;
   const MIN_SELECT_PX = 24;
+  const TRANSPARENT_KEY_COLOR = '#ff00fe';
+  const TRANSPARENT_KEY_RGB = 0xff00fe;
   const LAUNCHER_POSITION_KEY = 'biliGifMakerLauncherPositionV1';
   const PANEL_POSITION_KEY = 'biliGifMakerPanelPositionV1';
   const UI_SAFE_MARGIN = 14;
@@ -66,6 +68,7 @@
     sizeEstimateGif: null,
     lastSampleEstimate: null,
     timelineScrubToken: 0,
+    previewSnapshot: null,
   };
 
   const host = document.createElement('div');
@@ -229,6 +232,22 @@
         object-fit: contain;
         background: #000;
         pointer-events: none;
+      }
+      #previewCanvas {
+        position: absolute;
+        z-index: 2;
+        display: block;
+        visibility: hidden;
+        pointer-events: none;
+        image-rendering: auto;
+        background-color: #17181b;
+        background-image:
+          linear-gradient(45deg, rgba(255,255,255,.08) 25%, transparent 25%),
+          linear-gradient(-45deg, rgba(255,255,255,.08) 25%, transparent 25%),
+          linear-gradient(45deg, transparent 75%, rgba(255,255,255,.08) 75%),
+          linear-gradient(-45deg, transparent 75%, rgba(255,255,255,.08) 75%);
+        background-size: 12px 12px;
+        background-position: 0 0, 0 6px, 6px -6px, -6px 0;
       }
       #clipVideo { position: relative; z-index: 0; }
       #scrubVideo {
@@ -813,6 +832,7 @@
             <div id="editorPreviewWrap">
               <video id="clipVideo" muted playsinline preload="auto"></video>
               <video id="scrubVideo" muted playsinline preload="auto" aria-hidden="true"></video>
+              <canvas id="previewCanvas" aria-hidden="true"></canvas>
               <button id="aspectSquareBtn" class="edit-lockable" type="button" aria-pressed="false" title="锁定裁剪比例为 1:1">1:1</button>
               <div id="editorOverlay">
                 <div id="editorBoundary"></div>
@@ -912,6 +932,17 @@
                 <option value="1.5">1.5×</option>
               </select>
             </div>
+            <div class="field" style="margin-top:10px;">
+              <label for="cornerRadiusSelect">圆角</label>
+              <select id="cornerRadiusSelect" class="edit-lockable export-input">
+                <option value="0" selected>无圆角</option>
+                <option value="0.04">4%</option>
+                <option value="0.08">8%</option>
+                <option value="0.12">12%</option>
+                <option value="0.16">16%</option>
+                <option value="0.24">24%</option>
+              </select>
+            </div>
           </section>
 
           <div id="status" class="hidden"></div>
@@ -993,6 +1024,7 @@
     editorPreviewWrap: $('#editorPreviewWrap'),
     clipVideo: $('#clipVideo'),
     scrubVideo: $('#scrubVideo'),
+    previewCanvas: $('#previewCanvas'),
     aspectSquareBtn: $('#aspectSquareBtn'),
     editorOverlay: $('#editorOverlay'),
     editorBoundary: $('#editorBoundary'),
@@ -1018,6 +1050,7 @@
     fpsSelect: $('#fpsSelect'),
     estimatedSize: $('#estimatedSize'),
     speedSelect: $('#speedSelect'),
+    cornerRadiusSelect: $('#cornerRadiusSelect'),
     captionText: $('#captionText'),
     fontScale: $('#fontScale'),
     fontScaleValue: $('#fontScaleValue'),
@@ -1517,6 +1550,11 @@
     clearResult();
     if (state.clip?.url) URL.revokeObjectURL(state.clip.url);
     state.clip = null;
+    if (el.previewCanvas) {
+      el.previewCanvas.style.visibility = 'hidden';
+      el.previewCanvas.width = 1;
+      el.previewCanvas.height = 1;
+    }
     try {
       el.clipVideo.pause();
       el.clipVideo.removeAttribute('src');
@@ -2236,8 +2274,10 @@
       top: `${visible.top - wrapRect.top}px`,
       width: `${visible.width}px`,
       height: `${visible.height}px`,
+      borderRadius: `${getCornerRadiusPixels(visible.width, visible.height)}px`,
     });
     renderTextLayers();
+    renderExportPreviewFrame();
   }
 
   function updateAspectSquareButton() {
@@ -2431,6 +2471,7 @@
   function hideTimelineHandlePreview() {
     if (!el.scrubVideo) return;
     el.scrubVideo.classList.remove('active');
+    renderExportPreviewFrame();
   }
 
   function applyTimelineDrag(event) {
@@ -2451,6 +2492,7 @@
       updateTimelinePlayhead();
     }
     clearResult();
+    renderExportPreviewFrame();
     updateEstimatedFileSize();
   }
 
@@ -2487,11 +2529,16 @@
   function stopTrimPreview({ keepPosition = true } = {}) {
     if (typeof state.trimPreviewCleanup === 'function') state.trimPreviewCleanup();
     state.trimPreviewCleanup = null;
+    if (state.previewSnapshot) {
+      try { el.clipVideo.playbackRate = state.previewSnapshot.playbackRate; } catch (_) { }
+      state.previewSnapshot = null;
+    }
     el.previewTrimBtn.textContent = '▶ 播放';
     if (!keepPosition && state.clip) {
       try { el.clipVideo.currentTime = state.trimStart; } catch (_) { }
       updateTimelinePlayhead();
     }
+    renderExportPreviewFrame();
   }
 
   async function ensureTrimPreviewPlaying() {
@@ -2508,11 +2555,12 @@
 
     let stopped = false;
     let jumping = false;
-    let timer = 0;
+    let lastDrawAt = 0;
+    let animationFrame = 0;
     const stop = () => {
       if (stopped) return;
       stopped = true;
-      clearInterval(timer);
+      if (animationFrame) cancelAnimationFrame(animationFrame);
       el.clipVideo.removeEventListener('timeupdate', check);
       state.trimPreviewCleanup = null;
       el.previewTrimBtn.textContent = '▶ 播放';
@@ -2542,13 +2590,26 @@
         : state.trimStart;
       el.clipVideo.pause();
       await seekVideo(el.clipVideo, resumeAt, state.clip.duration);
-      timer = window.setInterval(() => { void check(); }, 35);
+      state.previewSnapshot = { playbackRate: el.clipVideo.playbackRate };
       el.clipVideo.addEventListener('timeupdate', check);
       state.trimPreviewCleanup = () => {
         try { el.clipVideo.pause(); } catch (_) { }
         stop();
       };
       el.previewTrimBtn.textContent = '⏸ 暂停';
+      el.clipVideo.playbackRate = Math.max(0.1, Number(el.speedSelect.value) || 1);
+      const tick = (now) => {
+        if (stopped) return;
+        const fps = Math.max(1, Number(el.fpsSelect.value) || 12);
+        if (!lastDrawAt || now - lastDrawAt >= 1000 / fps) {
+          renderExportPreviewFrame();
+          lastDrawAt = now;
+        }
+        updateTimelinePlayhead();
+        if (!stopped) animationFrame = requestAnimationFrame(tick);
+      };
+      renderExportPreviewFrame();
+      animationFrame = requestAnimationFrame(tick);
       await el.clipVideo.play();
       setStatus('');
     } catch (error) {
@@ -2881,6 +2942,106 @@
     });
   }
 
+  function getCornerRadiusRatio() {
+    const value = Number(el.cornerRadiusSelect?.value);
+    return clamp(Number.isFinite(value) ? value : 0, 0, 0.5);
+  }
+
+  function getCornerRadiusPixels(width, height, ratio = getCornerRadiusRatio()) {
+    return Math.min(width, height) * clamp(Number(ratio) || 0, 0, 0.5);
+  }
+
+  function addRoundedRectPath(ctx, width, height, radius) {
+    const r = clamp(Number(radius) || 0, 0, Math.min(width, height) / 2);
+    if (r <= 0) {
+      ctx.rect(0, 0, width, height);
+      return;
+    }
+    ctx.moveTo(r, 0);
+    ctx.lineTo(width - r, 0);
+    ctx.arcTo(width, 0, width, r, r);
+    ctx.lineTo(width, height - r);
+    ctx.arcTo(width, height, width - r, height, r);
+    ctx.lineTo(r, height);
+    ctx.arcTo(0, height, 0, height - r, r);
+    ctx.lineTo(0, r);
+    ctx.arcTo(0, 0, r, 0, r);
+    ctx.closePath();
+  }
+
+  function drawExportCanvasFrame(ctx, settings, video, {
+    transparentCorners = false,
+    previewOnly = false,
+    includeText = true,
+  } = {}) {
+    const width = settings.outputWidth;
+    const height = settings.outputHeight;
+    const radius = getCornerRadiusPixels(width, height, settings.cornerRadiusRatio);
+    const sx = settings.crop.x * state.clip.width;
+    const sy = settings.crop.y * state.clip.height;
+    const sw = settings.crop.w * state.clip.width;
+    const sh = settings.crop.h * state.clip.height;
+
+    ctx.clearRect(0, 0, width, height);
+    if (previewOnly && radius > 0) {
+      ctx.clearRect(0, 0, width, height);
+    } else if (transparentCorners && radius > 0) {
+      ctx.fillStyle = TRANSPARENT_KEY_COLOR;
+      ctx.fillRect(0, 0, width, height);
+    } else {
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, width, height);
+    }
+    ctx.save();
+    ctx.beginPath();
+    addRoundedRectPath(ctx, width, height, radius);
+    ctx.clip();
+    ctx.drawImage(video, sx, sy, sw, sh, 0, 0, width, height);
+    if (includeText) drawTextLayers(ctx, width, height, settings.textLayers);
+    ctx.restore();
+  }
+
+  function updatePreviewCanvasLayout(settings = null) {
+    if (!state.clip || !el.previewCanvas || !el.editorPreviewWrap) return null;
+    const mapping = getEditorMapping();
+    if (!mapping) return null;
+    const wrapRect = el.editorPreviewWrap.getBoundingClientRect();
+    const rawRect = cropToScreenRect(state.editorCrop, mapping);
+    const visible = intersectRects(rawRect, mapping.visibleRect);
+    if (!visible) return null;
+    const nextSettings = settings || (() => {
+      try { return readExportSettings(); } catch (_) { return null; }
+    })();
+    if (!nextSettings) return null;
+    const canvas = el.previewCanvas;
+    if (canvas.width !== nextSettings.outputWidth) canvas.width = nextSettings.outputWidth;
+    if (canvas.height !== nextSettings.outputHeight) canvas.height = nextSettings.outputHeight;
+    const displayWidth = Math.max(1, visible.width);
+    const displayHeight = Math.max(1, visible.height);
+    const displayRadius = getCornerRadiusPixels(displayWidth, displayHeight, nextSettings.cornerRadiusRatio);
+    Object.assign(canvas.style, {
+      left: `${visible.left - wrapRect.left}px`,
+      top: `${visible.top - wrapRect.top}px`,
+      width: `${displayWidth}px`,
+      height: `${displayHeight}px`,
+      borderRadius: `${displayRadius}px`,
+      visibility: 'visible',
+    });
+    return nextSettings;
+  }
+
+  function renderExportPreviewFrame(settings = null) {
+    if (!state.clip || state.mode !== 'edit' || !el.previewCanvas) return;
+    const nextSettings = updatePreviewCanvasLayout(settings);
+    const sourceVideo = el.scrubVideo?.classList.contains('active') ? el.scrubVideo : el.clipVideo;
+    if (!nextSettings || !sourceVideo || sourceVideo.readyState < 2) return;
+    const ctx = el.previewCanvas.getContext('2d', { alpha: true });
+    if (!ctx) return;
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    drawExportCanvasFrame(ctx, nextSettings, sourceVideo, { previewOnly: true, includeText: false });
+  }
+
   async function getWorkerBlobUrl() {
     let workerText = '';
     if (typeof GM_getResourceText === 'function') {
@@ -2999,6 +3160,7 @@
 
     const fps = Number(el.fpsSelect.value);
     const speed = Number(el.speedSelect.value);
+    const cornerRadiusRatio = getCornerRadiusRatio();
     const baseFrames = Math.max(1, Math.ceil((end - start) * fps));
     const finalFrames = baseFrames;
     if (finalFrames > MAX_EXPORT_FRAMES) {
@@ -3025,6 +3187,7 @@
       end,
       fps,
       speed,
+      cornerRadiusRatio,
       baseFrames,
       finalFrames,
       outputWidth,
@@ -3060,7 +3223,8 @@
       Number(layer.fontScale || 0).toFixed(3),
     ]);
     return JSON.stringify([
-      settings.outputWidth, settings.outputHeight, settings.fps,
+      settings.outputWidth, settings.outputHeight, settings.fps, settings.speed,
+      Number(settings.cornerRadiusRatio || 0).toFixed(4),
       Number(settings.start).toFixed(3), Number(settings.end).toFixed(3),
       Number(crop.x || 0).toFixed(4), Number(crop.y || 0).toFixed(4),
       Number(crop.w || 0).toFixed(4), Number(crop.h || 0).toFixed(4), text,
@@ -3111,6 +3275,11 @@
           height: settings.outputHeight,
           repeat: 0,
           background: '#000000',
+          transparent: getCornerRadiusPixels(
+            settings.outputWidth,
+            settings.outputHeight,
+            settings.cornerRadiusRatio,
+          ) > 0 ? TRANSPARENT_KEY_RGB : null,
           dither: false,
           workerScript,
         });
@@ -3118,14 +3287,10 @@
         const canvas = document.createElement('canvas');
         canvas.width = settings.outputWidth;
         canvas.height = settings.outputHeight;
-        const ctx = canvas.getContext('2d', { alpha: false });
+        const ctx = canvas.getContext('2d', { alpha: true });
         if (!ctx) throw new Error('无法创建估算画布');
         ctx.imageSmoothingEnabled = true;
         ctx.imageSmoothingQuality = 'high';
-        const sx = settings.crop.x * state.clip.width;
-        const sy = settings.crop.y * state.clip.height;
-        const sw = settings.crop.w * state.clip.width;
-        const sh = settings.crop.h * state.clip.height;
         const delay = Math.max(20, Math.round((1000 / settings.fps) / settings.speed));
 
         for (let i = 0; i < sampleCount; i += 1) {
@@ -3133,10 +3298,7 @@
           const ratio = sampleCount <= 1 ? 0 : i / (sampleCount - 1);
           const target = Math.min(settings.end - 0.001, settings.start + (settings.end - settings.start) * ratio);
           await seekVideo(sampleVideo, target, state.clip.duration);
-          ctx.fillStyle = '#000';
-          ctx.fillRect(0, 0, settings.outputWidth, settings.outputHeight);
-          ctx.drawImage(sampleVideo, sx, sy, sw, sh, 0, 0, settings.outputWidth, settings.outputHeight);
-          drawTextLayers(ctx, settings.outputWidth, settings.outputHeight, settings.textLayers);
+          drawExportCanvasFrame(ctx, settings, sampleVideo, { transparentCorners: true, includeText: true });
           gif.addFrame(ctx, { copy: true, delay });
         }
 
@@ -3259,6 +3421,11 @@
         height: settings.outputHeight,
         repeat: 0,
         background: '#000000',
+        transparent: getCornerRadiusPixels(
+          settings.outputWidth,
+          settings.outputHeight,
+          settings.cornerRadiusRatio,
+        ) > 0 ? TRANSPARENT_KEY_RGB : null,
         dither: false,
         workerScript: state.workerUrl,
       });
@@ -3267,27 +3434,14 @@
       const canvas = document.createElement('canvas');
       canvas.width = settings.outputWidth;
       canvas.height = settings.outputHeight;
-      const ctx = canvas.getContext('2d', { alpha: false });
+      const ctx = canvas.getContext('2d', { alpha: true });
       if (!ctx) throw new Error('浏览器无法创建 GIF 画布。');
       ctx.imageSmoothingEnabled = true;
       ctx.imageSmoothingQuality = 'high';
       const delay = Math.max(20, Math.round((1000 / settings.fps) / settings.speed));
 
-      const sx = settings.crop.x * state.clip.width;
-      const sy = settings.crop.y * state.clip.height;
-      const sw = settings.crop.w * state.clip.width;
-      const sh = settings.crop.h * state.clip.height;
-
       const drawExportFrame = () => {
-        ctx.clearRect(0, 0, settings.outputWidth, settings.outputHeight);
-        ctx.fillStyle = '#000';
-        ctx.fillRect(0, 0, settings.outputWidth, settings.outputHeight);
-        ctx.drawImage(
-          video,
-          sx, sy, sw, sh,
-          0, 0, settings.outputWidth, settings.outputHeight,
-        );
-        drawTextLayers(ctx, settings.outputWidth, settings.outputHeight, settings.textLayers);
+        drawExportCanvasFrame(ctx, settings, video, { transparentCorners: true, includeText: true });
         gif.addFrame(ctx, { copy: true, delay });
       };
 
@@ -3503,6 +3657,16 @@
     if (state.clip && Number.isFinite(el.clipVideo.currentTime)) updateTimelinePlayhead();
   }
 
+  function handleExportInputChange() {
+    if (state.mode === 'edit' && state.clip) {
+      if (state.trimPreviewCleanup && el.speedSelect) {
+        el.clipVideo.playbackRate = Math.max(0.1, Number(el.speedSelect.value) || 1);
+      }
+      renderExportPreviewFrame();
+    }
+    updateEstimatedFileSize();
+  }
+
   el.launcher.addEventListener('pointerdown', handleLauncherPointerDown);
   el.launcher.addEventListener('pointermove', handleLauncherPointerMove);
   el.launcher.addEventListener('pointerup', (event) => finishLauncherPointer(event, false));
@@ -3582,19 +3746,23 @@
   el.captionLayer.addEventListener('pointerup', finishTextLayerDrag);
   el.captionLayer.addEventListener('pointercancel', finishTextLayerDrag);
   el.clipVideo.addEventListener('timeupdate', updateTimelinePlayhead);
+  el.clipVideo.addEventListener('timeupdate', () => renderExportPreviewFrame());
   el.clipVideo.addEventListener('loadeddata', () => {
     fitClipVideoIntoPreview();
     updateEditorCropBox();
     updateTimelinePlayhead();
+    renderExportPreviewFrame();
     updateEstimatedFileSize();
   });
   el.clipVideo.addEventListener('resize', updateEditorCropBox);
+  el.scrubVideo.addEventListener('loadeddata', () => renderExportPreviewFrame());
+  el.scrubVideo.addEventListener('seeked', () => renderExportPreviewFrame());
 
   el.newRecordingBtn.addEventListener('click', returnToCaptureStage);
   el.generateBtn.addEventListener('click', generateGif);
   el.cancelExportBtn.addEventListener('click', cancelExport);
-  $$('.export-input').forEach((input) => input.addEventListener('input', updateEstimatedFileSize));
-  $$('.export-input').forEach((input) => input.addEventListener('change', updateEstimatedFileSize));
+  $$('.export-input').forEach((input) => input.addEventListener('input', handleExportInputChange));
+  $$('.export-input').forEach((input) => input.addEventListener('change', handleExportInputChange));
 
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {
