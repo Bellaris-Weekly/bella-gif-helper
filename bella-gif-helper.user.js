@@ -67,8 +67,8 @@
     sizeEstimateToken: 0,
     sizeEstimateGif: null,
     lastSampleEstimate: null,
-    timelineScrubToken: 0,
     previewSnapshot: null,
+    cancelRequested: false,
   };
 
   const host = document.createElement('div');
@@ -240,14 +240,7 @@
         visibility: hidden;
         pointer-events: none;
         image-rendering: auto;
-        background-color: #17181b;
-        background-image:
-          linear-gradient(45deg, rgba(255,255,255,.08) 25%, transparent 25%),
-          linear-gradient(-45deg, rgba(255,255,255,.08) 25%, transparent 25%),
-          linear-gradient(45deg, transparent 75%, rgba(255,255,255,.08) 75%),
-          linear-gradient(-45deg, transparent 75%, rgba(255,255,255,.08) 75%);
-        background-size: 12px 12px;
-        background-position: 0 0, 0 6px, 6px -6px, -6px 0;
+        background: #000;
       }
       #clipVideo { position: relative; z-index: 0; }
       #scrubVideo {
@@ -305,6 +298,17 @@
         cursor: move;
         touch-action: none;
       }
+      #roundedCropGuide {
+        position: absolute;
+        inset: var(--rounded-guide-inset, 6px);
+        z-index: 1;
+        display: none;
+        border: 1px solid rgba(255,255,255,.84);
+        border-radius: var(--rounded-guide-radius, 0px);
+        box-shadow: 0 0 0 1px rgba(0,0,0,.28);
+        pointer-events: none;
+      }
+      #editorCropBox.rounded-guide-active #roundedCropGuide { display: block; }
       .crop-handle,
       .page-resize-handle {
         position: absolute;
@@ -478,6 +482,8 @@
         font-weight: 820;
       }
       .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+      .grid-2.text-options { margin-top: 8px; }
+      .grid-2.export-options { margin-top: 10px; }
       .grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
       .field { min-width: 0; }
       .field > label {
@@ -485,6 +491,10 @@
         margin-bottom: 5px;
         color: #aeb4bf;
         font-size: 11px;
+      }
+      .field-hint {
+        color: #8ee1b9;
+        font-weight: 700;
       }
       select, textarea, input[type="text"] {
         width: 100%;
@@ -822,9 +832,6 @@
           <button id="recordBtn"></button>
         </div>
         <div class="utility-hidden">
-          <span id="nowTime"></span><span id="videoInfo"></span><span id="clipMeta"></span>
-          <span id="previewCurrent"></span><span id="cropInfo"></span><span id="timelineCurrentValue"></span>
-          <select id="captionPosition"><option value="bottom">bottom</option></select>
         </div>
 
         <div id="editStage" class="hidden">
@@ -837,6 +844,7 @@
               <div id="editorOverlay">
                 <div id="editorBoundary"></div>
                 <div id="editorCropBox">
+                  <div id="roundedCropGuide" aria-hidden="true"></div>
                   <i class="crop-handle" data-resize="n"></i>
                   <i class="crop-handle" data-resize="s"></i>
                   <i class="crop-handle" data-resize="e"></i>
@@ -879,7 +887,7 @@
             <div id="textEditorEmpty" class="text-empty">暂无文字</div>
             <div id="textEditor" class="hidden">
               <textarea id="captionText" class="edit-lockable export-input" maxlength="120" placeholder="输入文字"></textarea>
-              <div class="grid-2" style="margin-top:8px;">
+              <div class="grid-2 text-options">
                 <div class="field">
                   <label for="fontScale">大小 <span id="fontScaleValue">9%</span></label>
                   <input id="fontScale" class="edit-lockable export-input" type="range" min="0.035" max="0.30" step="0.005" value="0.09">
@@ -923,25 +931,27 @@
               </div>
             </div>
 
-            <div class="field" style="margin-top:10px;">
-              <label for="speedSelect">播放速度</label>
-              <select id="speedSelect" class="edit-lockable export-input">
-                <option value="0.75">0.75×</option>
-                <option value="1" selected>1.0×</option>
-                <option value="1.25">1.25×</option>
-                <option value="1.5">1.5×</option>
-              </select>
-            </div>
-            <div class="field" style="margin-top:10px;">
-              <label for="cornerRadiusSelect">圆角</label>
-              <select id="cornerRadiusSelect" class="edit-lockable export-input">
-                <option value="0" selected>无圆角</option>
-                <option value="0.04">4%</option>
-                <option value="0.08">8%</option>
-                <option value="0.12">12%</option>
-                <option value="0.16">16%</option>
-                <option value="0.24">24%</option>
-              </select>
+            <div class="grid-2 export-options">
+              <div class="field">
+                <label for="speedSelect">播放速度</label>
+                <select id="speedSelect" class="edit-lockable export-input">
+                  <option value="0.75">0.75×</option>
+                  <option value="1" selected>1.0×</option>
+                  <option value="1.25">1.25×</option>
+                  <option value="1.5">1.5×</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="cornerRadiusSelect">圆角 <span id="cornerRadiusState" class="field-hint">无圆角</span></label>
+                <select id="cornerRadiusSelect" class="edit-lockable export-input">
+                  <option value="0" selected>无圆角</option>
+                  <option value="0.04">4%</option>
+                  <option value="0.08">8%</option>
+                  <option value="0.12">12%</option>
+                  <option value="0.16">16%</option>
+                  <option value="0.24">24%</option>
+                </select>
+              </div>
             </div>
           </section>
 
@@ -998,8 +1008,6 @@
     header: $('.header'),
     closeBtn: $('#closeBtn'),
     stageBadge: $('#stageBadge'),
-    nowTime: $('#nowTime'),
-    videoInfo: $('#videoInfo'),
     captureStage: $('#captureStage'),
     editStage: $('#editStage'),
     editorSettingsScroll: $('#editorSettingsScroll'),
@@ -1020,7 +1028,6 @@
     recordHud: $('#recordHud'),
     recordTimer: $('#recordTimer'),
     hudStopBtn: $('#hudStopBtn'),
-    clipMeta: $('#clipMeta'),
     editorPreviewWrap: $('#editorPreviewWrap'),
     clipVideo: $('#clipVideo'),
     scrubVideo: $('#scrubVideo'),
@@ -1030,15 +1037,12 @@
     editorBoundary: $('#editorBoundary'),
     editorCropBox: $('#editorCropBox'),
     captionLayer: $('#captionLayer'),
-    previewCurrent: $('#previewCurrent'),
-    cropInfo: $('#cropInfo'),
     timelineTrack: $('#timelineTrack'),
     timelineSelected: $('#timelineSelected'),
     timelinePlayhead: $('#timelinePlayhead'),
     timelineStartHandle: $('#timelineStartHandle'),
     timelineEndHandle: $('#timelineEndHandle'),
     trimStartValue: $('#trimStartValue'),
-    timelineCurrentValue: $('#timelineCurrentValue'),
     trimEndValue: $('#trimEndValue'),
     trimSummary: $('#trimSummary'),
     previewTrimBtn: $('#previewTrimBtn'),
@@ -1051,6 +1055,7 @@
     estimatedSize: $('#estimatedSize'),
     speedSelect: $('#speedSelect'),
     cornerRadiusSelect: $('#cornerRadiusSelect'),
+    cornerRadiusState: $('#cornerRadiusState'),
     captionText: $('#captionText'),
     fontScale: $('#fontScale'),
     fontScaleValue: $('#fontScaleValue'),
@@ -1542,12 +1547,8 @@
     else closePanel();
   }
 
-  function clearResult() {
-  }
-
   function disposeClip() {
     stopTrimPreview();
-    clearResult();
     if (state.clip?.url) URL.revokeObjectURL(state.clip.url);
     state.clip = null;
     if (el.previewCanvas) {
@@ -1801,7 +1802,6 @@
       w: clamp((right - left) / mapping.videoWidth, 0, 1),
       h: clamp((bottom - top) / mapping.videoHeight, 0, 1),
     };
-    clearResult();
     finishPageSelection(false);
     setStatus('');
   }
@@ -1859,7 +1859,6 @@
     const selection = screenRectToNormalizedSelection(rect, session.mapping);
     if (!selection) return;
     state.pageSelection = selection;
-    clearResult();
     updatePageSelectionUi();
     event.preventDefault();
   }
@@ -2202,8 +2201,6 @@
   }
 
   function setupEditorForClip() {
-    const duration = state.clip.duration;
-    el.clipMeta.textContent = '';
     try { el.clipVideo.currentTime = 0; } catch (_) { }
     state.textLayers = [];
     state.activeTextId = null;
@@ -2212,7 +2209,6 @@
     updateAspectSquareButton();
     updateTrimUi();
     fitEditorLayout();
-    clearResult();
     updateResolutionOptions();
     updateEstimatedFileSize();
   }
@@ -2274,8 +2270,8 @@
       top: `${visible.top - wrapRect.top}px`,
       width: `${visible.width}px`,
       height: `${visible.height}px`,
-      borderRadius: `${getCornerRadiusPixels(visible.width, visible.height)}px`,
     });
+    updateRoundedCropGuide(visible.width, visible.height);
     renderTextLayers();
     renderExportPreviewFrame();
   }
@@ -2309,7 +2305,6 @@
     state.aspectSquare = !state.aspectSquare;
     if (state.aspectSquare) makeCurrentCropSquare();
     updateAspectSquareButton();
-    clearResult();
     updateEditorCropBox();
     updateResolutionOptions();
     updateEstimatedFileSize();
@@ -2400,7 +2395,6 @@
     const crop = screenRectToEditorCrop(rect, session.mapping);
     if (!crop) return;
     state.editorCrop = crop;
-    clearResult();
     updateEditorCropBox();
     updateResolutionOptions();
     updateEstimatedFileSize();
@@ -2418,7 +2412,6 @@
   function resetEditorCrop() {
     if (!state.clip || state.mode !== 'edit') return;
     state.editorCrop = { x: 0, y: 0, w: 1, h: 1 };
-    clearResult();
     updateEditorCropBox();
   }
 
@@ -2491,7 +2484,6 @@
       try { el.clipVideo.currentTime = target; } catch (_) { }
       updateTimelinePlayhead();
     }
-    clearResult();
     renderExportPreviewFrame();
     updateEstimatedFileSize();
   }
@@ -2724,7 +2716,6 @@
       strokeColor: '#000000',
       strokeScale: 0.14,
     });
-    clearResult();
     selectTextLayer(id, { focus: true });
     updateEstimatedFileSize();
   }
@@ -2737,7 +2728,6 @@
     if (wasActive) {
       state.activeTextId = state.textLayers[index]?.id || state.textLayers[index - 1]?.id || null;
     }
-    clearResult();
     renderTextLayerTabs();
     renderTextLayers();
     updateEstimatedFileSize();
@@ -2756,7 +2746,6 @@
     layer.textColor = el.textColor.value || '#ffffff';
     layer.strokeColor = el.strokeColor.value || '#000000';
     layer.strokeScale = Number(el.strokeScale.value) || 0;
-    clearResult();
     renderTextLayerTabs(false);
     renderTextLayers();
     updateEstimatedFileSize();
@@ -2806,7 +2795,6 @@
     );
     drag.item.style.left = `${layer.x * 100}%`;
     drag.item.style.top = `${layer.y * 100}%`;
-    clearResult();
     event.preventDefault();
   }
 
@@ -2951,12 +2939,26 @@
     return Math.min(width, height) * clamp(Number(ratio) || 0, 0, 0.5);
   }
 
+  function updateRoundedCropGuide(width, height, settings = null) {
+    if (!el.editorCropBox) return;
+    const ratio = settings ? Number(settings.cornerRadiusRatio) || 0 : getCornerRadiusRatio();
+    const radius = getCornerRadiusPixels(width, height, ratio);
+    const inset = Math.min(6, Math.max(2, Math.min(width, height) / 5));
+    el.editorCropBox.style.setProperty('--rounded-guide-inset', `${inset}px`);
+    el.editorCropBox.style.setProperty('--rounded-guide-radius', `${Math.max(0, radius - inset)}px`);
+    el.editorCropBox.classList.toggle('rounded-guide-active', ratio > 0);
+    if (el.cornerRadiusState) {
+      el.cornerRadiusState.textContent = ratio > 0 ? '透明背景' : '无圆角';
+    }
+  }
+
   function hasTransparentCorners(settings) {
-    return getCornerRadiusPixels(
-      settings.outputWidth,
-      settings.outputHeight,
-      settings.cornerRadiusRatio,
-    ) > 0;
+    return settings.transparentCorners === true
+      || getCornerRadiusPixels(
+        settings.outputWidth,
+        settings.outputHeight,
+        settings.cornerRadiusRatio,
+      ) > 0;
   }
 
   function addRoundedRectPath(ctx, width, height, radius) {
@@ -2977,23 +2979,21 @@
     ctx.closePath();
   }
 
-  function drawExportCanvasFrame(ctx, settings, video, {
-    transparentCorners = false,
-    previewOnly = false,
-    includeText = true,
-  } = {}) {
+  function drawExportCanvasFrame(ctx, settings, video, mode = 'export') {
     const width = settings.outputWidth;
     const height = settings.outputHeight;
-    const radius = getCornerRadiusPixels(width, height, settings.cornerRadiusRatio);
+    const radius = mode === 'preview'
+      ? 0
+      : Number(settings.outputRadius) || getCornerRadiusPixels(width, height, settings.cornerRadiusRatio);
+    const transparentCorners = mode === 'export' || mode === 'estimate';
+    const includeText = mode !== 'preview';
     const sx = settings.crop.x * state.clip.width;
     const sy = settings.crop.y * state.clip.height;
     const sw = settings.crop.w * state.clip.width;
     const sh = settings.crop.h * state.clip.height;
 
     ctx.clearRect(0, 0, width, height);
-    if (previewOnly && radius > 0) {
-      ctx.clearRect(0, 0, width, height);
-    } else if (transparentCorners && radius > 0) {
+    if (transparentCorners && radius > 0) {
       ctx.fillStyle = TRANSPARENT_KEY_COLOR;
       ctx.fillRect(0, 0, width, height);
     } else {
@@ -3026,15 +3026,15 @@
     if (canvas.height !== nextSettings.outputHeight) canvas.height = nextSettings.outputHeight;
     const displayWidth = Math.max(1, visible.width);
     const displayHeight = Math.max(1, visible.height);
-    const displayRadius = getCornerRadiusPixels(displayWidth, displayHeight, nextSettings.cornerRadiusRatio);
     Object.assign(canvas.style, {
       left: `${visible.left - wrapRect.left}px`,
       top: `${visible.top - wrapRect.top}px`,
       width: `${displayWidth}px`,
       height: `${displayHeight}px`,
-      borderRadius: `${displayRadius}px`,
+      borderRadius: '0px',
       visibility: 'visible',
     });
+    updateRoundedCropGuide(displayWidth, displayHeight, nextSettings);
     return nextSettings;
   }
 
@@ -3047,7 +3047,7 @@
     if (!ctx) return;
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
-    drawExportCanvasFrame(ctx, nextSettings, sourceVideo, { previewOnly: true, includeText: false });
+    drawExportCanvasFrame(ctx, nextSettings, sourceVideo, 'preview');
   }
 
   async function getWorkerBlobUrl() {
@@ -3189,6 +3189,8 @@
       outputWidth = Math.max(2, Math.round((outputHeight * sourceWidth / sourceHeight) / 2) * 2);
     }
 
+    const outputRadius = getCornerRadiusPixels(outputWidth, outputHeight, cornerRadiusRatio);
+
     return {
       video: el.clipVideo,
       start,
@@ -3196,6 +3198,9 @@
       fps,
       speed,
       cornerRadiusRatio,
+      outputRadius,
+      transparentCorners: outputRadius > 0,
+      delay: Math.max(20, Math.round((1000 / fps) / speed)),
       baseFrames,
       finalFrames,
       outputWidth,
@@ -3205,6 +3210,21 @@
       textLayers: state.textLayers
         .filter((layer) => String(layer.text || '').trim())
         .map((layer) => ({ ...layer })),
+    };
+  }
+
+  function createGifOptions(settings, workerScript, workers) {
+    return {
+      workers,
+      quality: 10,
+      width: settings.outputWidth,
+      height: settings.outputHeight,
+      repeat: 0,
+      background: '#000000',
+      transparent: hasTransparentCorners(settings) ? TRANSPARENT_KEY_RGB : null,
+      globalPalette: hasTransparentCorners(settings),
+      dither: false,
+      workerScript,
     };
   }
 
@@ -3276,18 +3296,7 @@
       const workerScript = await getWorkerBlobUrl();
       let gif = null;
       try {
-        gif = new GIFClass({
-          workers: 1,
-          quality: 10,
-          width: settings.outputWidth,
-          height: settings.outputHeight,
-          repeat: 0,
-          background: '#000000',
-          transparent: hasTransparentCorners(settings) ? TRANSPARENT_KEY_RGB : null,
-          globalPalette: hasTransparentCorners(settings),
-          dither: false,
-          workerScript,
-        });
+        gif = new GIFClass(createGifOptions(settings, workerScript, 1));
         state.sizeEstimateGif = gif;
         const canvas = document.createElement('canvas');
         canvas.width = settings.outputWidth;
@@ -3296,14 +3305,14 @@
         if (!ctx) throw new Error('无法创建估算画布');
         ctx.imageSmoothingEnabled = true;
         ctx.imageSmoothingQuality = 'high';
-        const delay = Math.max(20, Math.round((1000 / settings.fps) / settings.speed));
+        const delay = settings.delay;
 
         for (let i = 0; i < sampleCount; i += 1) {
           if (token !== state.sizeEstimateToken) throw new Error('stale');
           const ratio = sampleCount <= 1 ? 0 : i / (sampleCount - 1);
           const target = Math.min(settings.end - 0.001, settings.start + (settings.end - settings.start) * ratio);
           await seekVideo(sampleVideo, target, state.clip.duration);
-          drawExportCanvasFrame(ctx, settings, sampleVideo, { transparentCorners: true, includeText: true });
+          drawExportCanvasFrame(ctx, settings, sampleVideo, 'estimate');
           gif.addFrame(ctx, { copy: true, delay });
         }
 
@@ -3405,7 +3414,6 @@
         try { state.sizeEstimateGif.abort(); } catch (_) { }
       }
       state.sizeEstimateGif = null;
-      clearResult();
       state.busy = true;
       state.mode = 'exporting';
       state.cancelRequested = false;
@@ -3419,18 +3427,7 @@
       state.workerUrl = await getWorkerBlobUrl();
       const logicalCores = Math.max(1, navigator.hardwareConcurrency || 4);
       const workerCount = logicalCores >= 8 ? 4 : logicalCores >= 4 ? 2 : 1;
-      const gif = new GIFClass({
-        workers: workerCount,
-        quality: 10,
-        width: settings.outputWidth,
-        height: settings.outputHeight,
-        repeat: 0,
-        background: '#000000',
-        transparent: hasTransparentCorners(settings) ? TRANSPARENT_KEY_RGB : null,
-        globalPalette: hasTransparentCorners(settings),
-        dither: false,
-        workerScript: state.workerUrl,
-      });
+      const gif = new GIFClass(createGifOptions(settings, state.workerUrl, workerCount));
       state.gif = gif;
 
       const canvas = document.createElement('canvas');
@@ -3440,10 +3437,10 @@
       if (!ctx) throw new Error('浏览器无法创建 GIF 画布。');
       ctx.imageSmoothingEnabled = true;
       ctx.imageSmoothingQuality = 'high';
-      const delay = Math.max(20, Math.round((1000 / settings.fps) / settings.speed));
+      const delay = settings.delay;
 
       const drawExportFrame = () => {
-        drawExportCanvasFrame(ctx, settings, video, { transparentCorners: true, includeText: true });
+        drawExportCanvasFrame(ctx, settings, video, 'export');
         gif.addFrame(ctx, { copy: true, delay });
       };
 
