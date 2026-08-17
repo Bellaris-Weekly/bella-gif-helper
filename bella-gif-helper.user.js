@@ -31,7 +31,6 @@
   const MAX_EXPORT_FRAMES = 900;
   const ENCODE_TIMEOUT_MS = 600_000;
   const MIN_SELECT_PX = 24;
-  const TRANSPARENT_KEY_COLOR = '#ff00fe';
   const TRANSPARENT_KEY_RGB = 0xff00fe;
   const LAUNCHER_POSITION_KEY = 'biliGifMakerLauncherPositionV1';
   const PANEL_POSITION_KEY = 'biliGifMakerPanelPositionV1';
@@ -2965,6 +2964,23 @@
     ctx.closePath();
   }
 
+  function normalizeTransparentEdges(ctx, width, height) {
+    const image = ctx.getImageData(0, 0, width, height);
+    const pixels = image.data;
+    for (let i = 0; i < pixels.length; i += 4) {
+      const alpha = pixels[i + 3];
+      if (alpha < 200) {
+        pixels[i] = (TRANSPARENT_KEY_RGB >> 16) & 0xff;
+        pixels[i + 1] = (TRANSPARENT_KEY_RGB >> 8) & 0xff;
+        pixels[i + 2] = TRANSPARENT_KEY_RGB & 0xff;
+        pixels[i + 3] = 0;
+      } else {
+        pixels[i + 3] = 255;
+      }
+    }
+    ctx.putImageData(image, 0, 0);
+  }
+
   function drawExportCanvasFrame(ctx, settings, video, mode = 'export') {
     const width = settings.outputWidth;
     const height = settings.outputHeight;
@@ -2979,20 +2995,22 @@
     const sh = settings.crop.h * state.clip.height;
 
     ctx.clearRect(0, 0, width, height);
-    if (transparentCorners && radius > 0) {
-      ctx.fillStyle = TRANSPARENT_KEY_COLOR;
-      ctx.fillRect(0, 0, width, height);
-    } else {
+    if (!transparentCorners || radius <= 0) {
       ctx.fillStyle = '#000';
       ctx.fillRect(0, 0, width, height);
     }
-    ctx.save();
-    ctx.beginPath();
-    addRoundedRectPath(ctx, width, height, radius);
-    ctx.clip();
     ctx.drawImage(video, sx, sy, sw, sh, 0, 0, width, height);
     if (includeText) drawTextLayers(ctx, width, height, settings.textLayers);
-    ctx.restore();
+    if (transparentCorners && radius > 0) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'destination-in';
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      addRoundedRectPath(ctx, width, height, radius);
+      ctx.fill();
+      ctx.restore();
+      normalizeTransparentEdges(ctx, width, height);
+    }
   }
 
   function updatePreviewCanvasLayout(settings = null) {
