@@ -292,23 +292,12 @@
         position: absolute;
         z-index: 2;
         border: 2px solid #fb7299;
-        border-radius: 6px;
+        border-radius: var(--crop-frame-radius, 6px);
         box-shadow: 0 0 0 9999px rgba(0,0,0,.36), 0 0 0 1px rgba(0,0,0,.42) inset;
         pointer-events: auto;
         cursor: move;
         touch-action: none;
       }
-      #roundedCropGuide {
-        position: absolute;
-        inset: var(--rounded-guide-inset, 6px);
-        z-index: 1;
-        display: none;
-        border: 1px solid rgba(255,255,255,.84);
-        border-radius: var(--rounded-guide-radius, 0px);
-        box-shadow: 0 0 0 1px rgba(0,0,0,.28);
-        pointer-events: none;
-      }
-      #editorCropBox.rounded-guide-active #roundedCropGuide { display: block; }
       .crop-handle,
       .page-resize-handle {
         position: absolute;
@@ -844,7 +833,6 @@
               <div id="editorOverlay">
                 <div id="editorBoundary"></div>
                 <div id="editorCropBox">
-                  <div id="roundedCropGuide" aria-hidden="true"></div>
                   <i class="crop-handle" data-resize="n"></i>
                   <i class="crop-handle" data-resize="s"></i>
                   <i class="crop-handle" data-resize="e"></i>
@@ -2943,10 +2931,8 @@
     if (!el.editorCropBox) return;
     const ratio = settings ? Number(settings.cornerRadiusRatio) || 0 : getCornerRadiusRatio();
     const radius = getCornerRadiusPixels(width, height, ratio);
-    const inset = Math.min(6, Math.max(2, Math.min(width, height) / 5));
-    el.editorCropBox.style.setProperty('--rounded-guide-inset', `${inset}px`);
-    el.editorCropBox.style.setProperty('--rounded-guide-radius', `${Math.max(0, radius - inset)}px`);
-    el.editorCropBox.classList.toggle('rounded-guide-active', ratio > 0);
+    // Apply the guide to the crop frame itself so its corners match the real output boundary.
+    el.editorCropBox.style.setProperty('--crop-frame-radius', `${radius}px`);
     if (el.cornerRadiusState) {
       el.cornerRadiusState.textContent = ratio > 0 ? '透明背景' : '无圆角';
     }
