@@ -2973,10 +2973,9 @@
         pixels[i] = (TRANSPARENT_KEY_RGB >> 16) & 0xff;
         pixels[i + 1] = (TRANSPARENT_KEY_RGB >> 8) & 0xff;
         pixels[i + 2] = TRANSPARENT_KEY_RGB & 0xff;
-        pixels[i + 3] = 0;
-      } else {
-        pixels[i + 3] = 255;
       }
+      // GIF.js keys transparency by RGB, so every sampled pixel must stay opaque here.
+      pixels[i + 3] = 255;
     }
     ctx.putImageData(image, 0, 0);
   }
@@ -3006,7 +3005,14 @@
       ctx.globalCompositeOperation = 'destination-in';
       ctx.fillStyle = '#fff';
       ctx.beginPath();
-      addRoundedRectPath(ctx, width, height, radius);
+      const inset = Math.min(1, width / 2, height / 2);
+      ctx.translate(inset, inset);
+      addRoundedRectPath(
+        ctx,
+        width - inset * 2,
+        height - inset * 2,
+        Math.max(0, radius - inset),
+      );
       ctx.fill();
       ctx.restore();
       normalizeTransparentEdges(ctx, width, height);
@@ -3220,7 +3226,7 @@
   function createGifOptions(settings, workerScript, workers) {
     return {
       workers,
-      quality: 10,
+      quality: settings.textLayers?.length ? 1 : 10,
       width: settings.outputWidth,
       height: settings.outputHeight,
       repeat: 0,
