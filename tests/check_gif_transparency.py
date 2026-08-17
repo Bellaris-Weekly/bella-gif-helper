@@ -60,6 +60,10 @@ def main():
         raise SystemExit(f"inconsistent frame sizes: {sorted(frame_sizes)}")
     if args.expected_delay is not None and delays != {args.expected_delay}:
         raise SystemExit(f"unexpected frame delays: {sorted(delays)}")
+    if len(set(transparent_counts)) != 1:
+        raise SystemExit(
+            f"unstable transparent pixel counts: {min(transparent_counts)}..{max(transparent_counts)}"
+        )
 
     print(
         f"ok: {image.n_frames} frames, {width}x{height}, "

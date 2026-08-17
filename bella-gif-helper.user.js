@@ -2964,12 +2964,13 @@
     ctx.closePath();
   }
 
-  function normalizeTransparentEdges(ctx, width, height) {
-    const image = ctx.getImageData(0, 0, width, height);
+  function normalizeTransparentCorner(ctx, x, y, size) {
+    const image = ctx.getImageData(x, y, size, size);
     const pixels = image.data;
     for (let i = 0; i < pixels.length; i += 4) {
       const alpha = pixels[i + 3];
-      if (alpha < 200) {
+      // GIF transparency is binary; keep no partially covered edge pixel visible.
+      if (alpha < 255) {
         pixels[i] = (TRANSPARENT_KEY_RGB >> 16) & 0xff;
         pixels[i + 1] = (TRANSPARENT_KEY_RGB >> 8) & 0xff;
         pixels[i + 2] = TRANSPARENT_KEY_RGB & 0xff;
@@ -2977,7 +2978,19 @@
       // GIF.js keys transparency by RGB, so every sampled pixel must stay opaque here.
       pixels[i + 3] = 255;
     }
-    ctx.putImageData(image, 0, 0);
+    ctx.putImageData(image, x, y);
+  }
+
+  function normalizeTransparentCorners(ctx, width, height, radius) {
+    const size = Math.min(
+      Math.max(1, Math.ceil(radius) + 1),
+      width,
+      height,
+    );
+    normalizeTransparentCorner(ctx, 0, 0, size);
+    normalizeTransparentCorner(ctx, width - size, 0, size);
+    normalizeTransparentCorner(ctx, 0, height - size, size);
+    normalizeTransparentCorner(ctx, width - size, height - size, size);
   }
 
   function drawExportCanvasFrame(ctx, settings, video, mode = 'export') {
@@ -3005,17 +3018,10 @@
       ctx.globalCompositeOperation = 'destination-in';
       ctx.fillStyle = '#fff';
       ctx.beginPath();
-      const inset = Math.min(1, width / 2, height / 2);
-      ctx.translate(inset, inset);
-      addRoundedRectPath(
-        ctx,
-        width - inset * 2,
-        height - inset * 2,
-        Math.max(0, radius - inset),
-      );
+      addRoundedRectPath(ctx, width, height, radius);
       ctx.fill();
       ctx.restore();
-      normalizeTransparentEdges(ctx, width, height);
+      normalizeTransparentCorners(ctx, width, height, radius);
     }
   }
 
@@ -3226,7 +3232,7 @@
   function createGifOptions(settings, workerScript, workers) {
     return {
       workers,
-      quality: settings.textLayers?.length ? 1 : 10,
+      quality: 10,
       width: settings.outputWidth,
       height: settings.outputHeight,
       repeat: 0,
