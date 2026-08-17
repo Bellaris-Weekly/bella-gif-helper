@@ -6,6 +6,8 @@
 // @author       贝极星周报
 // @icon         https://i0.hdslb.com/bfs/garb/item/70de4619ce5e8a7b5bbe5c4124aa69353d8102e4.png
 // @license      MIT
+// @downloadURL  https://share.bellaris.fans/bella-gif-helper.user.js
+// @updateURL    https://share.bellaris.fans/bella-gif-helper.user.js
 // @match        https://www.bilibili.com/video/*
 // @match        https://www.bilibili.com/list/*
 // @match        https://www.bilibili.com/bangumi/play/*
