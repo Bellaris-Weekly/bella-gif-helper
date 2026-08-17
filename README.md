@@ -38,3 +38,11 @@
 ## 反馈
 
 请在 GitHub Issues 中提交可复现的问题，并附上浏览器、用户脚本管理器和 B 站页面类型等信息。
+
+## 开发验证
+
+透明圆角 GIF 可使用 Pillow 逐帧检查：
+
+```bash
+python3 tests/check_gif_transparency.py output.gif --radius-ratio 0.04 --expected-delay 80
+```

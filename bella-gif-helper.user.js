@@ -2951,6 +2951,14 @@
     return Math.min(width, height) * clamp(Number(ratio) || 0, 0, 0.5);
   }
 
+  function hasTransparentCorners(settings) {
+    return getCornerRadiusPixels(
+      settings.outputWidth,
+      settings.outputHeight,
+      settings.cornerRadiusRatio,
+    ) > 0;
+  }
+
   function addRoundedRectPath(ctx, width, height, radius) {
     const r = clamp(Number(radius) || 0, 0, Math.min(width, height) / 2);
     if (r <= 0) {
@@ -3275,11 +3283,8 @@
           height: settings.outputHeight,
           repeat: 0,
           background: '#000000',
-          transparent: getCornerRadiusPixels(
-            settings.outputWidth,
-            settings.outputHeight,
-            settings.cornerRadiusRatio,
-          ) > 0 ? TRANSPARENT_KEY_RGB : null,
+          transparent: hasTransparentCorners(settings) ? TRANSPARENT_KEY_RGB : null,
+          globalPalette: hasTransparentCorners(settings),
           dither: false,
           workerScript,
         });
@@ -3421,11 +3426,8 @@
         height: settings.outputHeight,
         repeat: 0,
         background: '#000000',
-        transparent: getCornerRadiusPixels(
-          settings.outputWidth,
-          settings.outputHeight,
-          settings.cornerRadiusRatio,
-        ) > 0 ? TRANSPARENT_KEY_RGB : null,
+        transparent: hasTransparentCorners(settings) ? TRANSPARENT_KEY_RGB : null,
+        globalPalette: hasTransparentCorners(settings),
         dither: false,
         workerScript: state.workerUrl,
       });
