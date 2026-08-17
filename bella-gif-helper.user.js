@@ -34,6 +34,7 @@
   const TRANSPARENT_KEY_RGB = 0xff00fe;
   const LAUNCHER_POSITION_KEY = 'biliGifMakerLauncherPositionV1';
   const PANEL_POSITION_KEY = 'biliGifMakerPanelPositionV1';
+  const EXPORT_PREFERENCES_KEY = 'biliGifMakerExportPreferencesV1';
   const UI_SAFE_MARGIN = 14;
     const state = {
     mode: 'capture',
@@ -801,7 +802,7 @@
       }
     </style>
 
-    <button id="launcher" title="框选 B站视频制作 GIF" aria-label="贝报GIF助手"></button>
+    <button id="launcher" title="框选视频制作 GIF" aria-label="贝报GIF助手"></button>
 
     <section id="panel" class="hidden" aria-label="${SCRIPT_NAME}">
       <div class="header">
@@ -948,10 +949,10 @@
 
           <div id="mainActions" class="action-dock">
             <button id="newRecordingBtn" class="btn secondary edit-lockable">重新录制</button>
-            <button id="generateBtn" class="btn primary edit-lockable">生成 GIF</button>
+            <button id="generateBtn" class="btn primary edit-lockable">导出 GIF</button>
           </div>
           <div id="cancelExportWrap" class="action-dock one hidden">
-            <button id="cancelExportBtn" class="btn danger">取消生成</button>
+            <button id="cancelExportBtn" class="btn danger">取消导出</button>
           </div>
         </div>
       </div>
@@ -1061,7 +1062,7 @@
   };
 
   class CancelledError extends Error {
-    constructor(message = '用户取消了生成。') {
+    constructor(message = '用户取消了导出。') {
       super(message);
       this.name = 'CancelledError';
     }
@@ -1110,6 +1111,30 @@
 
   function setProgress(percent) {
     el.progress.style.width = `${clamp(Number(percent) || 0, 0, 100)}%`;
+  }
+
+  function hasSelectValue(select, value) {
+    return Array.from(select?.options || []).some((option) => option.value === value);
+  }
+
+  function restoreExportPreferences() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(EXPORT_PREFERENCES_KEY) || '{}');
+      if (hasSelectValue(el.fpsSelect, String(saved.fps))) el.fpsSelect.value = String(saved.fps);
+      if (hasSelectValue(el.cornerRadiusSelect, String(saved.cornerRadius))) {
+        el.cornerRadiusSelect.value = String(saved.cornerRadius);
+      }
+    } catch (_) { }
+  }
+
+  function saveExportPreference(input) {
+    if (!input || !['fpsSelect', 'cornerRadiusSelect'].includes(input.id)) return;
+    try {
+      const saved = JSON.parse(localStorage.getItem(EXPORT_PREFERENCES_KEY) || '{}');
+      if (input === el.fpsSelect) saved.fps = input.value;
+      if (input === el.cornerRadiusSelect) saved.cornerRadius = input.value;
+      localStorage.setItem(EXPORT_PREFERENCES_KEY, JSON.stringify(saved));
+    } catch (_) { }
   }
 
   function pointInRect(x, y, rect) {
@@ -1256,7 +1281,7 @@
     el.editStage.classList.toggle('hidden', !editVisible);
 
     if (state.mode === 'recording') el.stageBadge.textContent = '录制中';
-    else if (state.mode === 'exporting') el.stageBadge.textContent = '生成中';
+    else if (state.mode === 'exporting') el.stageBadge.textContent = '导出中';
     else el.stageBadge.textContent = '编辑';
 
     const recording = state.mode === 'recording';
@@ -1693,11 +1718,11 @@
     const video = getMainVideo();
     const mapping = getMediaMapping(video);
     if (!video || !mapping) {
-      setStatus('没有找到可框选的 B站视频画面，请等待视频加载后再试。', 'error');
+      setStatus('未找到视频画面，请等待加载完成。', 'error');
       return;
     }
     if (document.fullscreenElement && document.fullscreenElement.tagName === 'VIDEO') {
-      setStatus('浏览器原生视频全屏会遮住脚本界面，请先退出原生全屏再框选；B站网页全屏可以使用。', 'error');
+      setStatus('请退出浏览器全屏后再框选。', 'error');
       return;
     }
 
@@ -1870,7 +1895,7 @@
 
   function drawSelectedVideoFrame(video, selection, ctx, width, height) {
     const source = normalizedSelectionToSource(selection, video);
-    if (source.sw < 2 || source.sh < 2) throw new Error('录制选区过小，请重新框选。');
+    if (source.sw < 2 || source.sh < 2) throw new Error('选区太小，请重新框选。');
     ctx.clearRect(0, 0, width, height);
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, width, height);
@@ -1903,24 +1928,24 @@
     }
     if (state.mode !== 'capture' || state.busy) return;
     if (!state.pageSelection) {
-      setStatus('请先用鼠标框选录制区域。', 'error');
+      setStatus('请先框选录制区域。', 'error');
       return;
     }
 
     const video = getMainVideo();
     if (!video || !video.videoWidth || !video.videoHeight) {
-      setStatus('没有找到可录制的 B站视频。', 'error');
+      setStatus('未找到可录制的视频。', 'error');
       return;
     }
     if (typeof MediaRecorder === 'undefined') {
-      setStatus('当前浏览器不支持 MediaRecorder。建议使用最新版 Chrome、Edge 或 Firefox。', 'error');
+      setStatus('当前浏览器不支持录制。', 'error');
       return;
     }
 
     const captureStream = HTMLCanvasElement.prototype.captureStream
       || HTMLCanvasElement.prototype.mozCaptureStream;
     if (typeof captureStream !== 'function') {
-      setStatus('当前浏览器不支持 Canvas 录制。建议使用最新版 Chrome 或 Edge。', 'error');
+      setStatus('当前浏览器不支持画布录制。', 'error');
       return;
     }
 
@@ -1933,7 +1958,7 @@
     canvas.height = captureHeight;
     const ctx = canvas.getContext('2d', { alpha: false, willReadFrequently: false });
     if (!ctx) {
-      setStatus('浏览器无法创建录制画布。', 'error');
+      setStatus('无法创建录制画布。', 'error');
       return;
     }
     ctx.imageSmoothingEnabled = true;
@@ -1989,7 +2014,7 @@
         if (event.data && event.data.size > 0) chunks.push(event.data);
       });
       recorder.addEventListener('error', (event) => {
-        recording.error = event.error || new Error('MediaRecorder 录制失败。');
+        recording.error = event.error || new Error('录制失败。');
         stopRecording('error');
       });
       recorder.addEventListener('stop', () => finalizeRecording(recording), { once: true });
@@ -2024,7 +2049,7 @@
       try {
         await video.play();
       } catch (error) {
-        recording.error = new Error(`无法自动播放 B站视频：${error.message || error}`);
+        recording.error = new Error(`视频无法自动播放：${error.message || error}`);
         stopRecording('error');
       }
     } catch (error) {
@@ -2077,14 +2102,14 @@
         clearTimeout(timer);
         target.removeEventListener(eventName, done);
         target.removeEventListener('error', fail);
-        reject(new Error('录制片段载入失败。'));
+        reject(new Error('片段加载失败。'));
       };
       const timer = setTimeout(() => {
         if (settled) return;
         settled = true;
         target.removeEventListener(eventName, done);
         target.removeEventListener('error', fail);
-        reject(new Error('录制片段载入超时。'));
+        reject(new Error('片段加载超时。'));
       }, timeoutMs);
       target.addEventListener(eventName, done, { once: true });
       target.addEventListener('error', fail, { once: true });
@@ -2153,13 +2178,13 @@
     if (measuredDuration < 0.2 || recording.chunks.length === 0) {
       state.mode = 'capture';
       updateModeUi();
-      setStatus('录制时间太短，请至少录制约 0.2 秒。', 'error');
+      setStatus('片段太短，至少需要 0.2 秒。', 'error');
       return;
     }
 
     try {
       const blob = new Blob(recording.chunks, { type: recording.mimeType || 'video/webm' });
-      if (blob.size < 1024) throw new Error('录制文件为空，请重新录制。');
+      if (blob.size < 1024) throw new Error('录制失败，请重试。');
       await loadRecordedClip(blob, {
         measuredDuration,
         sourceStart: recording.snapshot.sourceStart,
@@ -2177,7 +2202,7 @@
       setStatus('');
       requestAnimationFrame(() => { void ensureTrimPreviewPlaying(); });
       if (recording.stopReason === 'limit') {
-        showToast(`已达到 ${MAX_RECORD_SECONDS} 秒上限并自动停止。`, 'success');
+        showToast(`已达到 ${MAX_RECORD_SECONDS} 秒上限。`, 'success');
       }
     } catch (error) {
       disposeClip();
@@ -2841,10 +2866,10 @@
         reject(new Error(message));
       };
       const onSeeked = () => finish();
-      const onError = () => fail('视频跳转时间轴时发生错误。');
+      const onError = () => fail('视频跳转失败。');
       const timeout = setTimeout(() => {
         if (Math.abs(video.currentTime - target) < 0.14 && video.readyState >= 2) finish();
-        else fail(`跳转到 ${formatTime(target)} 超时。`);
+        else fail('跳转超时。');
       }, 10_000);
 
       video.addEventListener('seeked', onSeeked);
@@ -2852,7 +2877,7 @@
       try {
         video.currentTime = target;
       } catch (error) {
-        fail(`无法跳转视频时间轴：${error.message || error}`);
+        fail(`无法跳转时间轴：${error.message || error}`);
       }
     });
   }
@@ -3073,7 +3098,7 @@
     } else if (globalThis.GM && typeof globalThis.GM.getResourceText === 'function') {
       workerText = await globalThis.GM.getResourceText('GIF_WORKER');
     }
-    if (!workerText) throw new Error('GIF Worker 资源未能加载，请重新保存脚本或检查脚本管理器。');
+    if (!workerText) throw new Error('编码组件加载失败，请刷新页面重试。');
     return URL.createObjectURL(new Blob([workerText], { type: 'application/javascript' }));
   }
 
@@ -3100,7 +3125,7 @@
         fn(value);
       };
       const timeout = setTimeout(() => {
-        finish(reject, new Error('GIF 编码超时。请缩短片段、降低尺寸或帧率。'));
+        finish(reject, new Error('导出超时，请缩短片段或降低尺寸。'));
         try { gif.abort(); } catch (_) { }
       }, ENCODE_TIMEOUT_MS);
 
@@ -3176,11 +3201,11 @@
   }
 
   function readExportSettings() {
-    if (!state.clip) throw new Error('没有可编辑的录制片段。');
+    if (!state.clip) throw new Error('没有可导出的片段。');
     const start = state.trimStart;
     const end = state.trimEnd;
-    if (end <= start) throw new Error('剪辑终点必须晚于起点。');
-    if (end - start < 0.15) throw new Error('导出片段太短，请至少保留 0.15 秒。');
+    if (end <= start) throw new Error('结束时间必须晚于开始时间。');
+    if (end - start < 0.15) throw new Error('片段太短，至少需要 0.15 秒。');
 
     const fps = Number(el.fpsSelect.value);
     const speed = Number(el.speedSelect.value);
@@ -3188,7 +3213,7 @@
     const baseFrames = Math.max(1, Math.ceil((end - start) * fps));
     const finalFrames = baseFrames;
     if (finalFrames > MAX_EXPORT_FRAMES) {
-      throw new Error(`当前设置会生成 ${finalFrames} 帧，超过上限 ${MAX_EXPORT_FRAMES} 帧。请缩短片段或降低帧率。`);
+      throw new Error('帧数超过上限，请缩短片段或降低帧率。');
     }
 
     const crop = state.editorCrop;
@@ -3318,7 +3343,7 @@
         canvas.width = settings.outputWidth;
         canvas.height = settings.outputHeight;
         const ctx = canvas.getContext('2d', { alpha: true });
-        if (!ctx) throw new Error('无法创建估算画布');
+        if (!ctx) throw new Error('无法创建估算画布。');
         ctx.imageSmoothingEnabled = true;
         ctx.imageSmoothingQuality = 'high';
         const delay = settings.delay;
@@ -3360,8 +3385,8 @@
         const bytes = await estimateGifBytesBySampling(settings, token);
         if (token !== state.sizeEstimateToken || state.mode !== 'edit') return;
         state.lastSampleEstimate = { signature, bytes };
-        el.estimatedSize.textContent = `预计约 ${formatFileSize(bytes)}`;
-        el.estimatedSize.title = '通过当前片段的代表帧做小样本 GIF 编码后推算；真实导出后还会用实际结果继续校准。';
+        el.estimatedSize.textContent = `预计 ${formatFileSize(bytes)}`;
+        el.estimatedSize.title = '根据当前片段估算。';
       } catch (error) {
         if (String(error?.message || '') === 'stale') return;
       }
@@ -3385,8 +3410,8 @@
     try {
       const settings = readExportSettings();
       const bytes = estimateGifBytes(settings);
-      el.estimatedSize.textContent = `预计约 ${formatFileSize(bytes)}`;
-      el.estimatedSize.title = '正在根据当前片段的实际画面内容进行采样估算。';
+      el.estimatedSize.textContent = `预计 ${formatFileSize(bytes)}`;
+      el.estimatedSize.title = '根据当前片段估算。';
       scheduleSampledSizeEstimate(settings);
     } catch (_) {
       el.estimatedSize.textContent = '预计 --';
@@ -3421,7 +3446,7 @@
     try {
       settings = readExportSettings();
       const GIFClass = typeof GIF === 'function' ? GIF : globalThis.GIF;
-      if (typeof GIFClass !== 'function') throw new Error('GIF 编码库没有加载成功。');
+      if (typeof GIFClass !== 'function') throw new Error('GIF 编码组件加载失败。');
 
       stopTrimPreview();
       clearTimeout(state.sizeEstimateTimer);
@@ -3450,7 +3475,7 @@
       canvas.width = settings.outputWidth;
       canvas.height = settings.outputHeight;
       const ctx = canvas.getContext('2d', { alpha: true });
-      if (!ctx) throw new Error('浏览器无法创建 GIF 画布。');
+      if (!ctx) throw new Error('无法创建 GIF 画布。');
       ctx.imageSmoothingEnabled = true;
       ctx.imageSmoothingQuality = 'high';
       const delay = settings.delay;
@@ -3462,7 +3487,7 @@
 
       const updateExtractionProgress = (count) => {
         setProgress((count / settings.baseFrames) * 60);
-        setStatus(`正在高速提取编辑后的画面：${count}/${settings.baseFrames} 帧`);
+    setStatus(`正在提取画面：${count}/${settings.baseFrames}`);
       };
 
       if (typeof video.requestVideoFrameCallback === 'function') {
@@ -3515,7 +3540,7 @@
               }
             };
 
-            const onError = () => fail(new Error('高速取帧时视频解码失败。'));
+            const onError = () => fail(new Error('视频解码失败。'));
             const onEnded = () => {
               if (state.cancelRequested) {
                 fail(new CancelledError());
@@ -3562,14 +3587,14 @@
 
             const expectedMs = ((settings.end - settings.start) / extractionPlaybackRate) * 1000;
             timeoutId = window.setTimeout(
-              () => fail(new Error('高速取帧超时，请重试。')),
+              () => fail(new Error('取帧超时，请重试。')),
               Math.max(15_000, expectedMs + 12_000),
             );
 
             video.addEventListener('error', onError, { once: true });
             video.addEventListener('ended', onEnded, { once: true });
             callbackId = video.requestVideoFrameCallback(onFrame);
-            video.play().catch((error) => fail(new Error(`无法启动高速取帧：${error.message || error}`)));
+            video.play().catch((error) => fail(new Error(`无法启动取帧：${error.message || error}`)));
           });
         }
       } else {
@@ -3583,7 +3608,7 @@
       }
 
       if (state.cancelRequested) throw new CancelledError();
-      setStatus(`已提取 ${settings.baseFrames} 帧，开始编码 GIF……`);
+      setStatus('正在编码 GIF……');
       const blob = await renderGif(gif);
       if (state.cancelRequested) throw new CancelledError();
 
@@ -3597,8 +3622,8 @@
       setProgress(100);
       const fileName = makeFileName(settings);
       downloadBlob(blob, fileName);
-      setStatus(`GIF 已生成并开始下载 · ${formatFileSize(blob.size)}`, 'success');
-      showToast(`GIF 已下载 · ${formatFileSize(blob.size)}`, 'success');
+      setStatus(`已导出并下载 · ${formatFileSize(blob.size)}`, 'success');
+      showToast(`下载完成 · ${formatFileSize(blob.size)}`, 'success');
     } catch (error) {
       setStatus(friendlyError(error), error instanceof CancelledError ? '' : 'error');
     } finally {
@@ -3625,25 +3650,25 @@
   function cancelExport() {
     if (state.mode !== 'exporting' || !state.busy) return;
     state.cancelRequested = true;
-    setStatus('正在取消 GIF 生成……');
+    setStatus('正在取消导出…');
     if (state.gif && typeof state.gif.abort === 'function') {
       try { state.gif.abort(); } catch (_) { }
     }
   }
 
   function friendlyError(error) {
-    if (error instanceof CancelledError) return '已取消生成。';
+    if (error instanceof CancelledError) return '已取消导出。';
     const message = String(error && (error.message || error));
     if (/taint|cross-origin|cross origin|SecurityError/i.test(message)) {
-      return '浏览器拒绝读取视频画面（Canvas 跨域限制）。请先关闭其他替换播放器或视频增强脚本并刷新页面；仍失败时把控制台红色报错发给我。';
+      return '无法读取视频画面，请刷新页面重试。';
     }
     if (/GIF is not defined|编码库/i.test(message)) {
-      return 'GIF 编码库没有加载成功，请确认 jsDelivr 没有被网络或扩展拦截，然后重新保存脚本。';
+      return 'GIF 编码组件加载失败，请刷新页面重试。';
     }
     if (/Worker|Content Security Policy|CSP|blob:/i.test(message)) {
-      return 'GIF Worker 启动失败。请检查安全扩展是否禁止 Blob Worker，或尝试使用 Tampermonkey/Violentmonkey。';
+      return '编码组件启动失败，请刷新页面重试。';
     }
-    return message || '操作失败，原因未知。';
+    return message || '操作失败，请重试。';
   }
 
   function returnToCaptureStage() {
@@ -3672,7 +3697,8 @@
     if (state.clip && Number.isFinite(el.clipVideo.currentTime)) updateTimelinePlayhead();
   }
 
-  function handleExportInputChange() {
+  function handleExportInputChange(event) {
+    saveExportPreference(event?.currentTarget);
     if (state.mode === 'edit' && state.clip) {
       if (state.trimPreviewCleanup && el.speedSelect) {
         el.clipVideo.playbackRate = Math.max(0.1, Number(el.speedSelect.value) || 1);
@@ -3815,6 +3841,7 @@
     if (state.clip?.url) URL.revokeObjectURL(state.clip.url);
   });
 
+  restoreExportPreferences();
   restoreLauncherPosition();
   renderTextLayerTabs();
   renderTextLayers();
