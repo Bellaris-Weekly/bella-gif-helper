@@ -5,8 +5,6 @@
 // @description  B站视频框选录制与 GIF 编辑；
 // @author       贝极星周报
 // @homepageURL  https://github.com/Bellaris-Weekly/bella-gif-helper
-// @source       https://github.com/Bellaris-Weekly/bella-gif-helper/blob/main/bella-gif-helper.user.js
-// @supportURL   https://github.com/Bellaris-Weekly/bella-gif-helper/issues
 // @icon         https://i0.hdslb.com/bfs/garb/item/70de4619ce5e8a7b5bbe5c4124aa69353d8102e4.png
 // @license      MIT
 // @downloadURL  https://share.bellaris.fans/bella-gif-helper.user.js
