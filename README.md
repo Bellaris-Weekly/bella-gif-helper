@@ -14,7 +14,7 @@
 ## 安装
 
 1. 安装 [Tampermonkey](https://www.tampermonkey.net/) 或其他支持用户脚本的浏览器扩展。
-2. 打开 [bella-gif-helper.user.js](bella-gif-helper.user.js)。发布后也可以直接访问其 [原始文件](https://raw.githubusercontent.com/Bellaris-Weekly/bella-gif-helper/main/bella-gif-helper.user.js) 触发安装。
+2. 打开 [bella-gif-helper.user.js](bella-gif-helper.user.js)。也可以直接点击 [立即安装](https://raw.githubusercontent.com/Bellaris-Weekly/bella-gif-helper/main/bella-gif-helper.user.js) 。
 3. 将文件拖入扩展管理页面，或复制文件内容新建用户脚本并保存。
 4. 打开支持的哔哩哔哩视频页面，点击右下角的贝报 GIF 助手按钮。
 
