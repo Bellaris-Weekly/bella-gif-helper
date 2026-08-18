@@ -33,6 +33,10 @@
   const MAX_RECORD_SECONDS = 60;
   const MAX_EXPORT_FRAMES = 900;
   const ENCODE_TIMEOUT_MS = 600_000;
+  const PREVIEW_CACHE_FPS = 12;
+  const PREVIEW_CACHE_MAX_EDGE = 240;
+  const PREVIEW_CACHE_MIN_EDGE = 128;
+  const PREVIEW_CACHE_MEMORY_BUDGET = 72 * 1024 * 1024;
   const MIN_SELECT_PX = 24;
   const TRANSPARENT_KEY_RGB = 0xff00fe;
   const LAUNCHER_POSITION_KEY = 'biliGifMakerLauncherPositionV1';
@@ -51,6 +55,8 @@
     timelinePreviewRaf: 0,
     timelinePreviewTarget: null,
     timelinePreviewType: null,
+    timelineSettleToken: 0,
+    previewFrameCache: null,
     recording: null,
     clip: null,
     editorCrop: { x: 0, y: 0, w: 1, h: 1 },
@@ -1535,6 +1541,173 @@
     if (!el.panel.classList.contains('hidden')) fitEditorLayout();
   }
 
+  function releasePreviewFrameCache() {
+    const cache = state.previewFrameCache;
+    if (!cache) return;
+    cache.cancelled = true;
+    try { cache.video?.pause(); } catch (_) { }
+    if (cache.video) {
+      cache.video.removeAttribute('src');
+      try { cache.video.load(); } catch (_) { }
+      cache.video.remove();
+    }
+    cache.frames?.forEach((frame) => {
+      try { frame.close(); } catch (_) { }
+    });
+    state.previewFrameCache = null;
+  }
+
+  function choosePreviewCacheProfile(clip) {
+    const sourceWidth = Math.max(1, Number(clip.width) || 1);
+    const sourceHeight = Math.max(1, Number(clip.height) || 1);
+    const duration = Math.max(0.1, Number(clip.duration) || 0.1);
+    const fpsOptions = [PREVIEW_CACHE_FPS, 10, 8, 6];
+    const edgeOptions = [240, 208, 192, 176, 160, 144, PREVIEW_CACHE_MIN_EDGE];
+    for (const fps of fpsOptions) {
+      const frameCount = Math.ceil(duration * fps) + 1;
+      for (const longestEdge of edgeOptions) {
+        const scale = Math.min(1, longestEdge / Math.max(sourceWidth, sourceHeight));
+        const width = Math.max(2, Math.round(sourceWidth * scale));
+        const height = Math.max(2, Math.round(sourceHeight * scale));
+        const bytes = width * height * 4 * frameCount;
+        if (bytes <= PREVIEW_CACHE_MEMORY_BUDGET) {
+          return { fps, width, height, frameCount, bytes };
+        }
+      }
+    }
+    const fps = 6;
+    const scale = PREVIEW_CACHE_MIN_EDGE / Math.max(sourceWidth, sourceHeight);
+    const width = Math.max(2, Math.round(sourceWidth * Math.min(1, scale)));
+    const height = Math.max(2, Math.round(sourceHeight * Math.min(1, scale)));
+    return { fps, width, height, frameCount: Math.ceil(duration * fps) + 1, bytes: width * height * 4 };
+  }
+
+  async function buildPreviewFrameCache(clip) {
+    if (!clip) return;
+    releasePreviewFrameCache();
+    clearTimeout(state.sizeEstimateTimer);
+    state.sizeEstimateToken += 1;
+    const profile = choosePreviewCacheProfile(clip);
+    const cache = {
+      status: 'building',
+      cancelled: false,
+      clip,
+      ...profile,
+      frames: [],
+      video: document.createElement('video'),
+    };
+    state.previewFrameCache = cache;
+    const video = cache.video;
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = 'auto';
+    Object.assign(video.style, {
+      position: 'fixed',
+      width: '2px',
+      height: '2px',
+      left: '-10px',
+      top: '-10px',
+      opacity: '0',
+      pointerEvents: 'none',
+    });
+    document.body.appendChild(video);
+    const canvas = document.createElement('canvas');
+    canvas.width = profile.width;
+    canvas.height = profile.height;
+    const ctx = canvas.getContext('2d', { alpha: false });
+    if (!ctx) {
+      releasePreviewFrameCache();
+      return;
+    }
+    video.src = clip.url;
+    video.load();
+
+    try {
+      await waitForEvent(video, 'loadedmetadata', 10_000);
+      if (cache.cancelled || state.previewFrameCache !== cache) return;
+      video.currentTime = 0;
+      video.playbackRate = 4;
+      let nextTime = 0;
+      const interval = 1 / profile.fps;
+      await new Promise((resolve, reject) => {
+        let settled = false;
+        let callbackId = 0;
+        const finish = (error = null) => {
+          if (settled) return;
+          settled = true;
+          if (callbackId && typeof video.cancelVideoFrameCallback === 'function') {
+            try { video.cancelVideoFrameCallback(callbackId); } catch (_) { }
+          }
+          video.removeEventListener('ended', onEnded);
+          error ? reject(error) : resolve();
+        };
+        const capture = async (now, metadata = {}) => {
+          if (settled || cache.cancelled) return finish();
+          const currentTime = Number(metadata.mediaTime) || Number(video.currentTime) || 0;
+          while (nextTime <= currentTime + 0.002 && nextTime <= clip.duration + 0.001) {
+            ctx.drawImage(video, 0, 0, profile.width, profile.height);
+            const frame = await createImageBitmap(canvas);
+            if (cache.cancelled || state.previewFrameCache !== cache) {
+              try { frame.close(); } catch (_) { }
+              return finish();
+            }
+            cache.frames.push(frame);
+            nextTime += interval;
+            cache.progress = clamp(nextTime / Math.max(0.001, clip.duration), 0, 1);
+          }
+          if (currentTime >= clip.duration - 0.01 || video.ended) return finish();
+          callbackId = video.requestVideoFrameCallback(capture);
+        };
+        const onEnded = () => finish();
+        video.addEventListener('ended', onEnded, { once: true });
+        if (typeof video.requestVideoFrameCallback === 'function') {
+          callbackId = video.requestVideoFrameCallback(capture);
+        } else {
+          const tick = () => {
+            if (settled) return;
+            capture(performance.now()).catch(finish);
+            if (!settled) window.setTimeout(tick, 16);
+          };
+          tick();
+        }
+        video.play().catch(finish);
+      });
+      if (!cache.cancelled && state.previewFrameCache === cache && cache.frames.length) {
+        cache.status = 'ready';
+      }
+    } catch (_) {
+      if (state.previewFrameCache === cache) releasePreviewFrameCache();
+    } finally {
+      try { video.pause(); } catch (_) { }
+    }
+  }
+
+  function getCachedPreviewFrame(time) {
+    const cache = state.previewFrameCache;
+    if (!cache || cache.status !== 'ready' || !cache.frames.length) return null;
+    const index = clamp(Math.round((Number(time) || 0) * cache.fps), 0, cache.frames.length - 1);
+    return cache.frames[index] || null;
+  }
+
+  function renderCachedPreviewFrame(settings, time) {
+    const cache = state.previewFrameCache;
+    const frame = getCachedPreviewFrame(time);
+    if (!cache || !frame || !el.previewCanvas) return false;
+    const ctx = el.previewCanvas.getContext('2d', { alpha: true });
+    if (!ctx) return false;
+    ctx.clearRect(0, 0, settings.outputWidth, settings.outputHeight);
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, settings.outputWidth, settings.outputHeight);
+    const sx = settings.crop.x * cache.width;
+    const sy = settings.crop.y * cache.height;
+    const sw = settings.crop.w * cache.width;
+    const sh = settings.crop.h * cache.height;
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'medium';
+    ctx.drawImage(frame, sx, sy, sw, sh, 0, 0, settings.outputWidth, settings.outputHeight);
+    return true;
+  }
+
   function openPanel() {
     if (!state.clip) {
       beginPageSelection();
@@ -1567,6 +1740,7 @@
 
   function disposeClip() {
     stopTrimPreview();
+    releasePreviewFrameCache();
     if (state.clip?.url) URL.revokeObjectURL(state.clip.url);
     state.clip = null;
     if (el.previewCanvas) {
@@ -2229,6 +2403,7 @@
     fitEditorLayout();
     updateResolutionOptions();
     updateEstimatedFileSize();
+    void buildPreviewFrameCache(state.clip);
   }
 
   function getEditorMapping() {
@@ -2495,6 +2670,14 @@
       state.timelinePreviewRaf = 0;
       if (!state.timelineDrag || state.timelinePreviewTarget === null) return;
       const target = state.timelinePreviewTarget;
+      let settings;
+      try { settings = readExportSettings(); } catch (_) { return; }
+      if (state.previewFrameCache?.status === 'ready') {
+        if (state.timelinePreviewType === 'handle') el.scrubVideo.classList.add('active');
+        else el.scrubVideo.classList.remove('active');
+        renderCachedPreviewFrame(settings, target);
+        return;
+      }
       const video = state.timelinePreviewType === 'handle' ? el.scrubVideo : el.clipVideo;
       if (!video) return;
       if (state.timelinePreviewType === 'handle') el.scrubVideo.classList.add('active');
@@ -2510,6 +2693,10 @@
   function renderTimelinePreviewIfCurrent(video) {
     if (!state.timelineDrag || !video || state.timelinePreviewTarget === null) return;
     const target = state.timelinePreviewTarget;
+    if (state.previewFrameCache?.status === 'ready') {
+      try { renderCachedPreviewFrame(readExportSettings(), target); } catch (_) { }
+      return;
+    }
     if (Math.abs((Number(video.currentTime) || 0) - target) > 0.035) return;
     renderExportPreviewFrame();
   }
@@ -2519,6 +2706,19 @@
     cancelTimelinePreview();
     el.scrubVideo.classList.remove('active');
     renderExportPreviewFrame();
+  }
+
+  function settleTimelinePreview(type, target) {
+    if (!state.clip || !Number.isFinite(target)) return;
+    const token = ++state.timelineSettleToken;
+    const video = type === 'handle' ? el.scrubVideo : el.clipVideo;
+    if (!video) return;
+    if (type === 'handle') el.scrubVideo.classList.add('active');
+    seekVideo(video, target, state.clip.duration).then(() => {
+      if (token !== state.timelineSettleToken || state.timelineDrag) return;
+      renderExportPreviewFrame();
+      if (type === 'handle') el.scrubVideo.classList.remove('active');
+    }).catch(() => { });
   }
 
   function applyTimelineDrag(event) {
@@ -2543,6 +2743,7 @@
   function handleTimelinePointerDown(event) {
     if (event.button !== 0 || state.mode !== 'edit' || !state.clip) return;
     stopTrimPreview();
+    state.timelineSettleToken += 1;
     const handleType = event.target?.dataset?.timelineHandle;
     state.timelineDrag = {
       pointerId: event.pointerId,
@@ -2564,9 +2765,15 @@
   function finishTimelineDrag(event) {
     const drag = state.timelineDrag;
     if (!drag || (event && drag.pointerId !== event.pointerId)) return;
+    const target = state.timelinePreviewTarget;
     state.timelineDrag = null;
     try { el.timelineTrack.releasePointerCapture?.(drag.pointerId); } catch (_) { }
-    hideTimelineHandlePreview();
+    if (state.previewFrameCache?.status === 'ready' && Number.isFinite(target)) {
+      cancelTimelinePreview();
+      settleTimelinePreview(drag.type === 'start' || drag.type === 'end' ? 'handle' : 'playhead', target);
+    } else {
+      hideTimelineHandlePreview();
+    }
     updateTrimUi();
     updateEstimatedFileSize();
   }
@@ -3888,6 +4095,7 @@
 
   window.addEventListener('beforeunload', () => {
     stopTrimPreview();
+    releasePreviewFrameCache();
     cleanupRecordingResources(state.recording);
     cleanupGifWorkers(state.gif);
     if (state.workerUrl) URL.revokeObjectURL(state.workerUrl);
