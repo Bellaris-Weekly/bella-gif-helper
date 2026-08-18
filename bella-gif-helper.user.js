@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         贝报 GIF 助手
 // @namespace    https://www.bk0717.com/
-// @version      0.6.11
+// @version      0.6.12
 // @description  B站视频框选录制与 GIF 编辑；
 // @author       贝极星周报
 // @homepageURL  https://github.com/Bellaris-Weekly/bella-gif-helper
@@ -56,6 +56,7 @@
     timelinePreviewTarget: null,
     timelinePreviewType: null,
     timelineSettleToken: 0,
+    timelineResumePlayback: false,
     previewFrameCache: null,
     recording: null,
     clip: null,
@@ -2708,7 +2709,7 @@
     renderExportPreviewFrame();
   }
 
-  function settleTimelinePreview(type, target) {
+  function settleTimelinePreview(type, target, resumePlayback = false) {
     if (!state.clip || !Number.isFinite(target)) return;
     const token = ++state.timelineSettleToken;
     const video = type === 'handle' ? el.scrubVideo : el.clipVideo;
@@ -2718,6 +2719,7 @@
       if (token !== state.timelineSettleToken || state.timelineDrag) return;
       renderExportPreviewFrame();
       if (type === 'handle') el.scrubVideo.classList.remove('active');
+      if (resumePlayback) void ensureTrimPreviewPlaying();
     }).catch(() => { });
   }
 
@@ -2742,6 +2744,7 @@
 
   function handleTimelinePointerDown(event) {
     if (event.button !== 0 || state.mode !== 'edit' || !state.clip) return;
+    state.timelineResumePlayback = Boolean(state.trimPreviewCleanup && !el.clipVideo.paused);
     stopTrimPreview();
     state.timelineSettleToken += 1;
     const handleType = event.target?.dataset?.timelineHandle;
@@ -2766,16 +2769,25 @@
     const drag = state.timelineDrag;
     if (!drag || (event && drag.pointerId !== event.pointerId)) return;
     const target = state.timelinePreviewTarget;
+    const shouldResumePlayback = state.timelineResumePlayback;
+    state.timelineResumePlayback = false;
     state.timelineDrag = null;
     try { el.timelineTrack.releasePointerCapture?.(drag.pointerId); } catch (_) { }
     if (state.previewFrameCache?.status === 'ready' && Number.isFinite(target)) {
       cancelTimelinePreview();
-      settleTimelinePreview(drag.type === 'start' || drag.type === 'end' ? 'handle' : 'playhead', target);
+      settleTimelinePreview(
+        drag.type === 'start' || drag.type === 'end' ? 'handle' : 'playhead',
+        target,
+        shouldResumePlayback,
+      );
     } else {
       hideTimelineHandlePreview();
     }
     updateTrimUi();
     updateEstimatedFileSize();
+    if (shouldResumePlayback && state.previewFrameCache?.status !== 'ready') {
+      void ensureTrimPreviewPlaying();
+    }
   }
 
   function stopTrimPreview({ keepPosition = true } = {}) {
