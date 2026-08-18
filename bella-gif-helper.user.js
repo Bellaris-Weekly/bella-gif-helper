@@ -48,6 +48,9 @@
     pageAdjustSession: null,
     editorCropSession: null,
     timelineDrag: null,
+    timelinePreviewRaf: 0,
+    timelinePreviewTarget: null,
+    timelinePreviewType: null,
     recording: null,
     clip: null,
     editorCrop: { x: 0, y: 0, w: 1, h: 1 },
@@ -2473,11 +2476,47 @@
     const target = clamp(Number(time) || 0, 0, Math.max(0, state.clip.duration - 0.001));
     try { el.scrubVideo.pause(); } catch (_) { }
     el.scrubVideo.classList.add('active');
-    try { el.scrubVideo.currentTime = target; } catch (_) { }
+    queueTimelinePreview(target, 'handle');
+  }
+
+  function cancelTimelinePreview() {
+    if (state.timelinePreviewRaf) cancelAnimationFrame(state.timelinePreviewRaf);
+    state.timelinePreviewRaf = 0;
+    state.timelinePreviewTarget = null;
+    state.timelinePreviewType = null;
+  }
+
+  function queueTimelinePreview(time, type) {
+    if (!state.clip) return;
+    state.timelinePreviewTarget = clamp(Number(time) || 0, 0, Math.max(0, state.clip.duration - 0.001));
+    state.timelinePreviewType = type;
+    if (state.timelinePreviewRaf) return;
+    state.timelinePreviewRaf = requestAnimationFrame(() => {
+      state.timelinePreviewRaf = 0;
+      if (!state.timelineDrag || state.timelinePreviewTarget === null) return;
+      const target = state.timelinePreviewTarget;
+      const video = state.timelinePreviewType === 'handle' ? el.scrubVideo : el.clipVideo;
+      if (!video) return;
+      if (state.timelinePreviewType === 'handle') el.scrubVideo.classList.add('active');
+      else el.scrubVideo.classList.remove('active');
+      if (Math.abs((Number(video.currentTime) || 0) - target) < 0.008 && video.readyState >= 2) {
+        renderExportPreviewFrame();
+        return;
+      }
+      try { video.currentTime = target; } catch (_) { }
+    });
+  }
+
+  function renderTimelinePreviewIfCurrent(video) {
+    if (!state.timelineDrag || !video || state.timelinePreviewTarget === null) return;
+    const target = state.timelinePreviewTarget;
+    if (Math.abs((Number(video.currentTime) || 0) - target) > 0.035) return;
+    renderExportPreviewFrame();
   }
 
   function hideTimelineHandlePreview() {
     if (!el.scrubVideo) return;
+    cancelTimelinePreview();
     el.scrubVideo.classList.remove('active');
     renderExportPreviewFrame();
   }
@@ -2490,21 +2529,20 @@
     if (drag.type === 'start') {
       state.trimStart = Math.min(target, state.trimEnd - minGap);
       updateTrimUi();
-      showTimelineHandlePreview(state.trimStart);
+      queueTimelinePreview(state.trimStart, 'handle');
     } else if (drag.type === 'end') {
       state.trimEnd = Math.max(target, state.trimStart + minGap);
       updateTrimUi();
-      showTimelineHandlePreview(state.trimEnd);
+      queueTimelinePreview(state.trimEnd, 'handle');
     } else {
-      try { el.clipVideo.currentTime = target; } catch (_) { }
-      updateTimelinePlayhead();
+      queueTimelinePreview(target, 'playhead');
+      el.timelinePlayhead.style.left = `${(target / Math.max(0.001, state.clip.duration)) * 100}%`;
     }
-    renderExportPreviewFrame();
-    updateEstimatedFileSize();
   }
 
   function handleTimelinePointerDown(event) {
     if (event.button !== 0 || state.mode !== 'edit' || !state.clip) return;
+    stopTrimPreview();
     const handleType = event.target?.dataset?.timelineHandle;
     state.timelineDrag = {
       pointerId: event.pointerId,
@@ -3790,7 +3828,13 @@
   el.captionLayer.addEventListener('pointerup', finishTextLayerDrag);
   el.captionLayer.addEventListener('pointercancel', finishTextLayerDrag);
   el.clipVideo.addEventListener('timeupdate', updateTimelinePlayhead);
-  el.clipVideo.addEventListener('timeupdate', () => renderExportPreviewFrame());
+  el.clipVideo.addEventListener('timeupdate', () => {
+    if (state.timelineDrag) {
+      if (state.timelineDrag.type === 'playhead') renderTimelinePreviewIfCurrent(el.clipVideo);
+      return;
+    }
+    renderExportPreviewFrame();
+  });
   el.clipVideo.addEventListener('loadeddata', () => {
     fitClipVideoIntoPreview();
     updateEditorCropBox();
@@ -3800,7 +3844,13 @@
   });
   el.clipVideo.addEventListener('resize', updateEditorCropBox);
   el.scrubVideo.addEventListener('loadeddata', () => renderExportPreviewFrame());
-  el.scrubVideo.addEventListener('seeked', () => renderExportPreviewFrame());
+  el.scrubVideo.addEventListener('seeked', () => {
+    if (state.timelineDrag?.type === 'start' || state.timelineDrag?.type === 'end') {
+      renderTimelinePreviewIfCurrent(el.scrubVideo);
+      return;
+    }
+    renderExportPreviewFrame();
+  });
 
   el.newRecordingBtn.addEventListener('click', returnToCaptureStage);
   el.generateBtn.addEventListener('click', generateGif);
