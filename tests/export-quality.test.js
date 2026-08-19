@@ -43,8 +43,8 @@ test('userscript uses pinned modern encoder resources and sRGB canvases', () => 
   assert.match(source, /modern-gif@2\.1\.0\/dist\/index\.js/);
   assert.match(source, /gifsicle-wasm-browser@1\.5\.19\/dist\/gifsicle\.min\.js/);
   assert.match(source, /colorSpace: 'srgb'/);
-  assert.match(source, /\u4e43 \u00b7 \u9ad8画质/);
-  assert.match(source, /\u8d1d \u00b7 \u5747衡/);
-  assert.match(source, /\u7136 \u00b7 体积优先/);
+  assert.match(source, /<option value="nai">\u4e43<\/option>/);
+  assert.match(source, /<option value="bei" selected>\u8d1d<\/option>/);
+  assert.match(source, /<option value="ran">\u7136<\/option>/);
   assert.doesNotMatch(source, /gif\.js@|GIF_WORKER|globalPalette/);
 });

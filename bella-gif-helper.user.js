@@ -1718,9 +1718,9 @@
               <div class="field">
                 <label for="qualitySelect">画质</label>
                 <select id="qualitySelect" class="edit-lockable export-input">
-                  <option value="nai">乃 · 高画质</option>
-                  <option value="bei" selected>贝 · 均衡</option>
-                  <option value="ran">然 · 体积优先</option>
+                  <option value="nai">乃</option>
+                  <option value="bei" selected>贝</option>
+                  <option value="ran">然</option>
                 </select>
               </div>
               <div class="field">
