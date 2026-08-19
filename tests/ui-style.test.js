@@ -36,6 +36,22 @@ test('UI uses shared visual tokens and accessible state rules', () => {
   assert.match(css, /100dvh/);
 });
 
+test('compact editor keeps visual feedback inside the existing workspace', () => {
+  assert.match(source, /id="cropSizeBadge"/);
+  assert.match(source, /id="timelineFilmstrip"/);
+  assert.match(source, /id="actionEstimate"/);
+  assert.match(css, /\.grid-2\.export-options\s*\{[\s\S]*?repeat\(3, minmax\(0, 1fr\)\)/);
+});
+
+test('crop viewport adaptation uses interruptible transform-only motion', () => {
+  assert.match(source, /EDITOR_VIEWPORT_MOTION_MS\s*=\s*220/);
+  assert.match(source, /EDITOR_VIEWPORT_EASING\s*=\s*'cubic-bezier\(0\.22, 1, 0\.36, 1\)'/);
+  assert.match(source, /element\.animate\(\[\s*\{[\s\S]*?transform:[\s\S]*?\}\s*,\s*\{[\s\S]*?transform:/);
+  assert.match(source, /window\.matchMedia\('\(prefers-reduced-motion: reduce\)'\)\.matches/);
+  assert.match(source, /if \(reducedMotion \|\| !elements\.every/);
+  assert.match(source, /settleEditorViewportAnimation\(\);[\s\S]*?const mapping = getEditorMapping\(\)/);
+});
+
 test('filled actions and muted text retain readable contrast', () => {
   assert.ok(contrast(readHexToken('color-on-brand'), readHexToken('color-brand')) >= 4.5);
   assert.ok(contrast(readHexToken('color-text-muted'), readHexToken('color-surface-raised')) >= 4.5);

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         贝报 GIF 助手
 // @namespace    https://www.bk0717.com/
-// @version      1.2.0
+// @version      1.2.1
 // @description  B站直播回溯、视频框选录制与 GIF 编辑
 // @author       贝极星周报
 // @homepageURL  https://github.com/Bellaris-Weekly/bella-gif-helper
@@ -64,6 +64,15 @@
       left: viewportWidth / 2 - (crop.x + crop.w / 2) * width,
       top: viewportHeight / 2 - (crop.y + crop.h / 2) * height,
       scale,
+    };
+  }
+
+  function calculateFlipTransform(first, last) {
+    return {
+      translateX: first.left - last.left,
+      translateY: first.top - last.top,
+      scaleX: first.width / last.width,
+      scaleY: first.height / last.height,
     };
   }
 
@@ -762,6 +771,7 @@
     buildGifsicleCommand,
     normalizeGifDelay,
     calculateCropViewport,
+    calculateFlipTransform,
   };
   if (typeof module === 'object' && module.exports && typeof document === 'undefined') {
     module.exports = liveRewindTestApi;
@@ -794,6 +804,8 @@
   const PREVIEW_CACHE_MEMORY_BUDGET = 72 * 1024 * 1024;
   const MIN_SELECT_PX = 24;
   const EDITOR_CROP_PADDING = 18;
+  const EDITOR_VIEWPORT_MOTION_MS = 220;
+  const EDITOR_VIEWPORT_EASING = 'cubic-bezier(0.22, 1, 0.36, 1)';
   const LAUNCHER_POSITION_KEY = 'biliGifMakerLauncherPositionV1';
   const PANEL_POSITION_KEY = 'biliGifMakerPanelPositionV1';
   const EXPORT_PREFERENCES_KEY = 'biliGifMakerExportPreferencesV1';
@@ -806,6 +818,7 @@
     pageSelectionSession: null,
     pageAdjustSession: null,
     editorCropSession: null,
+    editorViewportAnimation: null,
     timelineDrag: null,
     timelinePreviewRaf: 0,
     timelinePreviewTarget: null,
@@ -1051,7 +1064,14 @@
         visibility: hidden;
         pointer-events: none;
         image-rendering: auto;
-        background: #000;
+        background-color: #202226;
+        background-image:
+          linear-gradient(45deg, rgba(255,255,255,.08) 25%, transparent 25%),
+          linear-gradient(-45deg, rgba(255,255,255,.08) 25%, transparent 25%),
+          linear-gradient(45deg, transparent 75%, rgba(255,255,255,.08) 75%),
+          linear-gradient(-45deg, transparent 75%, rgba(255,255,255,.08) 75%);
+        background-position: 0 0, 0 7px, 7px -7px, -7px 0;
+        background-size: 14px 14px;
       }
       #clipVideo { z-index: 0; }
       #scrubVideo {
@@ -1104,6 +1124,38 @@
         pointer-events: auto;
         cursor: move;
         touch-action: none;
+      }
+      #editorCropBox::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        z-index: 1;
+        border-radius: inherit;
+        background-image:
+          linear-gradient(to right, transparent calc(33.333% - .5px), rgba(255,255,255,.38) 33.333%, transparent calc(33.333% + .5px), transparent calc(66.666% - .5px), rgba(255,255,255,.38) 66.666%, transparent calc(66.666% + .5px)),
+          linear-gradient(to bottom, transparent calc(33.333% - .5px), rgba(255,255,255,.38) 33.333%, transparent calc(33.333% + .5px), transparent calc(66.666% - .5px), rgba(255,255,255,.38) 66.666%, transparent calc(66.666% + .5px));
+        opacity: .24;
+        pointer-events: none;
+        transition: opacity var(--motion-fast);
+      }
+      #editorCropBox:hover::before { opacity: .52; }
+      #cropSizeBadge {
+        position: absolute;
+        left: 7px;
+        top: 7px;
+        z-index: 8;
+        padding: 2px 6px;
+        border: 1px solid rgba(255,255,255,.16);
+        border-radius: 5px;
+        background: rgba(16,17,19,.78);
+        color: #fff;
+        font-size: 10px;
+        font-weight: 650;
+        line-height: 1.4;
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+        pointer-events: none;
+        backdrop-filter: blur(6px);
       }
       .crop-handle,
       .page-resize-handle {
@@ -1189,27 +1241,50 @@
         cursor: pointer;
         touch-action: none;
       }
+      #timelineFilmstrip {
+        position: absolute;
+        inset: 3px 0;
+        z-index: 0;
+        display: grid;
+        grid-template-columns: repeat(8, minmax(0, 1fr));
+        overflow: hidden;
+        border: 1px solid var(--color-border);
+        border-radius: 6px;
+        background: var(--color-surface-raised);
+        pointer-events: none;
+      }
+      #timelineFilmstrip canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+        border-right: 1px solid rgba(255,255,255,.08);
+      }
+      #timelineFilmstrip canvas:last-child { border-right: 0; }
       #timelineRail {
         position: absolute;
-        left: 0; right: 0; top: 12px;
-        height: 6px;
-        border-radius: 999px;
-        background: rgba(255,255,255,.14);
-        box-shadow: inset 0 1px 2px rgba(0,0,0,.32);
+        left: 0; right: 0; top: 3px;
+        z-index: 1;
+        height: 24px;
+        border-radius: 6px;
+        background: rgba(0,0,0,.24);
+        box-shadow: inset 0 0 0 1px rgba(255,255,255,.06);
       }
       #timelineSelected {
         position: absolute;
-        top: 12px;
-        height: 6px;
-        border-radius: 999px;
-        background: var(--color-brand);
+        top: 3px;
+        z-index: 2;
+        height: 24px;
+        border-radius: 5px;
+        background: rgba(var(--color-brand-rgb), .12);
+        box-shadow: inset 0 0 0 2px var(--color-brand);
         pointer-events: none;
       }
       #timelinePlayhead {
         position: absolute;
-        top: 5px;
+        top: 0;
+        z-index: 4;
         width: 2px;
-        height: 20px;
+        height: 30px;
         border-radius: 99px;
         background: #fff;
         box-shadow: 0 0 0 1px rgba(0,0,0,.3), 0 2px 7px rgba(0,0,0,.4);
@@ -1218,11 +1293,11 @@
       }
       .timeline-handle {
         position: absolute;
-        top: 3px;
+        top: 2px;
         z-index: 3;
-        width: 16px;
-        height: 24px;
-        margin-left: -8px;
+        width: 14px;
+        height: 26px;
+        margin-left: -7px;
         padding: 0;
         border: 2px solid #fff;
         border-radius: 6px;
@@ -1310,7 +1385,11 @@
       }
       .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
       .grid-2.text-options { margin-top: 8px; }
-      .grid-2.export-options { margin-top: 10px; }
+      .grid-2.export-options {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        margin-top: 10px;
+      }
+      .export-options .field > label { font-size: 11px; white-space: nowrap; }
       .grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
       .field { min-width: 0; }
       .field > label {
@@ -1378,6 +1457,18 @@
       }
       .btn.primary { background: var(--color-brand); color: var(--color-on-brand); }
       .btn.primary:hover { background: var(--color-brand-hover); }
+      #generateBtn {
+        display: grid;
+        place-content: center;
+        gap: 2px;
+        line-height: 1.05;
+      }
+      #actionEstimate {
+        color: rgba(21,22,25,.72);
+        font-size: 10px;
+        font-weight: 650;
+        font-variant-numeric: tabular-nums;
+      }
       .btn.secondary { border-color: var(--color-border); background: var(--color-surface-raised); color: var(--color-text-secondary); }
       .btn.secondary:hover { border-color: var(--color-border-strong); background: var(--color-surface-hover); color: var(--color-text); }
       .btn.danger { background: var(--color-danger); }
@@ -1703,6 +1794,7 @@
               <div id="editorOverlay">
                 <div id="editorBoundary"></div>
                 <div id="editorCropBox">
+                  <span id="cropSizeBadge" aria-hidden="true">-- × --</span>
                   <i class="crop-handle" data-resize="n"></i>
                   <i class="crop-handle" data-resize="s"></i>
                   <i class="crop-handle" data-resize="e"></i>
@@ -1718,6 +1810,7 @@
 
             <div class="trim-block">
               <div id="timelineTrack" class="edit-lockable" aria-label="片段剪辑时间轴">
+                <div id="timelineFilmstrip" aria-hidden="true"></div>
                 <div id="timelineRail"></div>
                 <div id="timelineSelected"></div>
                 <div id="timelinePlayhead"></div>
@@ -1831,7 +1924,7 @@
 
           <div id="mainActions" class="action-dock">
             <button id="newRecordingBtn" class="btn secondary edit-lockable">重新录制</button>
-            <button id="generateBtn" class="btn primary edit-lockable">导出 GIF</button>
+            <button id="generateBtn" class="btn primary edit-lockable"><span>导出 GIF</span><small id="actionEstimate">预计 --</small></button>
           </div>
           <div id="cancelExportWrap" class="action-dock one hidden">
             <button id="cancelExportBtn" class="btn danger">取消导出</button>
@@ -1906,8 +1999,10 @@
     editorOverlay: $('#editorOverlay'),
     editorBoundary: $('#editorBoundary'),
     editorCropBox: $('#editorCropBox'),
+    cropSizeBadge: $('#cropSizeBadge'),
     captionLayer: $('#captionLayer'),
     timelineTrack: $('#timelineTrack'),
+    timelineFilmstrip: $('#timelineFilmstrip'),
     timelineSelected: $('#timelineSelected'),
     timelinePlayhead: $('#timelinePlayhead'),
     timelineStartHandle: $('#timelineStartHandle'),
@@ -1926,6 +2021,7 @@
     resolutionSelect: $('#resolutionSelect'),
     fpsSelect: $('#fpsSelect'),
     estimatedSize: $('#estimatedSize'),
+    actionEstimate: $('#actionEstimate'),
     speedSelect: $('#speedSelect'),
     qualitySelect: $('#qualitySelect'),
     cornerRadiusSelect: $('#cornerRadiusSelect'),
@@ -2309,14 +2405,24 @@
     };
   }
 
-  function fitCropIntoPreview() {
+  function applyEditorVideoLayout(layout) {
+    [el.clipVideo, el.scrubVideo].filter(Boolean).forEach((video) => Object.assign(video.style, {
+      left: `${layout.left}px`,
+      top: `${layout.top}px`,
+      width: `${layout.width}px`,
+      height: `${layout.height}px`,
+      transform: 'none',
+    }));
+  }
+
+  function calculateFittedEditorViewport() {
     if (!state.clip || !el.editorPreviewWrap || !el.clipVideo) return;
     const viewport = getEditorViewportRect();
     if (viewport.width <= 1 || viewport.height <= 1) return;
 
     const videoWidth = Math.max(1, state.clip.width || el.clipVideo.videoWidth || 1);
     const videoHeight = Math.max(1, state.clip.height || el.clipVideo.videoHeight || 1);
-    const fitted = calculateCropViewport(
+    return calculateCropViewport(
       viewport.width,
       viewport.height,
       videoWidth,
@@ -2324,14 +2430,150 @@
       state.editorCrop,
       EDITOR_CROP_PADDING,
     );
+  }
 
-    [el.clipVideo, el.scrubVideo].filter(Boolean).forEach((video) => Object.assign(video.style, {
-      left: `${fitted.left}px`,
-      top: `${fitted.top}px`,
-      width: `${fitted.width}px`,
-      height: `${fitted.height}px`,
-      transform: 'none',
-    }));
+  function clearEditorViewportAnimation(session = state.editorViewportAnimation) {
+    if (!session) return;
+    session.animations.forEach((animation) => {
+      animation.onfinish = null;
+      animation.cancel();
+    });
+    session.elements.forEach((element) => { element.style.willChange = ''; });
+    if (state.editorViewportAnimation === session) state.editorViewportAnimation = null;
+  }
+
+  function fitCropIntoPreview() {
+    clearEditorViewportAnimation();
+    const fitted = calculateFittedEditorViewport();
+    if (fitted) applyEditorVideoLayout(fitted);
+  }
+
+  function editorViewportMotionElements() {
+    return [
+      el.clipVideo,
+      el.scrubVideo,
+      el.previewCanvas,
+      el.editorBoundary,
+      el.editorCropBox,
+      el.captionLayer,
+    ].filter(Boolean);
+  }
+
+  function readMotionRect(element) {
+    const rect = element.getBoundingClientRect();
+    return {
+      left: rect.left,
+      top: rect.top,
+      width: rect.width,
+      height: rect.height,
+    };
+  }
+
+  function isVisibleFlip(transform) {
+    return Math.abs(transform.translateX) >= 0.5
+      || Math.abs(transform.translateY) >= 0.5
+      || Math.abs(transform.scaleX - 1) >= 0.002
+      || Math.abs(transform.scaleY - 1) >= 0.002;
+  }
+
+  function makeCounterScaleKeyframes(scaleX, scaleY) {
+    return Array.from({ length: 21 }, (_, index) => {
+      const offset = index / 20;
+      const currentScaleX = scaleX + (1 - scaleX) * offset;
+      const currentScaleY = scaleY + (1 - scaleY) * offset;
+      return {
+        offset,
+        transformOrigin: 'center',
+        transform: `scale(${1 / currentScaleX}, ${1 / currentScaleY})`,
+      };
+    });
+  }
+
+  function finishEditorViewportAnimation(session) {
+    if (state.editorViewportAnimation !== session) return;
+    clearEditorViewportAnimation(session);
+    updateEditorCropBox({ force: true });
+  }
+
+  function settleEditorViewportAnimation() {
+    const session = state.editorViewportAnimation;
+    if (!session) return;
+    const viewport = getEditorViewportRect();
+    const currentRect = readMotionRect(el.clipVideo);
+    clearEditorViewportAnimation(session);
+    applyEditorVideoLayout({
+      left: currentRect.left - viewport.left,
+      top: currentRect.top - viewport.top,
+      width: currentRect.width,
+      height: currentRect.height,
+    });
+    updateEditorCropBox({ force: true });
+  }
+
+  function animateCropIntoPreview() {
+    if (!state.clip || el.editStage.classList.contains('hidden')) return;
+    settleEditorViewportAnimation();
+    const elements = editorViewportMotionElements();
+    const firstRects = new Map(elements.map((element) => [element, readMotionRect(element)]));
+    const fitted = calculateFittedEditorViewport();
+    if (!fitted) return;
+
+    applyEditorVideoLayout(fitted);
+    updateEditorCropBox({ force: true });
+
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (reducedMotion || !elements.every((element) => typeof element.animate === 'function')) return;
+
+    const transforms = new Map(elements.map((element) => [
+      element,
+      calculateFlipTransform(firstRects.get(element), readMotionRect(element)),
+    ]));
+    if (![...transforms.values()].some(isVisibleFlip)) return;
+
+    const animations = [];
+    const animatedElements = new Set();
+    elements.forEach((element) => {
+      const transform = transforms.get(element);
+      if (!isVisibleFlip(transform)) return;
+      element.style.willChange = 'transform';
+      animatedElements.add(element);
+      animations.push(element.animate([
+        {
+          transformOrigin: '0 0',
+          transform: `translate(${transform.translateX}px, ${transform.translateY}px) scale(${transform.scaleX}, ${transform.scaleY})`,
+        },
+        { transformOrigin: '0 0', transform: 'translate(0px, 0px) scale(1, 1)' },
+      ], {
+        duration: EDITOR_VIEWPORT_MOTION_MS,
+        easing: EDITOR_VIEWPORT_EASING,
+        fill: 'both',
+      }));
+    });
+
+    const cropTransform = transforms.get(el.editorCropBox);
+    if (cropTransform && isVisibleFlip(cropTransform)) {
+      const fixedSizeControls = [
+        ...el.editorCropBox.querySelectorAll('.crop-handle'),
+        el.cropSizeBadge,
+      ].filter(Boolean);
+      fixedSizeControls.forEach((element) => {
+        element.style.willChange = 'transform';
+        animatedElements.add(element);
+        animations.push(element.animate(
+          makeCounterScaleKeyframes(cropTransform.scaleX, cropTransform.scaleY),
+          {
+            duration: EDITOR_VIEWPORT_MOTION_MS,
+            easing: EDITOR_VIEWPORT_EASING,
+            fill: 'both',
+          },
+        ));
+      });
+    }
+
+    if (!animations.length) return;
+    const session = { animations, elements: animatedElements };
+    state.editorViewportAnimation = session;
+    animations[0].onfinish = () => finishEditorViewportAnimation(session);
   }
 
   function readSavedPanelPosition() {
@@ -2443,6 +2685,7 @@
 
   function releasePreviewFrameCache() {
     const cache = state.previewFrameCache;
+    if (el.timelineFilmstrip) el.timelineFilmstrip.replaceChildren();
     if (!cache) return;
     cache.cancelled = true;
     try { cache.video?.pause(); } catch (_) { }
@@ -2455,6 +2698,33 @@
       try { frame.close(); } catch (_) { }
     });
     state.previewFrameCache = null;
+  }
+
+  function renderTimelineFilmstrip(cache = state.previewFrameCache) {
+    if (!el.timelineFilmstrip) return;
+    el.timelineFilmstrip.replaceChildren();
+    if (!cache || cache.status !== 'ready' || !cache.frames.length) return;
+
+    const cellCount = Math.min(8, cache.frames.length);
+    const fragment = document.createDocumentFragment();
+    for (let index = 0; index < cellCount; index += 1) {
+      const frameIndex = cellCount === 1
+        ? 0
+        : Math.round((index / (cellCount - 1)) * (cache.frames.length - 1));
+      const frame = cache.frames[frameIndex];
+      const canvas = document.createElement('canvas');
+      canvas.width = 80;
+      canvas.height = 44;
+      const ctx = canvas.getContext('2d', { alpha: false, colorSpace: 'srgb' });
+      if (ctx) {
+        const scale = Math.max(canvas.width / cache.width, canvas.height / cache.height);
+        const width = cache.width * scale;
+        const height = cache.height * scale;
+        ctx.drawImage(frame, (canvas.width - width) / 2, (canvas.height - height) / 2, width, height);
+      }
+      fragment.appendChild(canvas);
+    }
+    el.timelineFilmstrip.appendChild(fragment);
   }
 
   function cleanupClipAttachment(clip, video) {
@@ -2655,6 +2925,7 @@
       });
       if (!cache.cancelled && state.previewFrameCache === cache && cache.frames.length) {
         cache.status = 'ready';
+        renderTimelineFilmstrip(cache);
       }
     } catch (_) {
       if (state.previewFrameCache === cache) releasePreviewFrameCache();
@@ -2702,6 +2973,7 @@
   }
 
   function closePanel() {
+    clearEditorViewportAnimation();
     el.panel.classList.add('hidden');
     stopTrimPreview();
   }
@@ -2783,6 +3055,7 @@
   }
 
   function disposeClip() {
+    clearEditorViewportAnimation();
     stopTrimPreview();
     releasePreviewFrameCache();
     const clip = state.clip;
@@ -3510,8 +3783,9 @@
     };
   }
 
-  function updateEditorCropBox() {
+  function updateEditorCropBox({ force = false } = {}) {
     if (!state.clip || el.editStage.classList.contains('hidden')) return;
+    if (state.editorViewportAnimation && !force) return;
     const mapping = getEditorMapping();
     if (!mapping) return;
     const viewport = getEditorViewportRect();
@@ -3538,6 +3812,11 @@
       width: `${visible.width}px`,
       height: `${visible.height}px`,
     });
+    if (el.cropSizeBadge) {
+      const sourceWidth = Math.max(1, Number(state.clip.width) || mapping.videoWidth || 1);
+      const sourceHeight = Math.max(1, Number(state.clip.height) || mapping.videoHeight || 1);
+      el.cropSizeBadge.textContent = `${Math.round(state.editorCrop.w * sourceWidth)} × ${Math.round(state.editorCrop.h * sourceHeight)}`;
+    }
     updateRoundedCropGuide(visible.width, visible.height);
     renderTextLayers();
     renderExportPreviewFrame();
@@ -3572,8 +3851,7 @@
     state.aspectSquare = !state.aspectSquare;
     if (state.aspectSquare) makeCurrentCropSquare();
     updateAspectSquareButton();
-    fitCropIntoPreview();
-    updateEditorCropBox();
+    animateCropIntoPreview();
     updateResolutionOptions();
     updateEstimatedFileSize();
   }
@@ -3632,6 +3910,7 @@
 
   function handleEditorCropPointerDown(event) {
     if (event.button !== 0 || state.mode !== 'edit' || !state.clip) return;
+    settleEditorViewportAnimation();
     const mapping = getEditorMapping();
     if (!mapping) return;
     const startRect = cropToScreenRect(state.editorCrop, mapping);
@@ -3674,15 +3953,13 @@
     if (!session || (event && session.pointerId !== event.pointerId)) return;
     state.editorCropSession = null;
     try { el.editorCropBox.releasePointerCapture?.(session.pointerId); } catch (_) { }
-    fitCropIntoPreview();
-    updateEditorCropBox();
+    animateCropIntoPreview();
   }
 
   function resetEditorCrop() {
     if (!state.clip || state.mode !== 'edit') return;
     state.editorCrop = { x: 0, y: 0, w: 1, h: 1 };
-    fitCropIntoPreview();
-    updateEditorCropBox();
+    animateCropIntoPreview();
   }
 
   function updateTimelinePlayhead() {
@@ -4389,16 +4666,18 @@
 
   function updatePreviewCanvasLayout(settings = null) {
     if (!state.clip || !el.previewCanvas || !el.editorPreviewWrap) return null;
+    const nextSettings = settings || (() => {
+      try { return readExportSettings(); } catch (_) { return null; }
+    })();
+    if (!nextSettings) return null;
+    if (state.editorViewportAnimation) return nextSettings;
+
     const mapping = getEditorMapping();
     if (!mapping) return null;
     const viewport = getEditorViewportRect();
     const rawRect = cropToScreenRect(state.editorCrop, mapping);
     const visible = intersectRects(rawRect, mapping.renderedRect);
     if (!visible) return null;
-    const nextSettings = settings || (() => {
-      try { return readExportSettings(); } catch (_) { return null; }
-    })();
-    if (!nextSettings) return null;
     const canvas = el.previewCanvas;
     if (canvas.width !== nextSettings.outputWidth) canvas.width = nextSettings.outputWidth;
     if (canvas.height !== nextSettings.outputHeight) canvas.height = nextSettings.outputHeight;
@@ -4809,6 +5088,14 @@
     ]);
   }
 
+  function setEstimatedSizeText(text, title = '') {
+    if (el.estimatedSize) {
+      el.estimatedSize.textContent = text;
+      el.estimatedSize.title = title;
+    }
+    if (el.actionEstimate) el.actionEstimate.textContent = text;
+  }
+
   async function estimateGifBytesBySampling(settings, token) {
     if (!state.clip) return estimateGifBytes(settings);
     const clip = state.clip;
@@ -4871,8 +5158,7 @@
         const bytes = await estimateGifBytesBySampling(settings, token);
         if (token !== state.sizeEstimateToken || state.mode !== 'edit') return;
         state.lastSampleEstimate = { signature, bytes };
-        el.estimatedSize.textContent = `预计 ${formatFileSize(bytes)}`;
-        el.estimatedSize.title = '根据当前片段估算。';
+        setEstimatedSizeText(`预计 ${formatFileSize(bytes)}`, '根据当前片段估算。');
       } catch (error) {
         if (String(error?.message || '') === 'stale') return;
       }
@@ -4885,24 +5171,23 @@
       clearTimeout(state.sizeEstimateTimer);
       state.sizeEstimateToken += 1;
       state.sizeEstimateEncodingSession?.cancel(new Error('stale'));
-      el.estimatedSize.textContent = `实际 ${formatFileSize(actualBytes)}`;
+      setEstimatedSizeText(`实际 ${formatFileSize(actualBytes)}`);
       return;
     }
     if (!state.clip || state.mode === 'capture' || state.mode === 'recording') {
       clearTimeout(state.sizeEstimateTimer);
       state.sizeEstimateToken += 1;
       state.sizeEstimateEncodingSession?.cancel(new Error('stale'));
-      el.estimatedSize.textContent = '预计 --';
+      setEstimatedSizeText('预计 --');
       return;
     }
     try {
       const settings = readExportSettings();
       const bytes = estimateGifBytes(settings);
-      el.estimatedSize.textContent = `预计 ${formatFileSize(bytes)}`;
-      el.estimatedSize.title = '根据当前片段估算。';
+      setEstimatedSizeText(`预计 ${formatFileSize(bytes)}`, '根据当前片段估算。');
       scheduleSampledSizeEstimate(settings);
     } catch (_) {
-      el.estimatedSize.textContent = '预计 --';
+      setEstimatedSizeText('预计 --');
     }
   }
 
@@ -5366,6 +5651,7 @@
   }, true);
 
   window.addEventListener('beforeunload', () => {
+    clearEditorViewportAnimation();
     stopTrimPreview();
     releasePreviewFrameCache();
     cleanupRecordingResources(state.recording);
