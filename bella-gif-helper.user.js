@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         贝报 GIF 助手
 // @namespace    https://www.bk0717.com/
-// @version      1.2.2
+// @version      1.2.3
 // @description  B站直播回溯、视频框选录制与 GIF 编辑
 // @author       贝极星周报
 // @homepageURL  https://github.com/Bellaris-Weekly/bella-gif-helper
@@ -67,12 +67,12 @@
     };
   }
 
-  function calculateViewportFlipTransform(first, last) {
-    const scaleX = first.width / last.width;
-    const scaleY = first.height / last.height;
+  function calculateViewportTransitionTransform(first, last) {
+    const scaleX = last.width / first.width;
+    const scaleY = last.height / first.height;
     return {
-      translateX: first.left - last.left * scaleX,
-      translateY: first.top - last.top * scaleY,
+      translateX: last.left - first.left * scaleX,
+      translateY: last.top - first.top * scaleY,
       scaleX,
       scaleY,
     };
@@ -773,7 +773,7 @@
     buildGifsicleCommand,
     normalizeGifDelay,
     calculateCropViewport,
-    calculateViewportFlipTransform,
+    calculateViewportTransitionTransform,
   };
   if (typeof module === 'object' && module.exports && typeof document === 'undefined') {
     module.exports = liveRewindTestApi;
@@ -2479,7 +2479,7 @@
       width: `${Math.max(1, crop.width)}px`,
       height: `${Math.max(1, crop.height)}px`,
       borderRadius: '0px',
-      visibility: 'visible',
+      visibility: state.editorCropSession || state.editorViewportAnimation ? 'hidden' : 'visible',
     });
     if (el.cropSizeBadge) {
       const sourceWidth = Math.max(1, Number(state.clip?.width) || 1);
@@ -2491,31 +2491,48 @@
     return crop;
   }
 
-  function calculateFittedEditorViewport() {
+  function calculateFittedEditorViewport(viewport = null, crop = state.editorCrop) {
     if (!state.clip || !el.editorPreviewWrap || !el.clipVideo) return;
-    const viewport = getEditorViewportRect();
-    if (viewport.width <= 1 || viewport.height <= 1) return;
+    const targetViewport = viewport || getEditorViewportRect();
+    if (targetViewport.width <= 1 || targetViewport.height <= 1) return;
 
     const videoWidth = Math.max(1, state.clip.width || el.clipVideo.videoWidth || 1);
     const videoHeight = Math.max(1, state.clip.height || el.clipVideo.videoHeight || 1);
     return calculateCropViewport(
-      viewport.width,
-      viewport.height,
+      targetViewport.width,
+      targetViewport.height,
       videoWidth,
       videoHeight,
-      state.editorCrop,
+      crop,
       EDITOR_CROP_PADDING,
     );
   }
 
-  function clearEditorViewportAnimation(session = state.editorViewportAnimation) {
-    if (!session) return;
-    session.animations.forEach((animation) => {
-      animation.onfinish = null;
-      animation.cancel();
+  function editorViewportMotionElements() {
+    return [
+      el.editorMotionLayer,
+      ...el.editorCropBox.querySelectorAll('.crop-handle'),
+      el.cropSizeBadge,
+    ].filter(Boolean);
+  }
+
+  function prepareEditorViewportAnimation() {
+    editorViewportMotionElements().forEach((element) => {
+      element.style.willChange = 'transform';
     });
-    session.elements.forEach((element) => { element.style.willChange = ''; });
-    if (state.editorViewportAnimation === session) state.editorViewportAnimation = null;
+  }
+
+  function clearEditorViewportAnimation(session = state.editorViewportAnimation) {
+    if (session) {
+      session.animations.forEach((animation) => {
+        animation.onfinish = null;
+        animation.cancel();
+      });
+      if (state.editorViewportAnimation === session) state.editorViewportAnimation = null;
+    }
+    editorViewportMotionElements().forEach((element) => {
+      element.style.willChange = '';
+    });
   }
 
   function fitCropIntoPreview() {
@@ -2534,18 +2551,18 @@
     };
   }
 
-  function isVisibleFlip(transform) {
+  function isVisibleViewportTransition(transform) {
     return Math.abs(transform.translateX) >= 0.5
       || Math.abs(transform.translateY) >= 0.5
       || Math.abs(transform.scaleX - 1) >= 0.002
       || Math.abs(transform.scaleY - 1) >= 0.002;
   }
 
-  function makeCounterScaleKeyframes(scaleX, scaleY) {
+  function makeCounterScaleKeyframes(startScaleX, endScaleX, startScaleY, endScaleY) {
     return Array.from({ length: 21 }, (_, index) => {
       const offset = index / 20;
-      const currentScaleX = scaleX + (1 - scaleX) * offset;
-      const currentScaleY = scaleY + (1 - scaleY) * offset;
+      const currentScaleX = startScaleX + (endScaleX - startScaleX) * offset;
+      const currentScaleY = startScaleY + (endScaleY - startScaleY) * offset;
       return {
         offset,
         transformOrigin: 'center',
@@ -2556,8 +2573,9 @@
 
   function finishEditorViewportAnimation(session) {
     if (state.editorViewportAnimation !== session) return;
+    applyEditorVideoLayout(session.targetLayout);
+    applyEditorCropGeometry(session.targetLayout);
     clearEditorViewportAnimation(session);
-    applyEditorCropGeometry(readEditorVideoLayout());
     updateResolutionOptions();
     updateEstimatedFileSize();
     scheduleEditorPreviewRender();
@@ -2579,53 +2597,48 @@
     applyEditorCropGeometry(currentLayout);
   }
 
-  function animateCropIntoPreview() {
+  function animateCropIntoPreview(precomputedTarget = null) {
     if (!state.clip || el.editStage.classList.contains('hidden')) return;
     settleEditorViewportAnimation();
+    cancelEditorPreviewRender();
     const firstLayout = readEditorVideoLayout();
-    const fitted = calculateFittedEditorViewport();
+    const fitted = precomputedTarget || calculateFittedEditorViewport();
     if (!firstLayout || !fitted) return;
 
-    const transform = calculateViewportFlipTransform(firstLayout, fitted);
+    const transform = calculateViewportTransitionTransform(firstLayout, fitted);
     const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     const canAnimate = typeof el.editorMotionLayer?.animate === 'function';
 
-    applyEditorVideoLayout(fitted);
-    applyEditorCropGeometry(fitted);
-
-    if (reducedMotion || !canAnimate || !isVisibleFlip(transform)) {
+    if (reducedMotion || !canAnimate || !isVisibleViewportTransition(transform)) {
+      applyEditorVideoLayout(fitted);
+      applyEditorCropGeometry(fitted);
+      clearEditorViewportAnimation();
       updateResolutionOptions();
       updateEstimatedFileSize();
       scheduleEditorPreviewRender();
       return;
     }
 
-    el.editorMotionLayer.style.willChange = 'transform';
+    prepareEditorViewportAnimation();
     const motionAnimation = el.editorMotionLayer.animate([
-        {
-          transformOrigin: '0 0',
-          transform: `translate(${transform.translateX}px, ${transform.translateY}px) scale(${transform.scaleX}, ${transform.scaleY})`,
-        },
-        { transformOrigin: '0 0', transform: 'translate(0px, 0px) scale(1, 1)' },
-      ], {
-        duration: EDITOR_VIEWPORT_MOTION_MS,
-        easing: EDITOR_VIEWPORT_EASING,
-        fill: 'both',
-      });
+      { transformOrigin: '0 0', transform: 'translate(0px, 0px) scale(1, 1)' },
+      {
+        transformOrigin: '0 0',
+        transform: `translate(${transform.translateX}px, ${transform.translateY}px) scale(${transform.scaleX}, ${transform.scaleY})`,
+      },
+    ], {
+      duration: EDITOR_VIEWPORT_MOTION_MS,
+      easing: EDITOR_VIEWPORT_EASING,
+      fill: 'both',
+    });
     const animations = [motionAnimation];
-    const animatedElements = new Set([el.editorMotionLayer]);
-    const session = { animations, elements: animatedElements };
+    const session = { animations, targetLayout: fitted };
     state.editorViewportAnimation = session;
 
-    const fixedSizeControls = [
-      ...el.editorCropBox.querySelectorAll('.crop-handle'),
-      el.cropSizeBadge,
-    ].filter(Boolean);
+    const fixedSizeControls = editorViewportMotionElements().filter((element) => element !== el.editorMotionLayer);
     fixedSizeControls.forEach((element) => {
-      element.style.willChange = 'transform';
-      animatedElements.add(element);
       animations.push(element.animate(
-        makeCounterScaleKeyframes(transform.scaleX, transform.scaleY),
+        makeCounterScaleKeyframes(1, transform.scaleX, 1, transform.scaleY),
         {
           duration: EDITOR_VIEWPORT_MOTION_MS,
           easing: EDITOR_VIEWPORT_EASING,
@@ -2635,7 +2648,6 @@
     });
 
     motionAnimation.onfinish = () => finishEditorViewportAnimation(session);
-    scheduleEditorPreviewRender();
   }
 
   function readSavedPanelPosition() {
@@ -3945,6 +3957,7 @@
     settleEditorViewportAnimation();
     const mapping = getEditorMapping();
     if (!mapping) return;
+    const viewport = getEditorViewportRect();
     const startRect = cropToScreenRect(state.editorCrop, mapping);
     const handle = event.target?.dataset?.resize || '';
     state.editorCropSession = {
@@ -3955,7 +3968,12 @@
       startY: event.clientY,
       type: handle ? 'resize' : 'move',
       handle,
+      viewport: { width: viewport.width, height: viewport.height },
+      fittedLayout: calculateFittedEditorViewport(viewport),
     };
+    cancelEditorPreviewRender();
+    el.previewCanvas.style.visibility = 'hidden';
+    prepareEditorViewportAnimation();
     event.preventDefault();
     event.stopPropagation();
     el.editorCropBox.setPointerCapture?.(event.pointerId);
@@ -3974,8 +3992,8 @@
     const crop = screenRectToEditorCrop(rect, session.mapping);
     if (!crop) return;
     state.editorCrop = crop;
+    session.fittedLayout = calculateFittedEditorViewport(session.viewport, crop);
     updateEditorCropBox({ render: false });
-    scheduleEditorPreviewRender();
     event.preventDefault();
   }
 
@@ -3984,7 +4002,7 @@
     if (!session || (event && session.pointerId !== event.pointerId)) return;
     state.editorCropSession = null;
     try { el.editorCropBox.releasePointerCapture?.(session.pointerId); } catch (_) { }
-    animateCropIntoPreview();
+    animateCropIntoPreview(session.fittedLayout);
   }
 
   function resetEditorCrop() {
@@ -4715,7 +4733,7 @@
       try { return readExportSettings(); } catch (_) { return null; }
     })();
     if (!nextSettings) return null;
-    if (state.editorViewportAnimation) return nextSettings;
+    if (state.editorCropSession || state.editorViewportAnimation) return null;
 
     const layout = readEditorVideoLayout();
     if (!layout) return null;
@@ -4753,6 +4771,7 @@
 
   function renderExportPreviewFrame(settings = null) {
     if (!state.clip || state.mode !== 'edit' || !el.previewCanvas) return;
+    if (state.editorCropSession || state.editorViewportAnimation) return;
     const nextSettings = updatePreviewCanvasLayout(settings);
     const sourceVideo = el.scrubVideo?.classList.contains('active') ? el.scrubVideo : el.clipVideo;
     if (!nextSettings || !sourceVideo || sourceVideo.readyState < 2) return;

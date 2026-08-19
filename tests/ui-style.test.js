@@ -49,9 +49,18 @@ test('crop viewport adaptation uses interruptible transform-only motion', () => 
   assert.match(source, /EDITOR_VIEWPORT_EASING\s*=\s*'cubic-bezier\(0\.33, 1, 0\.68, 1\)'/);
   assert.match(source, /el\.editorMotionLayer\.animate\(\[\s*\{[\s\S]*?transform:[\s\S]*?\}\s*,\s*\{[\s\S]*?transform:/);
   assert.match(source, /window\.matchMedia\('\(prefers-reduced-motion: reduce\)'\)\.matches/);
-  assert.match(source, /if \(reducedMotion \|\| !canAnimate \|\| !isVisibleFlip/);
+  assert.match(source, /if \(reducedMotion \|\| !canAnimate \|\| !isVisibleViewportTransition/);
   assert.match(source, /settleEditorViewportAnimation\(\);[\s\S]*?const mapping = getEditorMapping\(\)/);
-  assert.match(source, /updateEditorCropBox\(\{ render: false \}\);\s*scheduleEditorPreviewRender\(\);/);
+  assert.match(source, /applyEditorVideoLayout\(session\.targetLayout\);\s*applyEditorCropGeometry\(session\.targetLayout\);\s*clearEditorViewportAnimation\(session\);/);
+});
+
+test('crop release precomputes its target and defers expensive canvas rendering', () => {
+  assert.match(source, /fittedLayout:\s*calculateFittedEditorViewport\(viewport\)/);
+  assert.match(source, /session\.fittedLayout\s*=\s*calculateFittedEditorViewport\(session\.viewport, crop\)/);
+  assert.match(source, /cancelEditorPreviewRender\(\);\s*el\.previewCanvas\.style\.visibility\s*=\s*'hidden';\s*prepareEditorViewportAnimation\(\);/);
+  assert.match(source, /animateCropIntoPreview\(session\.fittedLayout\);/);
+  assert.match(source, /if \(state\.editorCropSession \|\| state\.editorViewportAnimation\) return;/);
+  assert.doesNotMatch(source, /updateEditorCropBox\(\{ render: false \}\);\s*scheduleEditorPreviewRender\(\);/);
 });
 
 test('filled actions and muted text retain readable contrast', () => {
