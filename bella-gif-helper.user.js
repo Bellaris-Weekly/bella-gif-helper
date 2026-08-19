@@ -14,6 +14,7 @@
 // @match        https://www.bilibili.com/bangumi/play/*
 // @match        https://www.bilibili.com/medialist/play/*
 // @match        https://www.bilibili.com/cheese/play/*
+// @match        https://live.bilibili.com/*
 // @match        https://m.bilibili.com/video/*
 // @require      https://cdn.jsdelivr.net/npm/gif.js@0.2.0/dist/gif.js
 // @resource     GIF_WORKER https://cdn.jsdelivr.net/npm/gif.js@0.2.0/dist/gif.worker.js
