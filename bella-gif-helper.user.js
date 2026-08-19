@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         贝报 GIF 助手
 // @namespace    https://www.bk0717.com/
-// @version      1.1.0
+// @version      1.2.0
 // @description  B站直播回溯、视频框选录制与 GIF 编辑
 // @author       贝极星周报
 // @homepageURL  https://github.com/Bellaris-Weekly/bella-gif-helper
@@ -47,6 +47,24 @@
 
   function normalizeGifDelay(fps, speed) {
     return Math.max(20, Math.round(((1000 / fps) / speed) / 10) * 10);
+  }
+
+  function calculateCropViewport(viewportWidth, viewportHeight, videoWidth, videoHeight, crop, padding) {
+    const availableWidth = viewportWidth - padding * 2;
+    const availableHeight = viewportHeight - padding * 2;
+    const scale = Math.min(
+      availableWidth / (videoWidth * crop.w),
+      availableHeight / (videoHeight * crop.h),
+    );
+    const width = videoWidth * scale;
+    const height = videoHeight * scale;
+    return {
+      width,
+      height,
+      left: viewportWidth / 2 - (crop.x + crop.w / 2) * width,
+      top: viewportHeight / 2 - (crop.y + crop.h / 2) * height,
+      scale,
+    };
   }
 
   function asBytes(value, copy = false) {
@@ -743,6 +761,7 @@
     GIF_QUALITY_PRESETS,
     buildGifsicleCommand,
     normalizeGifDelay,
+    calculateCropViewport,
   };
   if (typeof module === 'object' && module.exports && typeof document === 'undefined') {
     module.exports = liveRewindTestApi;
@@ -774,6 +793,7 @@
   const PREVIEW_CACHE_MIN_EDGE = 128;
   const PREVIEW_CACHE_MEMORY_BUDGET = 72 * 1024 * 1024;
   const MIN_SELECT_PX = 24;
+  const EDITOR_CROP_PADDING = 18;
   const LAUNCHER_POSITION_KEY = 'biliGifMakerLauncherPositionV1';
   const PANEL_POSITION_KEY = 'biliGifMakerPanelPositionV1';
   const EXPORT_PREFERENCES_KEY = 'biliGifMakerExportPreferencesV1';
@@ -829,11 +849,49 @@
     <style>
       :host {
         all: initial;
+        --color-bg: #151619;
+        --color-surface: #1b1d21;
+        --color-surface-raised: #22252a;
+        --color-surface-hover: #2a2e34;
+        --color-text: #f7f8fa;
+        --color-text-secondary: #c6cbd3;
+        --color-text-muted: #959ca8;
+        --color-border: rgba(255, 255, 255, .10);
+        --color-border-strong: rgba(255, 255, 255, .18);
+        --color-brand: #db7d74;
+        --color-brand-rgb: 219, 125, 116;
+        --color-brand-hover: #e79890;
+        --color-brand-soft: rgba(var(--color-brand-rgb), .16);
+        --color-on-brand: #151619;
+        --color-success: #70d9aa;
+        --color-danger: #c9423d;
+        --color-focus: #f2aaa4;
+        --radius-panel: 14px;
+        --radius-control: 8px;
+        --radius-compact: 6px;
+        --shadow-panel: 0 24px 72px rgba(0, 0, 0, .52), 0 2px 10px rgba(0, 0, 0, .28);
+        --motion-fast: 120ms ease-out;
+        --motion-standard: 180ms ease-out;
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+        font-size: 14px;
+        line-height: 1.5;
+        letter-spacing: 0;
       }
       * { box-sizing: border-box; }
       button, input, select, textarea { font: inherit; }
-      button { -webkit-tap-highlight-color: transparent; }
+      button {
+        touch-action: manipulation;
+        -webkit-tap-highlight-color: transparent;
+      }
+      button, select, textarea, input { color-scheme: dark; }
+      button:focus-visible,
+      select:focus-visible,
+      textarea:focus-visible,
+      input:focus-visible,
+      [role="button"]:focus-visible {
+        outline: 2px solid var(--color-focus);
+        outline-offset: 2px;
+      }
       .hidden { display: none !important; }
 
       #launcher {
@@ -844,19 +902,19 @@
         width: 54px;
         height: 54px;
         border: 0;
-        border-radius: 17px;
+        border-radius: 14px;
         overflow: hidden;
         background-image: url('https://i0.hdslb.com/bfs/garb/item/70de4619ce5e8a7b5bbe5c4124aa69353d8102e4.png');
         background-position: center;
         background-size: cover;
         background-repeat: no-repeat;
-        box-shadow: 0 10px 30px rgba(0, 0, 0, .28);
+        box-shadow: 0 10px 28px rgba(0, 0, 0, .34), 0 0 0 1px rgba(255, 255, 255, .12);
         cursor: grab;
         touch-action: none;
         user-select: none;
-        transition: transform .15s ease, filter .15s ease;
+        transition: transform var(--motion-fast), filter var(--motion-fast), box-shadow var(--motion-fast);
       }
-      #launcher:hover { transform: translateY(-2px); filter: brightness(1.05); }
+      #launcher:hover { transform: translateY(-2px); filter: brightness(1.06); }
       #launcher.dragging { cursor: grabbing; transition: none; transform: none !important; }
       #launcher.recording {
         outline: 3px solid #ff514a;
@@ -891,12 +949,11 @@
         height: calc(100vh - 28px);
         max-height: calc(100vh - 28px);
         overflow: hidden;
-        border: 1px solid rgba(255,255,255,.12);
-        border-radius: 18px;
-        background: rgba(24, 25, 29, .985);
-        color: #f5f6f7;
-        box-shadow: 0 24px 78px rgba(0,0,0,.48);
-        backdrop-filter: blur(18px);
+        border: 1px solid var(--color-border-strong);
+        border-radius: var(--radius-panel);
+        background: var(--color-bg);
+        color: var(--color-text);
+        box-shadow: var(--shadow-panel);
       }
       .header {
         position: relative;
@@ -906,36 +963,39 @@
         align-items: center;
         justify-content: space-between;
         gap: 12px;
-        min-height: 50px;
-        padding: 8px 12px;
-        border-bottom: 1px solid rgba(255,255,255,.08);
-        background: rgba(24, 25, 29, .985);
+        min-height: 52px;
+        padding: 8px 10px 8px 14px;
+        border-bottom: 1px solid var(--color-border);
+        background: var(--color-surface);
         user-select: none;
         touch-action: none;
       }
       .title-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
-      .title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 850; font-size: 15px; }
+      .title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 700; font-size: 15px; }
       #stageBadge {
         flex: 0 0 auto;
         padding: 3px 8px;
-        border-radius: 999px;
-        background: rgba(251,114,153,.16);
-        color: #ff9db9;
+        border-radius: var(--radius-compact);
+        background: var(--color-brand-soft);
+        color: var(--color-brand-hover);
         font-size: 11px;
         font-weight: 750;
       }
       #stageBadge { display: none; }
       .icon-btn {
         flex: 0 0 auto;
-        width: 32px;
-        height: 32px;
-        border: 0;
-        border-radius: 11px;
-        background: rgba(255,255,255,.08);
-        color: #fff;
-        font-size: 18px;
+        width: 36px;
+        height: 36px;
+        border: 1px solid transparent;
+        border-radius: var(--radius-control);
+        background: transparent;
+        color: var(--color-text-secondary);
+        font-size: 17px;
+        line-height: 1;
         cursor: pointer;
+        transition: color var(--motion-fast), background var(--motion-fast), border-color var(--motion-fast);
       }
+      .icon-btn:hover { border-color: var(--color-border); background: var(--color-surface-hover); color: var(--color-text); }
       .body {
         flex: 1 1 auto;
         min-height: 0;
@@ -955,8 +1015,8 @@
       .workspace {
         flex: 0 0 auto;
         display: grid;
-        gap: 7px;
-        padding: 8px 10px 0;
+        gap: 8px;
+        padding: 10px 10px 0;
       }
       #editorPreviewWrap {
         position: relative;
@@ -967,17 +1027,19 @@
         aspect-ratio: 1 / 1;
         height: auto;
         overflow: hidden;
-        border-radius: 14px;
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-control);
         background: #000;
         user-select: none;
         touch-action: none;
       }
       #clipVideo, #scrubVideo {
+        position: absolute;
         display: block;
         width: auto;
         height: auto;
-        max-width: 100%;
-        max-height: 100%;
+        max-width: none;
+        max-height: none;
         object-fit: contain;
         background: #000;
         pointer-events: none;
@@ -991,13 +1053,9 @@
         image-rendering: auto;
         background: #000;
       }
-      #clipVideo { position: relative; z-index: 0; }
+      #clipVideo { z-index: 0; }
       #scrubVideo {
-        position: absolute;
-        left: 50%;
-        top: 50%;
         z-index: 1;
-        transform: translate(-50%, -50%);
         visibility: hidden;
       }
       #scrubVideo.active { visibility: visible; }
@@ -1009,21 +1067,21 @@
         min-width: 46px;
         height: 32px;
         padding: 0 11px;
-        border: 1px solid rgba(255,255,255,.22);
-        border-radius: 10px;
-        background: rgba(24,25,29,.78);
-        color: #fff;
+        border: 1px solid var(--color-border-strong);
+        border-radius: var(--radius-control);
+        background: rgba(21, 22, 25, .86);
+        color: var(--color-text);
         font-size: 12px;
         font-weight: 800;
         cursor: pointer;
         backdrop-filter: blur(10px);
       }
-      #aspectSquareBtn:hover { background: rgba(45,46,51,.92); }
+      #aspectSquareBtn:hover { background: var(--color-surface-hover); }
       #aspectSquareBtn.active {
-        border-color: #fb7299;
-        background: #fb7299;
-        color: #fff;
-        box-shadow: 0 4px 16px rgba(251,114,153,.3);
+        border-color: var(--color-brand);
+        background: var(--color-brand);
+        color: var(--color-on-brand);
+        box-shadow: 0 4px 16px rgba(var(--color-brand-rgb), .24);
       }
       #editorOverlay {
         position: absolute;
@@ -1040,7 +1098,7 @@
       #editorCropBox {
         position: absolute;
         z-index: 2;
-        border: 2px solid #fb7299;
+        border: 2px solid var(--color-brand);
         border-radius: var(--crop-frame-radius, 6px);
         box-shadow: 0 0 0 9999px rgba(0,0,0,.36), 0 0 0 1px rgba(0,0,0,.42) inset;
         pointer-events: auto;
@@ -1062,7 +1120,7 @@
         content: "";
         position: absolute;
         border: 2px solid #fff;
-        background: #fb7299;
+        background: var(--color-brand);
         box-shadow: 0 1px 5px rgba(0,0,0,.45);
       }
       [data-resize="n"], [data-resize="s"] { left: 14px; right: 14px; height: 14px; cursor: ns-resize; }
@@ -1119,9 +1177,10 @@
       .caption-item.dragging { cursor: grabbing; }
 
       .trim-block {
-        padding: 7px 8px 6px;
-        border-radius: 12px;
-        background: rgba(255,255,255,.05);
+        padding: 8px 10px;
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-control);
+        background: var(--color-surface);
       }
       #timelineTrack {
         position: relative;
@@ -1135,7 +1194,7 @@
         left: 0; right: 0; top: 12px;
         height: 6px;
         border-radius: 999px;
-        background: rgba(255,255,255,.13);
+        background: rgba(255,255,255,.14);
         box-shadow: inset 0 1px 2px rgba(0,0,0,.32);
       }
       #timelineSelected {
@@ -1143,7 +1202,7 @@
         top: 12px;
         height: 6px;
         border-radius: 999px;
-        background: linear-gradient(90deg, #fb7299, #ffbad0);
+        background: var(--color-brand);
         pointer-events: none;
       }
       #timelinePlayhead {
@@ -1167,7 +1226,7 @@
         padding: 0;
         border: 2px solid #fff;
         border-radius: 6px;
-        background: #fb7299;
+        background: var(--color-brand);
         box-shadow: 0 3px 10px rgba(0,0,0,.42);
         cursor: ew-resize;
         touch-action: none;
@@ -1178,13 +1237,13 @@
         align-items: center;
         gap: 8px;
         margin-top: 0;
-        color: #aeb4bf;
-        font-size: 10px;
+        color: var(--color-text-muted);
+        font-size: 11px;
         font-variant-numeric: tabular-nums;
       }
-      #trimStartValue { text-align: left; color: #ff9db9; }
-      #trimSummary { text-align: center; color: #6fd5a7; }
-      #trimEndValue { text-align: right; color: #ff9db9; }
+      #trimStartValue { text-align: left; color: var(--color-brand-hover); }
+      #trimSummary { text-align: center; color: var(--color-success); font-weight: 650; }
+      #trimEndValue { text-align: right; color: var(--color-brand-hover); }
       .preview-controls {
         display: flex;
         align-items: center;
@@ -1192,32 +1251,29 @@
         gap: 8px;
         margin-top: 5px;
       }
-      .preview-controls .btn { min-height: 34px; padding: 0 11px; }
+      .preview-controls .btn { min-height: 36px; padding: 0 12px; }
       .live-mode-switch {
         display: inline-flex;
         flex: 0 1 auto;
         min-width: 0;
-        padding: 2px;
-        border: 1px solid rgba(255,255,255,.12);
-        border-radius: 7px;
-        background: rgba(255,255,255,.05);
+        gap: 4px;
       }
       .live-mode-switch button {
         min-width: 0;
         height: 28px;
-        padding: 0 8px;
+        padding: 0 5px;
         border: 0;
-        border-radius: 5px;
         background: transparent;
-        color: #aeb4bf;
-        font-size: 11px;
+        color: var(--color-text-muted);
+        font-size: 12px;
         white-space: nowrap;
         cursor: pointer;
       }
+      .live-mode-switch button:hover { color: var(--color-text); }
       .live-mode-switch button.active {
-        background: rgba(251,114,153,.22);
-        color: #fff;
-        box-shadow: inset 0 0 0 1px rgba(251,114,153,.35);
+        color: var(--color-brand-hover);
+        font-weight: 700;
+        box-shadow: inset 0 -2px 0 var(--color-brand);
       }
       .live-mode-switch button:disabled { cursor: default; opacity: .55; }
 
@@ -1227,30 +1283,30 @@
         overflow-y: auto;
         overscroll-behavior: contain;
         scrollbar-width: thin;
-        padding: 0 10px 8px;
+        padding: 0 10px 10px;
       }
       #editorSettingsScroll::-webkit-scrollbar { width: 8px; }
       #editorSettingsScroll::-webkit-scrollbar-thumb {
         border: 2px solid transparent;
         border-radius: 999px;
-        background: rgba(255,255,255,.18);
+        background: rgba(255,255,255,.20);
         background-clip: padding-box;
       }
 
       .compact-section {
-        margin-top: 8px;
-        padding-top: 8px;
-        border-top: 1px solid rgba(255,255,255,.08);
+        margin-top: 12px;
+        padding-top: 12px;
+        border-top: 1px solid var(--color-border);
       }
       .section-head {
         display: flex;
         align-items: center;
         justify-content: space-between;
         gap: 10px;
-        margin-bottom: 7px;
-        color: #eef0f3;
+        margin-bottom: 8px;
+        color: var(--color-text);
         font-size: 13px;
-        font-weight: 820;
+        font-weight: 700;
       }
       .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
       .grid-2.text-options { margin-top: 8px; }
@@ -1260,47 +1316,50 @@
       .field > label {
         display: block;
         margin-bottom: 5px;
-        color: #aeb4bf;
-        font-size: 11px;
+        color: var(--color-text-muted);
+        font-size: 12px;
+        line-height: 1.35;
       }
       .field-hint {
-        color: #8ee1b9;
+        color: var(--color-success);
         font-weight: 700;
       }
       select, textarea, input[type="text"] {
         width: 100%;
-        border: 1px solid rgba(255,255,255,.12);
-        border-radius: 10px;
+        border: 1px solid var(--color-border-strong);
+        border-radius: var(--radius-control);
         outline: none;
-        background: rgba(255,255,255,.07);
-        color: #fff;
+        background: var(--color-surface-raised);
+        color: var(--color-text);
+        transition: border-color var(--motion-fast), background var(--motion-fast), box-shadow var(--motion-fast);
       }
-      select, input[type="text"] { height: 36px; padding: 0 9px; }
-      textarea { min-height: 50px; padding: 9px; resize: vertical; line-height: 1.4; }
-      select:focus, textarea:focus, input[type="text"]:focus {
-        border-color: rgba(251,114,153,.85);
-        box-shadow: 0 0 0 3px rgba(251,114,153,.14);
+      select:hover, textarea:hover, input[type="text"]:hover { background: var(--color-surface-hover); }
+      select, input[type="text"] { height: 40px; padding: 0 10px; }
+      textarea { min-height: 56px; padding: 9px 10px; resize: vertical; line-height: 1.45; }
+      select:focus-visible, textarea:focus-visible, input[type="text"]:focus-visible {
+        border-color: var(--color-brand-hover);
+        box-shadow: 0 0 0 3px var(--color-brand-soft);
       }
-      select option { background: #24262b; color: #fff; }
+      select option { background: var(--color-surface-raised); color: var(--color-text); }
       input[type="color"] {
         width: 100%;
-        height: 36px;
-        padding: 2px;
-        border: 1px solid rgba(255,255,255,.12);
-        border-radius: 9px;
-        background: rgba(255,255,255,.07);
+        height: 40px;
+        padding: 3px;
+        border: 1px solid var(--color-border-strong);
+        border-radius: var(--radius-control);
+        background: var(--color-surface-raised);
       }
-      input[type="checkbox"] { accent-color: #fb7299; }
+      input[type="checkbox"] { accent-color: var(--color-brand); }
       input[type="range"] {
         width: 100%;
-        height: 34px;
+        height: 36px;
         margin: 0;
-        accent-color: #fb7299;
+        accent-color: var(--color-brand);
         cursor: pointer;
       }
       .size-estimate {
         flex: 0 0 auto;
-        color: #8ee1b9;
+        color: var(--color-success);
         font-size: 11px;
         font-weight: 760;
         font-variant-numeric: tabular-nums;
@@ -1308,33 +1367,39 @@
       }
 
       .btn {
-        min-height: 40px;
+        min-height: 42px;
         padding: 0 12px;
-        border: 0;
-        border-radius: 11px;
+        border: 1px solid transparent;
+        border-radius: var(--radius-control);
         color: #fff;
-        font-weight: 800;
+        font-weight: 700;
         cursor: pointer;
+        transition: background var(--motion-fast), border-color var(--motion-fast), filter var(--motion-fast);
       }
-      .btn.primary { background: linear-gradient(135deg, #fb7299, #ff8bb0); }
-      .btn.secondary { background: rgba(255,255,255,.10); }
-      .btn.danger { background: linear-gradient(135deg, #d84d47, #f36b63); }
+      .btn.primary { background: var(--color-brand); color: var(--color-on-brand); }
+      .btn.primary:hover { background: var(--color-brand-hover); }
+      .btn.secondary { border-color: var(--color-border); background: var(--color-surface-raised); color: var(--color-text-secondary); }
+      .btn.secondary:hover { border-color: var(--color-border-strong); background: var(--color-surface-hover); color: var(--color-text); }
+      .btn.danger { background: var(--color-danger); }
+      .btn.danger:hover { background: #bf3935; }
+      .btn:active, .small-btn:active, .icon-btn:active { filter: brightness(.92); }
       .btn:disabled, .small-btn:disabled, select:disabled, textarea:disabled, input:disabled {
         cursor: not-allowed;
         opacity: .48;
       }
       .small-btn {
-        min-height: 32px;
+        min-height: 34px;
         padding: 0 10px;
-        border: 1px solid rgba(255,255,255,.11);
-        border-radius: 9px;
-        background: rgba(255,255,255,.07);
-        color: #edf0f3;
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-control);
+        background: var(--color-surface-raised);
+        color: var(--color-text-secondary);
         cursor: pointer;
         white-space: nowrap;
+        transition: background var(--motion-fast), border-color var(--motion-fast), color var(--motion-fast);
       }
       .small-btn.danger-text { color: #ff9f99; }
-      .small-btn:hover { background: rgba(255,255,255,.12); }
+      .small-btn:hover { border-color: var(--color-border-strong); background: var(--color-surface-hover); color: var(--color-text); }
 
       .text-tabs {
         display: flex;
@@ -1352,10 +1417,10 @@
         height: 31px;
         padding: 0 5px 0 10px;
         overflow: hidden;
-        border: 1px solid rgba(255,255,255,.10);
-        border-radius: 999px;
-        background: rgba(255,255,255,.055);
-        color: #c9ced5;
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-compact);
+        background: var(--color-surface-raised);
+        color: var(--color-text-secondary);
         white-space: nowrap;
         cursor: pointer;
       }
@@ -1372,7 +1437,7 @@
         width: 20px;
         height: 20px;
         border-radius: 999px;
-        color: #aeb4bf;
+        color: var(--color-text-muted);
         font-size: 15px;
         font-weight: 700;
         line-height: 1;
@@ -1382,9 +1447,9 @@
         color: #ff9f99;
       }
       .text-tab.active {
-        border-color: rgba(251,114,153,.72);
-        background: rgba(251,114,153,.17);
-        color: #ffb0c7;
+        border-color: var(--color-brand);
+        background: var(--color-brand-soft);
+        color: var(--color-brand-hover);
       }
       .text-tab:disabled { cursor: not-allowed; opacity: .48; }
       .text-empty { display: none !important; }
@@ -1416,26 +1481,27 @@
         min-height: 0;
         margin-top: 10px;
         padding: 9px 10px;
-        border-radius: 10px;
-        background: rgba(255,255,255,.045);
-        color: #aeb4bf;
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-control);
+        background: var(--color-surface);
+        color: var(--color-text-muted);
         font-size: 12px;
         line-height: 1.45;
       }
-      #status.success { color: #69d3a4; }
-      #status.error { color: #ff8f87; background: rgba(255,96,86,.08); }
+      #status.success { color: var(--color-success); border-color: rgba(112, 217, 170, .26); }
+      #status.error { color: #ff938e; border-color: rgba(255, 113, 107, .28); background: rgba(255, 113, 107, .07); }
       .progress-wrap {
         height: 7px;
         margin-top: 10px;
         overflow: hidden;
         border-radius: 999px;
-        background: rgba(255,255,255,.08);
+        background: var(--color-surface-raised);
       }
       #progress {
         width: 0;
         height: 100%;
         border-radius: inherit;
-        background: linear-gradient(90deg, #fb7299, #ffbad0);
+        background: var(--color-brand);
         transition: width .12s linear;
       }
       .action-dock {
@@ -1445,19 +1511,18 @@
         grid-template-columns: 1fr 1fr;
         gap: 8px;
         margin: 0;
-        padding: 8px 10px 10px;
-        border-top: 1px solid rgba(255,255,255,.08);
-        background: linear-gradient(180deg, rgba(24,25,29,.88), rgba(24,25,29,.995) 24%);
-        backdrop-filter: blur(12px);
+        padding: 10px;
+        border-top: 1px solid var(--color-border);
+        background: var(--color-surface);
       }
       .action-dock.one { grid-template-columns: 1fr; }
 
       #pageSelectionMarker {
         position: fixed;
         z-index: 2147483640;
-        border: 2px solid #fb7299;
+        border: 2px solid var(--color-brand);
         border-radius: 6px;
-        background: rgba(251,114,153,.035);
+        background: rgba(var(--color-brand-rgb), .04);
         box-shadow: 0 0 0 1px rgba(0,0,0,.38) inset, 0 4px 18px rgba(0,0,0,.16);
         cursor: move;
         pointer-events: auto;
@@ -1481,24 +1546,24 @@
         gap: 6px;
         min-height: 38px;
         padding: 5px 6px;
-        border: 1px solid rgba(255,255,255,.18);
-        border-radius: 12px;
-        background: rgba(20,21,24,.97);
-        color: #fff;
+        border: 1px solid var(--color-border-strong);
+        border-radius: 10px;
+        background: var(--color-surface);
+        color: var(--color-text);
         box-shadow: 0 10px 34px rgba(0,0,0,.42);
         white-space: nowrap;
       }
       #selectionRecordBtn {
-        height: 29px;
+        height: 34px;
         padding: 0 12px;
         border: 0;
-        border-radius: 9px;
-        background: linear-gradient(135deg, #e85650, #ff756d);
+        border-radius: var(--radius-control);
+        background: var(--color-danger);
         color: #fff;
         font-weight: 850;
         cursor: pointer;
       }
-      #selectionRecordBtn.recording { background: linear-gradient(135deg, #c83f39, #ef5d55); }
+      #selectionRecordBtn.recording { background: #bf3935; }
       #selectionTimer {
         min-width: 54px;
         color: #ffaaa5;
@@ -1508,13 +1573,13 @@
         text-align: center;
       }
       #selectionReselectBtn, #selectionClearBtn {
-        height: 29px;
+        height: 34px;
         padding: 0 9px;
-        border: 1px solid rgba(255,255,255,.12);
-        border-radius: 9px;
-        background: rgba(255,255,255,.08);
-        color: #e9ecf0;
-        font-size: 11px;
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-control);
+        background: var(--color-surface-raised);
+        color: var(--color-text-secondary);
+        font-size: 12px;
         cursor: pointer;
       }
       #selectionToolbar button:disabled { opacity: .48; cursor: not-allowed; }
@@ -1538,9 +1603,9 @@
       #pageSelectBox {
         position: absolute;
         display: none;
-        border: 2px solid #fb7299;
+        border: 2px solid var(--color-brand);
         border-radius: 6px;
-        background: rgba(251,114,153,.14);
+        background: var(--color-brand-soft);
         box-shadow: 0 0 0 9999px rgba(0,0,0,.36);
         pointer-events: none;
       }
@@ -1548,12 +1613,12 @@
         position: fixed;
         right: 18px;
         top: 16px;
-        height: 36px;
+        height: 40px;
         padding: 0 13px;
         border: 1px solid rgba(255,255,255,.2);
-        border-radius: 10px;
-        background: rgba(20,21,24,.94);
-        color: #fff;
+        border-radius: var(--radius-control);
+        background: var(--color-surface);
+        color: var(--color-text);
         cursor: pointer;
       }
 
@@ -1566,19 +1631,42 @@
         transform: translateX(-50%);
         padding: 10px 14px;
         border: 1px solid rgba(255,255,255,.15);
-        border-radius: 11px;
-        background: rgba(22,23,26,.96);
-        color: #fff;
+        border-radius: var(--radius-control);
+        background: var(--color-surface-raised);
+        color: var(--color-text);
         font-size: 12px;
         line-height: 1.45;
         box-shadow: 0 14px 40px rgba(0,0,0,.42);
         pointer-events: none;
       }
       #toast.error { color: #ffaaa5; border-color: rgba(255,105,96,.32); }
-      #toast.success { color: #7fe0b4; }
+      #toast.success { color: var(--color-success); }
+
+      @media (prefers-reduced-motion: reduce) {
+        #launcher,
+        #progress,
+        button,
+        select,
+        textarea,
+        input { transition-duration: 0.01ms !important; }
+        #launcher.recording,
+        #pageSelectionMarker.recording { animation: none !important; }
+      }
 
       @media (max-width: 540px) {
-        #panel { right: 10px; top: 10px; width: calc(100vw - 20px); height: calc(100vh - 20px); max-height: calc(100vh - 20px); }
+        #panel {
+          right: max(10px, env(safe-area-inset-right));
+          top: max(10px, env(safe-area-inset-top));
+          width: calc(100vw - 20px);
+          height: calc(100dvh - 20px);
+          max-height: calc(100dvh - 20px);
+        }
+        .header { min-height: 54px; }
+        .icon-btn { width: 40px; height: 40px; }
+        .action-dock { padding-bottom: max(10px, env(safe-area-inset-bottom)); }
+        .action-dock .btn { min-height: 44px; }
+        #pageSelectCancel { min-height: 44px; }
+        #selectionRecordBtn, #selectionReselectBtn, #selectionClearBtn { min-height: 40px; }
         .grid-3 { grid-template-columns: 1fr 1fr; }
         .grid-3 .field:last-child { grid-column: 1 / -1; }
       }
@@ -1644,8 +1732,8 @@
               <div class="preview-controls">
                 <button id="previewTrimBtn" class="btn secondary edit-lockable">▶ 播放</button>
                 <div id="liveModeSwitch" class="live-mode-switch hidden" role="group" aria-label="下次录制模式">
-                  <button id="liveRewindModeBtn" type="button" class="edit-lockable" aria-pressed="true">回溯 60 秒</button>
-                  <button id="liveForwardModeBtn" type="button" class="edit-lockable" aria-pressed="false">框选录制</button>
+                  <button id="liveRewindModeBtn" type="button" class="edit-lockable" aria-pressed="true">回溯</button>
+                  <button id="liveForwardModeBtn" type="button" class="edit-lockable" aria-pressed="false">录制</button>
                 </div>
               </div>
             </div>
@@ -2211,23 +2299,39 @@
     if (!cancelled) handleLauncherAction();
   }
 
-  function fitClipVideoIntoPreview() {
+  function getEditorViewportRect() {
+    const rect = el.editorPreviewWrap.getBoundingClientRect();
+    return {
+      left: rect.left + el.editorPreviewWrap.clientLeft,
+      top: rect.top + el.editorPreviewWrap.clientTop,
+      width: el.editorPreviewWrap.clientWidth,
+      height: el.editorPreviewWrap.clientHeight,
+    };
+  }
+
+  function fitCropIntoPreview() {
     if (!state.clip || !el.editorPreviewWrap || !el.clipVideo) return;
-    const wrapRect = el.editorPreviewWrap.getBoundingClientRect();
-    if (wrapRect.width <= 1 || wrapRect.height <= 1) return;
+    const viewport = getEditorViewportRect();
+    if (viewport.width <= 1 || viewport.height <= 1) return;
 
     const videoWidth = Math.max(1, state.clip.width || el.clipVideo.videoWidth || 1);
     const videoHeight = Math.max(1, state.clip.height || el.clipVideo.videoHeight || 1);
-    const scale = Math.min(wrapRect.width / videoWidth, wrapRect.height / videoHeight);
-    const displayWidth = Math.max(1, videoWidth * scale);
-    const displayHeight = Math.max(1, videoHeight * scale);
+    const fitted = calculateCropViewport(
+      viewport.width,
+      viewport.height,
+      videoWidth,
+      videoHeight,
+      state.editorCrop,
+      EDITOR_CROP_PADDING,
+    );
 
-    el.clipVideo.style.width = `${displayWidth}px`;
-    el.clipVideo.style.height = `${displayHeight}px`;
-    if (el.scrubVideo) {
-      el.scrubVideo.style.width = `${displayWidth}px`;
-      el.scrubVideo.style.height = `${displayHeight}px`;
-    }
+    [el.clipVideo, el.scrubVideo].filter(Boolean).forEach((video) => Object.assign(video.style, {
+      left: `${fitted.left}px`,
+      top: `${fitted.top}px`,
+      width: `${fitted.width}px`,
+      height: `${fitted.height}px`,
+      transform: 'none',
+    }));
   }
 
   function readSavedPanelPosition() {
@@ -2325,7 +2429,7 @@
     applyPanelPosition({ preferSaved: !state.panelDrag });
 
     requestAnimationFrame(() => {
-      fitClipVideoIntoPreview();
+      fitCropIntoPreview();
       updateEditorCropBox();
       updateTimelinePlayhead();
     });
@@ -3390,7 +3494,7 @@
   }
 
   function screenRectToEditorCrop(rect, mapping) {
-    const bounded = intersectRects(rect, mapping.visibleRect);
+    const bounded = intersectRects(rect, mapping.renderedRect);
     if (!bounded) return null;
     const p1 = mapping.screenToSource(bounded.left, bounded.top);
     const p2 = mapping.screenToSource(bounded.right, bounded.bottom);
@@ -3410,27 +3514,27 @@
     if (!state.clip || el.editStage.classList.contains('hidden')) return;
     const mapping = getEditorMapping();
     if (!mapping) return;
-    const wrapRect = el.editorPreviewWrap.getBoundingClientRect();
+    const viewport = getEditorViewportRect();
     const rawRect = cropToScreenRect(state.editorCrop, mapping);
-    const visible = intersectRects(rawRect, mapping.visibleRect);
+    const visible = intersectRects(rawRect, mapping.renderedRect);
     if (!visible) return;
 
     Object.assign(el.editorCropBox.style, {
-      left: `${visible.left - wrapRect.left}px`,
-      top: `${visible.top - wrapRect.top}px`,
+      left: `${visible.left - viewport.left}px`,
+      top: `${visible.top - viewport.top}px`,
       width: `${visible.width}px`,
       height: `${visible.height}px`,
       visibility: 'visible',
     });
     Object.assign(el.editorBoundary.style, {
-      left: `${mapping.visibleRect.left - wrapRect.left}px`,
-      top: `${mapping.visibleRect.top - wrapRect.top}px`,
-      width: `${mapping.visibleRect.width}px`,
-      height: `${mapping.visibleRect.height}px`,
+      left: `${mapping.renderedRect.left - viewport.left}px`,
+      top: `${mapping.renderedRect.top - viewport.top}px`,
+      width: `${mapping.renderedRect.width}px`,
+      height: `${mapping.renderedRect.height}px`,
     });
     Object.assign(el.captionLayer.style, {
-      left: `${visible.left - wrapRect.left}px`,
-      top: `${visible.top - wrapRect.top}px`,
+      left: `${visible.left - viewport.left}px`,
+      top: `${visible.top - viewport.top}px`,
       width: `${visible.width}px`,
       height: `${visible.height}px`,
     });
@@ -3468,6 +3572,7 @@
     state.aspectSquare = !state.aspectSquare;
     if (state.aspectSquare) makeCurrentCropSquare();
     updateAspectSquareButton();
+    fitCropIntoPreview();
     updateEditorCropBox();
     updateResolutionOptions();
     updateEstimatedFileSize();
@@ -3553,8 +3658,8 @@
     const rect = session.type === 'move'
       ? moveScreenRect(session.startRect, dx, dy, session.mapping.visibleRect)
       : (state.aspectSquare
-        ? resizeSquareScreenRect(session.startRect, session.handle, dx, dy, session.mapping.visibleRect)
-        : resizeScreenRect(session.startRect, session.handle, dx, dy, session.mapping.visibleRect));
+        ? resizeSquareScreenRect(session.startRect, session.handle, dx, dy, session.mapping.renderedRect)
+        : resizeScreenRect(session.startRect, session.handle, dx, dy, session.mapping.renderedRect));
     const crop = screenRectToEditorCrop(rect, session.mapping);
     if (!crop) return;
     state.editorCrop = crop;
@@ -3569,12 +3674,14 @@
     if (!session || (event && session.pointerId !== event.pointerId)) return;
     state.editorCropSession = null;
     try { el.editorCropBox.releasePointerCapture?.(session.pointerId); } catch (_) { }
+    fitCropIntoPreview();
     updateEditorCropBox();
   }
 
   function resetEditorCrop() {
     if (!state.clip || state.mode !== 'edit') return;
     state.editorCrop = { x: 0, y: 0, w: 1, h: 1 };
+    fitCropIntoPreview();
     updateEditorCropBox();
   }
 
@@ -4284,9 +4391,9 @@
     if (!state.clip || !el.previewCanvas || !el.editorPreviewWrap) return null;
     const mapping = getEditorMapping();
     if (!mapping) return null;
-    const wrapRect = el.editorPreviewWrap.getBoundingClientRect();
+    const viewport = getEditorViewportRect();
     const rawRect = cropToScreenRect(state.editorCrop, mapping);
-    const visible = intersectRects(rawRect, mapping.visibleRect);
+    const visible = intersectRects(rawRect, mapping.renderedRect);
     if (!visible) return null;
     const nextSettings = settings || (() => {
       try { return readExportSettings(); } catch (_) { return null; }
@@ -4298,8 +4405,8 @@
     const displayWidth = Math.max(1, visible.width);
     const displayHeight = Math.max(1, visible.height);
     Object.assign(canvas.style, {
-      left: `${visible.left - wrapRect.left}px`,
-      top: `${visible.top - wrapRect.top}px`,
+      left: `${visible.left - viewport.left}px`,
+      top: `${visible.top - viewport.top}px`,
       width: `${displayWidth}px`,
       height: `${displayHeight}px`,
       borderRadius: '0px',
@@ -5205,13 +5312,16 @@
     renderExportPreviewFrame();
   });
   el.clipVideo.addEventListener('loadeddata', () => {
-    fitClipVideoIntoPreview();
+    fitCropIntoPreview();
     updateEditorCropBox();
     updateTimelinePlayhead();
     renderExportPreviewFrame();
     updateEstimatedFileSize();
   });
-  el.clipVideo.addEventListener('resize', updateEditorCropBox);
+  el.clipVideo.addEventListener('resize', () => {
+    fitCropIntoPreview();
+    updateEditorCropBox();
+  });
   el.scrubVideo.addEventListener('loadeddata', () => renderExportPreviewFrame());
   el.scrubVideo.addEventListener('seeked', () => {
     if (state.timelineDrag?.type === 'start' || state.timelineDrag?.type === 'end') {

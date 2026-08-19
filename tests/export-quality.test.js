@@ -8,6 +8,7 @@ const test = require('node:test');
 const {
   GIF_QUALITY_PRESETS,
   buildGifsicleCommand,
+  calculateCropViewport,
   normalizeGifDelay,
 } = require('../bella-gif-helper.user.js');
 
@@ -36,6 +37,38 @@ test('GIF delay follows the user frame rate and speed at GIF precision', () => {
   assert.equal(normalizeGifDelay(12, 1), 80);
   assert.equal(normalizeGifDelay(12, 1.5), 60);
   assert.equal(normalizeGifDelay(8, 0.75), 170);
+});
+
+test('crop-aware preview fills the viewport and zooms out as the crop expands', () => {
+  const smallCrop = calculateCropViewport(
+    360, 360, 1920, 1080,
+    { x: 0.375, y: 0.25, w: 0.25, h: 0.5 },
+    18,
+  );
+  const expandedCrop = calculateCropViewport(
+    360, 360, 1920, 1080,
+    { x: 0.25, y: 0.125, w: 0.5, h: 0.75 },
+    18,
+  );
+
+  assert.equal(smallCrop.width * 0.25, 288);
+  assert.equal(smallCrop.left + smallCrop.width * 0.5, 180);
+  assert.ok(expandedCrop.scale < smallCrop.scale);
+  assert.equal(expandedCrop.left + expandedCrop.width * 0.5, 180);
+  assert.equal(expandedCrop.top + expandedCrop.height * 0.5, 180);
+});
+
+test('crop-aware preview centers an off-axis crop instead of the whole video', () => {
+  const fitted = calculateCropViewport(
+    360, 360, 1920, 1080,
+    { x: 0.75, y: 0, w: 0.25, h: 0.5 },
+    18,
+  );
+
+  const cropLeft = fitted.left + fitted.width * 0.75;
+  const cropRight = cropLeft + fitted.width * 0.25;
+  assert.equal(cropLeft, 36);
+  assert.equal(cropRight, 324);
 });
 
 test('userscript uses pinned modern encoder resources and sRGB canvases', () => {
