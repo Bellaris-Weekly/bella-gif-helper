@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         贝报 GIF 助手
 // @namespace    https://www.bk0717.com/
-// @version      1.2.1
+// @version      1.2.2
 // @description  B站直播回溯、视频框选录制与 GIF 编辑
 // @author       贝极星周报
 // @homepageURL  https://github.com/Bellaris-Weekly/bella-gif-helper
@@ -67,12 +67,14 @@
     };
   }
 
-  function calculateFlipTransform(first, last) {
+  function calculateViewportFlipTransform(first, last) {
+    const scaleX = first.width / last.width;
+    const scaleY = first.height / last.height;
     return {
-      translateX: first.left - last.left,
-      translateY: first.top - last.top,
-      scaleX: first.width / last.width,
-      scaleY: first.height / last.height,
+      translateX: first.left - last.left * scaleX,
+      translateY: first.top - last.top * scaleY,
+      scaleX,
+      scaleY,
     };
   }
 
@@ -771,7 +773,7 @@
     buildGifsicleCommand,
     normalizeGifDelay,
     calculateCropViewport,
-    calculateFlipTransform,
+    calculateViewportFlipTransform,
   };
   if (typeof module === 'object' && module.exports && typeof document === 'undefined') {
     module.exports = liveRewindTestApi;
@@ -804,8 +806,8 @@
   const PREVIEW_CACHE_MEMORY_BUDGET = 72 * 1024 * 1024;
   const MIN_SELECT_PX = 24;
   const EDITOR_CROP_PADDING = 18;
-  const EDITOR_VIEWPORT_MOTION_MS = 220;
-  const EDITOR_VIEWPORT_EASING = 'cubic-bezier(0.22, 1, 0.36, 1)';
+  const EDITOR_VIEWPORT_MOTION_MS = 260;
+  const EDITOR_VIEWPORT_EASING = 'cubic-bezier(0.33, 1, 0.68, 1)';
   const LAUNCHER_POSITION_KEY = 'biliGifMakerLauncherPositionV1';
   const PANEL_POSITION_KEY = 'biliGifMakerPanelPositionV1';
   const EXPORT_PREFERENCES_KEY = 'biliGifMakerExportPreferencesV1';
@@ -819,6 +821,7 @@
     pageAdjustSession: null,
     editorCropSession: null,
     editorViewportAnimation: null,
+    editorPreviewRaf: 0,
     timelineDrag: null,
     timelinePreviewRaf: 0,
     timelinePreviewTarget: null,
@@ -1045,6 +1048,13 @@
         background: #000;
         user-select: none;
         touch-action: none;
+      }
+      #editorMotionLayer {
+        position: absolute;
+        inset: 0;
+        z-index: 0;
+        transform-origin: 0 0;
+        pointer-events: none;
       }
       #clipVideo, #scrubVideo {
         position: absolute;
@@ -1787,25 +1797,27 @@
         <div id="editStage" class="hidden">
           <div class="workspace">
             <div id="editorPreviewWrap">
-              <video id="clipVideo" muted playsinline preload="auto"></video>
-              <video id="scrubVideo" muted playsinline preload="auto" aria-hidden="true"></video>
-              <canvas id="previewCanvas" aria-hidden="true"></canvas>
-              <button id="aspectSquareBtn" class="edit-lockable" type="button" aria-pressed="false" title="锁定裁剪比例为 1:1">1:1</button>
-              <div id="editorOverlay">
-                <div id="editorBoundary"></div>
-                <div id="editorCropBox">
-                  <span id="cropSizeBadge" aria-hidden="true">-- × --</span>
-                  <i class="crop-handle" data-resize="n"></i>
-                  <i class="crop-handle" data-resize="s"></i>
-                  <i class="crop-handle" data-resize="e"></i>
-                  <i class="crop-handle" data-resize="w"></i>
-                  <i class="crop-handle" data-resize="nw"></i>
-                  <i class="crop-handle" data-resize="ne"></i>
-                  <i class="crop-handle" data-resize="sw"></i>
-                  <i class="crop-handle" data-resize="se"></i>
+              <div id="editorMotionLayer">
+                <video id="clipVideo" muted playsinline preload="auto"></video>
+                <video id="scrubVideo" muted playsinline preload="auto" aria-hidden="true"></video>
+                <canvas id="previewCanvas" aria-hidden="true"></canvas>
+                <div id="editorOverlay">
+                  <div id="editorBoundary"></div>
+                  <div id="editorCropBox">
+                    <span id="cropSizeBadge" aria-hidden="true">-- × --</span>
+                    <i class="crop-handle" data-resize="n"></i>
+                    <i class="crop-handle" data-resize="s"></i>
+                    <i class="crop-handle" data-resize="e"></i>
+                    <i class="crop-handle" data-resize="w"></i>
+                    <i class="crop-handle" data-resize="nw"></i>
+                    <i class="crop-handle" data-resize="ne"></i>
+                    <i class="crop-handle" data-resize="sw"></i>
+                    <i class="crop-handle" data-resize="se"></i>
+                  </div>
                 </div>
+                <div id="captionLayer"></div>
               </div>
-              <div id="captionLayer"></div>
+              <button id="aspectSquareBtn" class="edit-lockable" type="button" aria-pressed="false" title="锁定裁剪比例为 1:1">1:1</button>
             </div>
 
             <div class="trim-block">
@@ -1992,6 +2004,7 @@
     recordTimer: $('#recordTimer'),
     hudStopBtn: $('#hudStopBtn'),
     editorPreviewWrap: $('#editorPreviewWrap'),
+    editorMotionLayer: $('#editorMotionLayer'),
     clipVideo: $('#clipVideo'),
     scrubVideo: $('#scrubVideo'),
     previewCanvas: $('#previewCanvas'),
@@ -2415,6 +2428,69 @@
     }));
   }
 
+  function readEditorVideoLayout() {
+    if (!el.clipVideo) return null;
+    const layout = {
+      left: Number.parseFloat(el.clipVideo.style.left),
+      top: Number.parseFloat(el.clipVideo.style.top),
+      width: Number.parseFloat(el.clipVideo.style.width),
+      height: Number.parseFloat(el.clipVideo.style.height),
+    };
+    return Object.values(layout).every(Number.isFinite) && layout.width > 1 && layout.height > 1
+      ? layout
+      : null;
+  }
+
+  function calculateEditorCropGeometry(layout) {
+    const crop = state.editorCrop;
+    return {
+      left: layout.left + crop.x * layout.width,
+      top: layout.top + crop.y * layout.height,
+      width: crop.w * layout.width,
+      height: crop.h * layout.height,
+    };
+  }
+
+  function applyEditorCropGeometry(layout) {
+    if (!layout) return null;
+    const crop = calculateEditorCropGeometry(layout);
+    Object.assign(el.editorCropBox.style, {
+      left: `${crop.left}px`,
+      top: `${crop.top}px`,
+      width: `${crop.width}px`,
+      height: `${crop.height}px`,
+      visibility: 'visible',
+    });
+    Object.assign(el.editorBoundary.style, {
+      left: `${layout.left}px`,
+      top: `${layout.top}px`,
+      width: `${layout.width}px`,
+      height: `${layout.height}px`,
+    });
+    Object.assign(el.captionLayer.style, {
+      left: `${crop.left}px`,
+      top: `${crop.top}px`,
+      width: `${crop.width}px`,
+      height: `${crop.height}px`,
+    });
+    Object.assign(el.previewCanvas.style, {
+      left: `${crop.left}px`,
+      top: `${crop.top}px`,
+      width: `${Math.max(1, crop.width)}px`,
+      height: `${Math.max(1, crop.height)}px`,
+      borderRadius: '0px',
+      visibility: 'visible',
+    });
+    if (el.cropSizeBadge) {
+      const sourceWidth = Math.max(1, Number(state.clip?.width) || 1);
+      const sourceHeight = Math.max(1, Number(state.clip?.height) || 1);
+      el.cropSizeBadge.textContent = `${Math.round(state.editorCrop.w * sourceWidth)} × ${Math.round(state.editorCrop.h * sourceHeight)}`;
+    }
+    updateRoundedCropGuide(crop.width, crop.height);
+    updateTextLayerMetrics(crop.width);
+    return crop;
+  }
+
   function calculateFittedEditorViewport() {
     if (!state.clip || !el.editorPreviewWrap || !el.clipVideo) return;
     const viewport = getEditorViewportRect();
@@ -2446,17 +2522,6 @@
     clearEditorViewportAnimation();
     const fitted = calculateFittedEditorViewport();
     if (fitted) applyEditorVideoLayout(fitted);
-  }
-
-  function editorViewportMotionElements() {
-    return [
-      el.clipVideo,
-      el.scrubVideo,
-      el.previewCanvas,
-      el.editorBoundary,
-      el.editorCropBox,
-      el.captionLayer,
-    ].filter(Boolean);
   }
 
   function readMotionRect(element) {
@@ -2492,7 +2557,10 @@
   function finishEditorViewportAnimation(session) {
     if (state.editorViewportAnimation !== session) return;
     clearEditorViewportAnimation(session);
-    updateEditorCropBox({ force: true });
+    applyEditorCropGeometry(readEditorVideoLayout());
+    updateResolutionOptions();
+    updateEstimatedFileSize();
+    scheduleEditorPreviewRender();
   }
 
   function settleEditorViewportAnimation() {
@@ -2501,43 +2569,39 @@
     const viewport = getEditorViewportRect();
     const currentRect = readMotionRect(el.clipVideo);
     clearEditorViewportAnimation(session);
-    applyEditorVideoLayout({
+    const currentLayout = {
       left: currentRect.left - viewport.left,
       top: currentRect.top - viewport.top,
       width: currentRect.width,
       height: currentRect.height,
-    });
-    updateEditorCropBox({ force: true });
+    };
+    applyEditorVideoLayout(currentLayout);
+    applyEditorCropGeometry(currentLayout);
   }
 
   function animateCropIntoPreview() {
     if (!state.clip || el.editStage.classList.contains('hidden')) return;
     settleEditorViewportAnimation();
-    const elements = editorViewportMotionElements();
-    const firstRects = new Map(elements.map((element) => [element, readMotionRect(element)]));
+    const firstLayout = readEditorVideoLayout();
     const fitted = calculateFittedEditorViewport();
-    if (!fitted) return;
+    if (!firstLayout || !fitted) return;
+
+    const transform = calculateViewportFlipTransform(firstLayout, fitted);
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const canAnimate = typeof el.editorMotionLayer?.animate === 'function';
 
     applyEditorVideoLayout(fitted);
-    updateEditorCropBox({ force: true });
+    applyEditorCropGeometry(fitted);
 
-    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    if (reducedMotion || !elements.every((element) => typeof element.animate === 'function')) return;
+    if (reducedMotion || !canAnimate || !isVisibleFlip(transform)) {
+      updateResolutionOptions();
+      updateEstimatedFileSize();
+      scheduleEditorPreviewRender();
+      return;
+    }
 
-    const transforms = new Map(elements.map((element) => [
-      element,
-      calculateFlipTransform(firstRects.get(element), readMotionRect(element)),
-    ]));
-    if (![...transforms.values()].some(isVisibleFlip)) return;
-
-    const animations = [];
-    const animatedElements = new Set();
-    elements.forEach((element) => {
-      const transform = transforms.get(element);
-      if (!isVisibleFlip(transform)) return;
-      element.style.willChange = 'transform';
-      animatedElements.add(element);
-      animations.push(element.animate([
+    el.editorMotionLayer.style.willChange = 'transform';
+    const motionAnimation = el.editorMotionLayer.animate([
         {
           transformOrigin: '0 0',
           transform: `translate(${transform.translateX}px, ${transform.translateY}px) scale(${transform.scaleX}, ${transform.scaleY})`,
@@ -2547,33 +2611,31 @@
         duration: EDITOR_VIEWPORT_MOTION_MS,
         easing: EDITOR_VIEWPORT_EASING,
         fill: 'both',
-      }));
-    });
-
-    const cropTransform = transforms.get(el.editorCropBox);
-    if (cropTransform && isVisibleFlip(cropTransform)) {
-      const fixedSizeControls = [
-        ...el.editorCropBox.querySelectorAll('.crop-handle'),
-        el.cropSizeBadge,
-      ].filter(Boolean);
-      fixedSizeControls.forEach((element) => {
-        element.style.willChange = 'transform';
-        animatedElements.add(element);
-        animations.push(element.animate(
-          makeCounterScaleKeyframes(cropTransform.scaleX, cropTransform.scaleY),
-          {
-            duration: EDITOR_VIEWPORT_MOTION_MS,
-            easing: EDITOR_VIEWPORT_EASING,
-            fill: 'both',
-          },
-        ));
       });
-    }
-
-    if (!animations.length) return;
+    const animations = [motionAnimation];
+    const animatedElements = new Set([el.editorMotionLayer]);
     const session = { animations, elements: animatedElements };
     state.editorViewportAnimation = session;
-    animations[0].onfinish = () => finishEditorViewportAnimation(session);
+
+    const fixedSizeControls = [
+      ...el.editorCropBox.querySelectorAll('.crop-handle'),
+      el.cropSizeBadge,
+    ].filter(Boolean);
+    fixedSizeControls.forEach((element) => {
+      element.style.willChange = 'transform';
+      animatedElements.add(element);
+      animations.push(element.animate(
+        makeCounterScaleKeyframes(transform.scaleX, transform.scaleY),
+        {
+          duration: EDITOR_VIEWPORT_MOTION_MS,
+          easing: EDITOR_VIEWPORT_EASING,
+          fill: 'both',
+        },
+      ));
+    });
+
+    motionAnimation.onfinish = () => finishEditorViewportAnimation(session);
+    scheduleEditorPreviewRender();
   }
 
   function readSavedPanelPosition() {
@@ -2974,6 +3036,7 @@
 
   function closePanel() {
     clearEditorViewportAnimation();
+    cancelEditorPreviewRender();
     el.panel.classList.add('hidden');
     stopTrimPreview();
   }
@@ -3056,6 +3119,7 @@
 
   function disposeClip() {
     clearEditorViewportAnimation();
+    cancelEditorPreviewRender();
     stopTrimPreview();
     releasePreviewFrameCache();
     const clip = state.clip;
@@ -3783,43 +3847,13 @@
     };
   }
 
-  function updateEditorCropBox({ force = false } = {}) {
+  function updateEditorCropBox({ force = false, render = true } = {}) {
     if (!state.clip || el.editStage.classList.contains('hidden')) return;
     if (state.editorViewportAnimation && !force) return;
-    const mapping = getEditorMapping();
-    if (!mapping) return;
-    const viewport = getEditorViewportRect();
-    const rawRect = cropToScreenRect(state.editorCrop, mapping);
-    const visible = intersectRects(rawRect, mapping.renderedRect);
-    if (!visible) return;
-
-    Object.assign(el.editorCropBox.style, {
-      left: `${visible.left - viewport.left}px`,
-      top: `${visible.top - viewport.top}px`,
-      width: `${visible.width}px`,
-      height: `${visible.height}px`,
-      visibility: 'visible',
-    });
-    Object.assign(el.editorBoundary.style, {
-      left: `${mapping.renderedRect.left - viewport.left}px`,
-      top: `${mapping.renderedRect.top - viewport.top}px`,
-      width: `${mapping.renderedRect.width}px`,
-      height: `${mapping.renderedRect.height}px`,
-    });
-    Object.assign(el.captionLayer.style, {
-      left: `${visible.left - viewport.left}px`,
-      top: `${visible.top - viewport.top}px`,
-      width: `${visible.width}px`,
-      height: `${visible.height}px`,
-    });
-    if (el.cropSizeBadge) {
-      const sourceWidth = Math.max(1, Number(state.clip.width) || mapping.videoWidth || 1);
-      const sourceHeight = Math.max(1, Number(state.clip.height) || mapping.videoHeight || 1);
-      el.cropSizeBadge.textContent = `${Math.round(state.editorCrop.w * sourceWidth)} × ${Math.round(state.editorCrop.h * sourceHeight)}`;
-    }
-    updateRoundedCropGuide(visible.width, visible.height);
-    renderTextLayers();
-    renderExportPreviewFrame();
+    const layout = readEditorVideoLayout();
+    if (!layout) return;
+    applyEditorCropGeometry(layout);
+    if (render) renderExportPreviewFrame();
   }
 
   function updateAspectSquareButton() {
@@ -3852,8 +3886,6 @@
     if (state.aspectSquare) makeCurrentCropSquare();
     updateAspectSquareButton();
     animateCropIntoPreview();
-    updateResolutionOptions();
-    updateEstimatedFileSize();
   }
 
   function resizeSquareScreenRect(startRect, handle, dx, dy, boundary, minSize = MIN_SELECT_PX) {
@@ -3942,9 +3974,8 @@
     const crop = screenRectToEditorCrop(rect, session.mapping);
     if (!crop) return;
     state.editorCrop = crop;
-    updateEditorCropBox();
-    updateResolutionOptions();
-    updateEstimatedFileSize();
+    updateEditorCropBox({ render: false });
+    scheduleEditorPreviewRender();
     event.preventDefault();
   }
 
@@ -4285,27 +4316,41 @@
     }
   }
 
+  function applyTextLayerMetrics(item, layer, previewWidth) {
+    const fontSize = Math.max(12, Math.round(previewWidth * layer.fontScale));
+    const strokeWidth = Math.max(0, fontSize * layer.strokeScale);
+    Object.assign(item.style, {
+      fontSize: `${fontSize}px`,
+      webkitTextStroke: `${strokeWidth}px ${layer.strokeColor}`,
+    });
+  }
+
+  function updateTextLayerMetrics(previewWidth) {
+    if (!el.captionLayer || !state.textLayers.length) return;
+    const layers = new Map(state.textLayers.map((layer) => [layer.id, layer]));
+    el.captionLayer.querySelectorAll('.caption-item').forEach((item) => {
+      const layer = layers.get(item.dataset.textId);
+      if (layer) applyTextLayerMetrics(item, layer, previewWidth);
+    });
+  }
+
   function renderTextLayers() {
     if (!el.captionLayer) return;
     el.captionLayer.textContent = '';
     if (!state.clip) return;
-    const bounds = el.captionLayer.getBoundingClientRect();
-    const previewWidth = Math.max(1, bounds.width || Number.parseFloat(el.captionLayer.style.width) || 1);
+    const previewWidth = Math.max(1, Number.parseFloat(el.captionLayer.style.width) || 1);
     state.textLayers.forEach((layer) => {
       if (!String(layer.text || '').trim()) return;
       const item = document.createElement('div');
       item.className = `caption-item${layer.id === state.activeTextId ? ' active' : ''}`;
       item.dataset.textId = layer.id;
       item.textContent = layer.text;
-      const fontSize = Math.max(12, Math.round(previewWidth * layer.fontScale));
-      const strokeWidth = Math.max(0, fontSize * layer.strokeScale);
       Object.assign(item.style, {
         left: `${clamp(layer.x, 0, 1) * 100}%`,
         top: `${clamp(layer.y, 0, 1) * 100}%`,
-        fontSize: `${fontSize}px`,
         color: layer.textColor,
-        webkitTextStroke: `${strokeWidth}px ${layer.strokeColor}`,
       });
+      applyTextLayerMetrics(item, layer, previewWidth);
       el.captionLayer.appendChild(item);
     });
   }
@@ -4672,20 +4717,17 @@
     if (!nextSettings) return null;
     if (state.editorViewportAnimation) return nextSettings;
 
-    const mapping = getEditorMapping();
-    if (!mapping) return null;
-    const viewport = getEditorViewportRect();
-    const rawRect = cropToScreenRect(state.editorCrop, mapping);
-    const visible = intersectRects(rawRect, mapping.renderedRect);
-    if (!visible) return null;
+    const layout = readEditorVideoLayout();
+    if (!layout) return null;
+    const crop = calculateEditorCropGeometry(layout);
     const canvas = el.previewCanvas;
     if (canvas.width !== nextSettings.outputWidth) canvas.width = nextSettings.outputWidth;
     if (canvas.height !== nextSettings.outputHeight) canvas.height = nextSettings.outputHeight;
-    const displayWidth = Math.max(1, visible.width);
-    const displayHeight = Math.max(1, visible.height);
+    const displayWidth = Math.max(1, crop.width);
+    const displayHeight = Math.max(1, crop.height);
     Object.assign(canvas.style, {
-      left: `${visible.left - viewport.left}px`,
-      top: `${visible.top - viewport.top}px`,
+      left: `${crop.left}px`,
+      top: `${crop.top}px`,
       width: `${displayWidth}px`,
       height: `${displayHeight}px`,
       borderRadius: '0px',
@@ -4693,6 +4735,20 @@
     });
     updateRoundedCropGuide(displayWidth, displayHeight, nextSettings);
     return nextSettings;
+  }
+
+  function scheduleEditorPreviewRender() {
+    if (state.editorPreviewRaf) return;
+    state.editorPreviewRaf = requestAnimationFrame(() => {
+      state.editorPreviewRaf = 0;
+      renderExportPreviewFrame();
+    });
+  }
+
+  function cancelEditorPreviewRender() {
+    if (!state.editorPreviewRaf) return;
+    cancelAnimationFrame(state.editorPreviewRaf);
+    state.editorPreviewRaf = 0;
   }
 
   function renderExportPreviewFrame(settings = null) {
@@ -5652,6 +5708,7 @@
 
   window.addEventListener('beforeunload', () => {
     clearEditorViewportAnimation();
+    cancelEditorPreviewRender();
     stopTrimPreview();
     releasePreviewFrameCache();
     cleanupRecordingResources(state.recording);

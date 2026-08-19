@@ -44,12 +44,14 @@ test('compact editor keeps visual feedback inside the existing workspace', () =>
 });
 
 test('crop viewport adaptation uses interruptible transform-only motion', () => {
-  assert.match(source, /EDITOR_VIEWPORT_MOTION_MS\s*=\s*220/);
-  assert.match(source, /EDITOR_VIEWPORT_EASING\s*=\s*'cubic-bezier\(0\.22, 1, 0\.36, 1\)'/);
-  assert.match(source, /element\.animate\(\[\s*\{[\s\S]*?transform:[\s\S]*?\}\s*,\s*\{[\s\S]*?transform:/);
+  assert.match(source, /id="editorMotionLayer"/);
+  assert.match(source, /EDITOR_VIEWPORT_MOTION_MS\s*=\s*260/);
+  assert.match(source, /EDITOR_VIEWPORT_EASING\s*=\s*'cubic-bezier\(0\.33, 1, 0\.68, 1\)'/);
+  assert.match(source, /el\.editorMotionLayer\.animate\(\[\s*\{[\s\S]*?transform:[\s\S]*?\}\s*,\s*\{[\s\S]*?transform:/);
   assert.match(source, /window\.matchMedia\('\(prefers-reduced-motion: reduce\)'\)\.matches/);
-  assert.match(source, /if \(reducedMotion \|\| !elements\.every/);
+  assert.match(source, /if \(reducedMotion \|\| !canAnimate \|\| !isVisibleFlip/);
   assert.match(source, /settleEditorViewportAnimation\(\);[\s\S]*?const mapping = getEditorMapping\(\)/);
+  assert.match(source, /updateEditorCropBox\(\{ render: false \}\);\s*scheduleEditorPreviewRender\(\);/);
 });
 
 test('filled actions and muted text retain readable contrast', () => {
