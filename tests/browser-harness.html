@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>贝报 GIF 助手浏览器测试</title>
+  <style>
+    html, body { margin: 0; min-height: 100%; background: #101114; color: #fff; font-family: system-ui, sans-serif; }
+    main { display: grid; min-height: 100vh; place-items: center; }
+    video { width: min(720px, 88vw); aspect-ratio: 1; background: #000; }
+    canvas { position: fixed; left: -10000px; width: 720px; height: 720px; }
+  </style>
+</head>
+<body>
+  <main><video id="testVideo" autoplay muted playsinline></video></main>
+  <canvas id="source" width="720" height="720"></canvas>
+  <script>
+    const resourceUrls = {
+      MODERN_PALETTE_MODULE: 'https://cdn.jsdelivr.net/npm/modern-palette@2.0.0/dist/index.mjs',
+      GIFENC_MODULE: 'https://cdn.jsdelivr.net/npm/gifenc@1.0.3/dist/gifenc.esm.js',
+      GIFSICLE_MODULE: 'https://cdn.jsdelivr.net/npm/gifsicle-wasm-browser@1.5.19/dist/gifsicle.min.js',
+    };
+    window.GM = {
+      async getResourceText(name) {
+        const response = await fetch(resourceUrls[name]);
+        if (!response.ok) throw new Error(`Resource ${name} returned ${response.status}`);
+        return response.text();
+      },
+    };
+    function inspectGif(bytes) {
+      const view = new Uint8Array(bytes);
+      const width = view[6] | view[7] << 8;
+      const height = view[8] | view[9] << 8;
+      let offset = 13;
+      if (view[10] & 0x80) offset += 3 * (1 << ((view[10] & 7) + 1));
+      let frameCount = 0;
+      const frameHashes = [];
+      const delays = [];
+      let pendingDelay = 0;
+      while (offset < view.length) {
+        const blockStart = offset;
+        const marker = view[offset++];
+        if (marker === 0x3b) break;
+        if (marker === 0x21) {
+          const label = view[offset++];
+          if (label === 0xf9 && view[offset] === 4) {
+            pendingDelay = view[offset + 2] | view[offset + 3] << 8;
+          }
+        } else if (marker === 0x2c) {
+          frameCount += 1;
+          delays.push(pendingDelay);
+          const packed = view[offset + 8];
+          offset += 9;
+          if (packed & 0x80) offset += 3 * (1 << ((packed & 7) + 1));
+          offset += 1;
+        } else {
+          break;
+        }
+        while (offset < view.length) {
+          const blockSize = view[offset++];
+          if (!blockSize) break;
+          offset += blockSize;
+        }
+        if (marker === 0x2c) {
+          let hash = 2166136261;
+          for (let index = blockStart; index < offset; index += 1) {
+            hash = Math.imul(hash ^ view[index], 16777619);
+          }
+          frameHashes.push(hash >>> 0);
+        }
+      }
+      return { width, height, frameCount, delays, uniqueFrameHashes: new Set(frameHashes).size };
+    }
+
+    const nativeWorkerPostMessage = Worker.prototype.postMessage;
+    Worker.prototype.postMessage = function postMessage(message, transfer) {
+      if (message?.command && message.data?.[0]?.file) {
+        document.documentElement.dataset.precompressedGifReport = JSON.stringify({
+          size: message.data[0].file.byteLength,
+          ...inspectGif(message.data[0].file),
+        });
+      }
+      return nativeWorkerPostMessage.call(this, message, transfer);
+    };
+
+    document.addEventListener('click', async (event) => {
+      const path = event.composedPath();
+      if (path.some((node) => node.id === 'cancelExportBtn')) {
+        document.documentElement.dataset.cancelStartedAt = String(performance.now());
+      }
+      const anchor = path.find((node) => node instanceof HTMLAnchorElement && node.download);
+      if (!anchor?.href.startsWith('blob:')) return;
+      const blob = await fetch(anchor.href).then((response) => response.blob());
+      const report = inspectGif(await blob.arrayBuffer());
+      const first = await createImageBitmap(blob);
+      const canvas = new OffscreenCanvas(first.width, first.height);
+      const context = canvas.getContext('2d');
+      context.drawImage(first, 0, 0);
+      const cornerAlpha = context.getImageData(0, 0, 1, 1).data[3];
+      first.close();
+      document.documentElement.dataset.gifReport = JSON.stringify({
+        name: anchor.download,
+        size: blob.size,
+        ...report,
+        cornerAlpha,
+      });
+    }, true);
+
+    window.addEventListener('DOMContentLoaded', () => {
+      const badge = document.querySelector('#bili-gif-maker-host')?.shadowRoot?.getElementById('stageBadge');
+      if (!badge) return;
+      new MutationObserver(() => {
+        const startedAt = Number(document.documentElement.dataset.cancelStartedAt);
+        if (startedAt && badge.textContent === '编辑') {
+          document.documentElement.dataset.cancelRecoveryMs = String(performance.now() - startedAt);
+        }
+      }).observe(badge, { childList: true });
+    }, { once: true });
+  </script>
+  <script>
+    const canvas = document.querySelector('#source');
+    const context = canvas.getContext('2d', { alpha: false, colorSpace: 'srgb' });
+    const video = document.querySelector('#testVideo');
+    const startedAt = performance.now();
+
+    function render(now) {
+      const t = (now - startedAt) / 1000;
+      const gradient = context.createLinearGradient(0, 0, 720, 720);
+      gradient.addColorStop(0, `hsl(${(t * 42) % 360} 88% 56%)`);
+      gradient.addColorStop(0.5, '#f0c29d');
+      gradient.addColorStop(1, '#ffe24a');
+      context.fillStyle = gradient;
+      context.fillRect(0, 0, 720, 720);
+      context.fillStyle = '#1b1d21';
+      context.beginPath();
+      context.arc(360 + Math.sin(t * 2) * 190, 330, 96, 0, Math.PI * 2);
+      context.fill();
+      context.fillStyle = '#fff';
+      context.font = '850 62px "PingFang SC", sans-serif';
+      context.textAlign = 'center';
+      context.fillText('贝报 性能测试', 360, 610);
+      requestAnimationFrame(render);
+    }
+
+    video.srcObject = canvas.captureStream(30);
+    video.play().then(() => { document.documentElement.dataset.ready = 'true'; });
+    requestAnimationFrame(render);
+  </script>
+  <script src="../bella-gif-helper.user.js"></script>
+</body>
+</html>

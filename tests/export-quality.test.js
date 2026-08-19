@@ -28,9 +28,9 @@ test('quality presets only control palette and compression', () => {
 });
 
 test('quality presets produce the intended Gifsicle commands', () => {
-  assert.equal(buildGifsicleCommand(GIF_QUALITY_PRESETS.nai), '-O1 input.gif -o /out/output.gif');
-  assert.equal(buildGifsicleCommand(GIF_QUALITY_PRESETS.bei), '-O1 --lossy=25 input.gif -o /out/output.gif');
-  assert.equal(buildGifsicleCommand(GIF_QUALITY_PRESETS.ran), '-O1 --lossy=50 input.gif -o /out/output.gif');
+  assert.equal(buildGifsicleCommand(GIF_QUALITY_PRESETS.nai), '-O1 -Okeep-empty input.gif -o /out/output.gif');
+  assert.equal(buildGifsicleCommand(GIF_QUALITY_PRESETS.bei), '-O1 -Okeep-empty --lossy=25 input.gif -o /out/output.gif');
+  assert.equal(buildGifsicleCommand(GIF_QUALITY_PRESETS.ran), '-O1 -Okeep-empty --lossy=50 input.gif -o /out/output.gif');
 });
 
 test('GIF delay follows the user frame rate and speed at GIF precision', () => {
@@ -71,13 +71,22 @@ test('crop-aware preview centers an off-axis crop instead of the whole video', (
   assert.equal(cropRight, 324);
 });
 
-test('userscript uses pinned modern encoder resources and sRGB canvases', () => {
+test('userscript uses pinned parallel encoder resources and sRGB canvases', () => {
   const source = fs.readFileSync(userscriptPath, 'utf8');
-  assert.match(source, /modern-gif@2\.1\.0\/dist\/index\.js/);
+  assert.match(source, /@version\s+1\.3\.0/);
+  assert.match(source, /modern-palette@2\.0\.0\/dist\/index\.mjs/);
+  assert.match(source, /gifenc@1\.0\.3\/dist\/gifenc\.esm\.js/);
   assert.match(source, /gifsicle-wasm-browser@1\.5\.19\/dist\/gifsicle\.min\.js/);
   assert.match(source, /colorSpace: 'srgb'/);
+  assert.match(source, /new VideoFrame\(video/);
+  assert.match(source, /source\.displayWidth \|\| source\.width/);
+  assert.match(source, /selectEncoderWorker\(workers\.map/);
+  assert.match(source, /calculateEncoderWorkerCount\(navigator\.hardwareConcurrency\)/);
+  assert.match(source, /navigation\?\.addEventListener\('currententrychange'/);
   assert.match(source, /<option value="nai">\u4e43<\/option>/);
   assert.match(source, /<option value="bei" selected>\u8d1d<\/option>/);
   assert.match(source, /<option value="ran">\u7136<\/option>/);
-  assert.doesNotMatch(source, /gif\.js@|GIF_WORKER|globalPalette/);
+  assert.doesNotMatch(source, /modern-gif@|gif\.js@|GIF_WORKER/);
+  assert.doesNotMatch(source, /setInterval\(updateVideoStatus/);
+  assert.doesNotMatch(source, /estimateGifBytesBySampling|scheduleSampledSizeEstimate/);
 });

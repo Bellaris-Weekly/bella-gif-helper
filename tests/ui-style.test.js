@@ -52,15 +52,26 @@ test('crop viewport adaptation uses interruptible transform-only motion', () => 
   assert.match(source, /if \(reducedMotion \|\| !canAnimate \|\| !isVisibleViewportTransition/);
   assert.match(source, /settleEditorViewportAnimation\(\);[\s\S]*?const mapping = getEditorMapping\(\)/);
   assert.match(source, /applyEditorVideoLayout\(session\.targetLayout\);\s*applyEditorCropGeometry\(session\.targetLayout\);\s*clearEditorViewportAnimation\(session\);/);
+  assert.doesNotMatch(source, /makeCounterScaleKeyframes/);
+  assert.match(css, /#editorMotionLayer\s*\{[\s\S]*?contain:\s*layout paint/);
+  assert.match(css, /#editorPreviewWrap\.viewport-transitioning[\s\S]*?visibility:\s*hidden/);
 });
 
 test('crop release precomputes its target and defers expensive canvas rendering', () => {
   assert.match(source, /fittedLayout:\s*calculateFittedEditorViewport\(viewport\)/);
   assert.match(source, /session\.fittedLayout\s*=\s*calculateFittedEditorViewport\(session\.viewport, crop\)/);
-  assert.match(source, /cancelEditorPreviewRender\(\);\s*el\.previewCanvas\.style\.visibility\s*=\s*'hidden';\s*prepareEditorViewportAnimation\(\);/);
+  assert.match(source, /suspendEditorBackgroundWork\(\);\s*prepareEditorViewportAnimation\(\);/);
   assert.match(source, /animateCropIntoPreview\(session\.fittedLayout\);/);
-  assert.match(source, /if \(state\.editorCropSession \|\| state\.editorViewportAnimation\) return;/);
+  assert.match(source, /if \(state\.editorCropSession \|\| state\.editorViewportAnimation \|\| state\.editorBackgroundIntent\) return;/);
   assert.doesNotMatch(source, /updateEditorCropBox\(\{ render: false \}\);\s*scheduleEditorPreviewRender\(\);/);
+});
+
+test('crop interaction pauses background work and resumes it after an idle delay', () => {
+  assert.match(source, /EDITOR_BACKGROUND_RESUME_DELAY_MS\s*=\s*320/);
+  assert.match(source, /function suspendEditorBackgroundWork\(\)[\s\S]*?pausePreviewFrameCache\(\);[\s\S]*?stopTrimPreview\(\)/);
+  assert.match(source, /function scheduleEditorBackgroundResume\(\)[\s\S]*?requestIdleCallback[\s\S]*?resumeEditorBackgroundWork\(\)/);
+  assert.match(source, /if \(intent\.resumeCache\) void resumePreviewFrameCache\(\);/);
+  assert.match(source, /if \(intent\.resumePreview[\s\S]*?ensureTrimPreviewPlaying\(\)/);
 });
 
 test('filled actions and muted text retain readable contrast', () => {

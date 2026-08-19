@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         贝报 GIF 助手
 // @namespace    https://www.bk0717.com/
-// @version      1.2.3
+// @version      1.3.0
 // @description  B站直播回溯、视频框选录制与 GIF 编辑
 // @author       贝极星周报
 // @homepageURL  https://github.com/Bellaris-Weekly/bella-gif-helper
@@ -17,7 +17,8 @@
 // @match        https://live.bilibili.com/*
 // @match        https://m.bilibili.com/video/*
 // @match        https://live.bilibili.com/*
-// @resource     MODERN_GIF_MODULE https://cdn.jsdelivr.net/npm/modern-gif@2.1.0/dist/index.js
+// @resource     MODERN_PALETTE_MODULE https://cdn.jsdelivr.net/npm/modern-palette@2.0.0/dist/index.mjs
+// @resource     GIFENC_MODULE https://cdn.jsdelivr.net/npm/gifenc@1.0.3/dist/gifenc.esm.js
 // @resource     GIFSICLE_MODULE https://cdn.jsdelivr.net/npm/gifsicle-wasm-browser@1.5.19/dist/gifsicle.min.js
 // @grant        GM_getResourceText
 // @grant        unsafeWindow
@@ -25,7 +26,7 @@
 // @noframes
 // ==/UserScript==
 
-// GIF 编码使用 modern-gif 2.1.0（MIT License）。
+// GIF 调色使用 modern-palette 2.0.0，编码使用 gifenc 1.0.3（MIT License）。
 // GIF 后压缩使用 Gifsicle WASM（Gifsicle GPL-2.0-or-later）。
 
 (() => {
@@ -34,6 +35,18 @@
   const LIVE_REWIND_BUFFER_SECONDS = 75;
   const LIVE_REWIND_TARGET_SECONDS = 60;
   const LIVE_CAPTURE_MODE_KEY = 'biliGifMakerLiveCaptureModeV1';
+  const GIF_TRANSPARENT_INDEX = 255;
+  const PREVIEW_CACHE_MEMORY_BUDGET = 16 * 1024 * 1024;
+  const PREVIEW_CACHE_MAX_FRAMES = 240;
+  const PREVIEW_CACHE_FPS = 4;
+  const PREVIEW_CACHE_MAX_EDGE = 160;
+  const PREVIEW_CACHE_MIN_EDGE = 128;
+  const EXPORT_PHASE_RANGES = Object.freeze({
+    palette: Object.freeze([0, 12]),
+    extracting: Object.freeze([12, 68]),
+    encoding: Object.freeze([68, 88]),
+    compressing: Object.freeze([88, 99]),
+  });
   const GIF_QUALITY_PRESETS = Object.freeze({
     nai: Object.freeze({ maxColors: 255, dither: 'floyd-steinberg', lossy: 0, estimateFactor: 0.30 }),
     bei: Object.freeze({ maxColors: 255, dither: null, lossy: 25, estimateFactor: 0.22 }),
@@ -42,11 +55,72 @@
 
   function buildGifsicleCommand(preset) {
     const lossy = preset.lossy > 0 ? ` --lossy=${preset.lossy}` : '';
-    return `-O1${lossy} input.gif -o /out/output.gif`;
+    return `-O1 -Okeep-empty${lossy} input.gif -o /out/output.gif`;
   }
 
   function normalizeGifDelay(fps, speed) {
     return Math.max(20, Math.round(((1000 / fps) / speed) / 10) * 10);
+  }
+
+  function calculateEncoderWorkerCount(hardwareConcurrency) {
+    return Math.min(4, Math.max(2, Math.floor((Number(hardwareConcurrency) || 4) / 2)));
+  }
+
+  function selectEncoderWorker(inFlightCounts, maxInFlight = 2) {
+    if (!Array.isArray(inFlightCounts) || !inFlightCounts.length) return -1;
+    let selected = 0;
+    for (let index = 1; index < inFlightCounts.length; index += 1) {
+      if (inFlightCounts[index] < inFlightCounts[selected]) selected = index;
+    }
+    return inFlightCounts[selected] < maxInFlight ? selected : -1;
+  }
+
+  function calculateExtractionPlaybackRate(fps) {
+    return Math.min(6, Math.max(2, 48 / Math.max(1, Number(fps) || 1)));
+  }
+
+  function calculateExportFrameCount(duration, fps) {
+    return Math.max(1, Math.ceil(Math.max(0, Number(duration) || 0) * Math.max(1, Number(fps) || 1)));
+  }
+
+  function calculateExportFrameTime(start, end, index, fps) {
+    return Math.min(Number(end) - 0.001, Number(start) + Number(index) / Math.max(1, Number(fps) || 1));
+  }
+
+  function calculateExportProgress(phase, completed = 0, total = 1) {
+    const range = EXPORT_PHASE_RANGES[phase] || [0, 100];
+    const ratio = Math.min(1, Math.max(0, Number(completed) / Math.max(1, Number(total) || 1)));
+    return range[0] + (range[1] - range[0]) * ratio;
+  }
+
+  function calculatePreviewCacheProfile(videoWidth, videoHeight, duration) {
+    const sourceWidth = Math.max(1, Number(videoWidth) || 1);
+    const sourceHeight = Math.max(1, Number(videoHeight) || 1);
+    const seconds = Math.max(0.1, Number(duration) || 0.1);
+    const frameCount = Math.min(PREVIEW_CACHE_MAX_FRAMES, Math.max(2, Math.ceil(seconds * PREVIEW_CACHE_FPS) + 1));
+    const aspect = sourceWidth / sourceHeight;
+    const maxPixelsPerFrame = Math.floor(PREVIEW_CACHE_MEMORY_BUDGET / frameCount / 4);
+    const budgetWidth = aspect >= 1
+      ? Math.sqrt(maxPixelsPerFrame * aspect)
+      : Math.sqrt(maxPixelsPerFrame / aspect);
+    const longestEdge = Math.max(
+      PREVIEW_CACHE_MIN_EDGE,
+      Math.min(PREVIEW_CACHE_MAX_EDGE, Math.floor(budgetWidth)),
+    );
+    const scale = Math.min(1, longestEdge / Math.max(sourceWidth, sourceHeight));
+    const width = Math.max(2, Math.round(sourceWidth * scale));
+    const height = Math.max(2, Math.round(sourceHeight * scale));
+    return {
+      fps: PREVIEW_CACHE_FPS,
+      width,
+      height,
+      frameCount,
+      bytes: width * height * 4 * frameCount,
+    };
+  }
+
+  function orderFrameChunks(chunks) {
+    return [...chunks].sort((a, b) => a.index - b.index).map((item) => item.bytes);
   }
 
   function calculateCropViewport(viewportWidth, viewportHeight, videoWidth, videoHeight, crop, padding) {
@@ -75,6 +149,13 @@
       translateY: last.top - first.top * scaleY,
       scaleX,
       scaleY,
+    };
+  }
+
+  function mergeEditorBackgroundIntent(current = null, next = null) {
+    return {
+      resumeCache: Boolean(current?.resumeCache || next?.resumeCache),
+      resumePreview: Boolean(current?.resumePreview || next?.resumePreview),
     };
   }
 
@@ -678,6 +759,15 @@
     const originalRevokeObjectURL = URLClass.revokeObjectURL;
     let captureEnabled = Boolean(enabled);
     let activeSource = null;
+    let statusListener = null;
+    let lastStatusNotice = 0;
+
+    const notifyStatus = (track) => {
+      const now = performance.now();
+      if (!statusListener || now - lastStatusNotice < 500) return;
+      lastStatusNotice = now;
+      statusListener(track?.getStatus() || null);
+    };
 
     MediaSourceClass.prototype.addSourceBuffer = function addSourceBuffer(mimeType) {
       const sourceBuffer = originalAddSourceBuffer.call(this, mimeType);
@@ -698,10 +788,11 @@
         const isActive = !activeSource || bufferSources.get(this) === activeSource;
         if (track && (isActive || !track.init)) {
           try {
-            track.ingest(data, {
+            const accepted = track.ingest(data, {
               mimeType: track.mimeType,
               timestampOffset: Number(this.timestampOffset) || 0,
             });
+            if (accepted && isActive) notifyStatus(track);
           } catch (_) { }
         }
         return originalAppendBuffer.call(this, data);
@@ -752,7 +843,11 @@
         const source = urlSources.get(String(video?.currentSrc || video?.src || ''));
         return source ? sourceTracks.get(source)?.getStatus() || null : null;
       },
+      setStatusListener(listener) {
+        statusListener = typeof listener === 'function' ? listener : null;
+      },
       dispose() {
+        statusListener = null;
         for (const source of urlSources.values()) sourceTracks.get(source)?.clearAll();
         urlSources.clear();
       },
@@ -772,8 +867,18 @@
     GIF_QUALITY_PRESETS,
     buildGifsicleCommand,
     normalizeGifDelay,
+    calculateEncoderWorkerCount,
+    selectEncoderWorker,
+    calculateExtractionPlaybackRate,
+    calculateExportFrameCount,
+    calculateExportFrameTime,
+    calculateExportProgress,
+    calculatePreviewCacheProfile,
+    orderFrameChunks,
+    GIF_TRANSPARENT_INDEX,
     calculateCropViewport,
     calculateViewportTransitionTransform,
+    mergeEditorBackgroundIntent,
   };
   if (typeof module === 'object' && module.exports && typeof document === 'undefined') {
     module.exports = liveRewindTestApi;
@@ -800,14 +905,11 @@
   const MAX_RECORD_SECONDS = 60;
   const MAX_EXPORT_FRAMES = 900;
   const ENCODE_TIMEOUT_MS = 600_000;
-  const PREVIEW_CACHE_FPS = 12;
-  const PREVIEW_CACHE_MAX_EDGE = 240;
-  const PREVIEW_CACHE_MIN_EDGE = 128;
-  const PREVIEW_CACHE_MEMORY_BUDGET = 72 * 1024 * 1024;
   const MIN_SELECT_PX = 24;
   const EDITOR_CROP_PADDING = 18;
   const EDITOR_VIEWPORT_MOTION_MS = 260;
   const EDITOR_VIEWPORT_EASING = 'cubic-bezier(0.33, 1, 0.68, 1)';
+  const EDITOR_BACKGROUND_RESUME_DELAY_MS = 320;
   const LAUNCHER_POSITION_KEY = 'biliGifMakerLauncherPositionV1';
   const PANEL_POSITION_KEY = 'biliGifMakerPanelPositionV1';
   const EXPORT_PREFERENCES_KEY = 'biliGifMakerExportPreferencesV1';
@@ -821,6 +923,9 @@
     pageAdjustSession: null,
     editorCropSession: null,
     editorViewportAnimation: null,
+    editorBackgroundIntent: null,
+    editorBackgroundResumeTimer: 0,
+    editorBackgroundResumeIdle: 0,
     editorPreviewRaf: 0,
     timelineDrag: null,
     timelinePreviewRaf: 0,
@@ -837,6 +942,7 @@
     trimEnd: 0,
     trimPreviewCleanup: null,
     exportEncodingSession: null,
+    cancelExportPreparation: null,
     launcherDrag: null,
     panelDrag: null,
     suppressLauncherClick: false,
@@ -846,14 +952,14 @@
     nextTextLayerId: 1,
     toastTimer: 0,
     sizeEstimateCalibration: { nai: 1, bei: 1, ran: 1 },
-    sizeEstimateTimer: 0,
-    sizeEstimateToken: 0,
-    sizeEstimateEncodingSession: null,
     encodingResourceTexts: null,
-    lastSampleEstimate: null,
     previewSnapshot: null,
       cancelRequested: false,
       liveCaptureMode: initialLiveCaptureMode,
+      mainVideo: null,
+      videoScanQueued: false,
+      viewportSyncRaf: 0,
+      viewportNeedsResize: false,
     };
 
   const host = document.createElement('div');
@@ -1053,6 +1159,7 @@
         position: absolute;
         inset: 0;
         z-index: 0;
+        contain: layout paint;
         transform-origin: 0 0;
         pointer-events: none;
       }
@@ -1166,6 +1273,10 @@
         white-space: nowrap;
         pointer-events: none;
         backdrop-filter: blur(6px);
+      }
+      #editorPreviewWrap.viewport-transitioning .crop-handle,
+      #editorPreviewWrap.viewport-transitioning #cropSizeBadge {
+        visibility: hidden;
       }
       .crop-handle,
       .page-resize-handle {
@@ -1930,8 +2041,8 @@
             </div>
           </section>
 
-          <div id="status" class="hidden"></div>
-          <div id="progressWrap" class="progress-wrap hidden"><div id="progress"></div></div>
+          <div id="status" class="hidden" role="status" aria-live="polite"></div>
+          <div id="progressWrap" class="progress-wrap hidden" role="progressbar" aria-label="GIF 导出进度" aria-valuemin="0" aria-valuemax="100"><div id="progress"></div></div>
           </div>
 
           <div id="mainActions" class="action-dock">
@@ -2105,7 +2216,9 @@
   }
 
   function setProgress(percent) {
-    el.progress.style.width = `${clamp(Number(percent) || 0, 0, 100)}%`;
+    const value = clamp(Number(percent) || 0, 0, 100);
+    el.progress.style.width = `${value}%`;
+    el.progressWrap.setAttribute('aria-valuenow', String(Math.round(value)));
   }
 
   function hasSelectValue(select, value) {
@@ -2245,7 +2358,7 @@
     };
   }
 
-  function getMainVideo() {
+  function scanMainVideo() {
     const videos = [...document.querySelectorAll('video')];
     if (!videos.length) return null;
 
@@ -2265,6 +2378,25 @@
 
     if (candidates[0]) return candidates[0].video;
     return videos.find((video) => video.readyState >= 1 && video.videoWidth > 0) || null;
+  }
+
+  function getMainVideo() {
+    const current = state.mainVideo;
+    if (current?.isConnected && current.videoWidth > 0 && current.videoHeight > 0) return current;
+    state.mainVideo = scanMainVideo();
+    return state.mainVideo;
+  }
+
+  function invalidateMainVideo() {
+    state.mainVideo = null;
+    if (state.videoScanQueued) return;
+    state.videoScanQueued = true;
+    queueMicrotask(() => {
+      state.videoScanQueued = false;
+      const video = getMainVideo();
+      liveMediaCollector?.setActiveVideo(video);
+      updateLiveRewindTitle();
+    });
   }
 
   function currentPageKey() {
@@ -2306,6 +2438,7 @@
     el.selectionToolbar.classList.toggle('hidden', !showSelectionTools);
 
     const lockEditor = state.mode === 'exporting';
+    el.panel.setAttribute('aria-busy', String(lockEditor));
     $$('.edit-lockable').forEach((node) => {
       node.disabled = lockEditor;
       node.classList.toggle('disabled', lockEditor);
@@ -2479,7 +2612,9 @@
       width: `${Math.max(1, crop.width)}px`,
       height: `${Math.max(1, crop.height)}px`,
       borderRadius: '0px',
-      visibility: state.editorCropSession || state.editorViewportAnimation ? 'hidden' : 'visible',
+      visibility: state.editorCropSession || state.editorViewportAnimation || state.editorBackgroundIntent
+        ? 'hidden'
+        : 'visible',
     });
     if (el.cropSizeBadge) {
       const sourceWidth = Math.max(1, Number(state.clip?.width) || 1);
@@ -2508,18 +2643,8 @@
     );
   }
 
-  function editorViewportMotionElements() {
-    return [
-      el.editorMotionLayer,
-      ...el.editorCropBox.querySelectorAll('.crop-handle'),
-      el.cropSizeBadge,
-    ].filter(Boolean);
-  }
-
   function prepareEditorViewportAnimation() {
-    editorViewportMotionElements().forEach((element) => {
-      element.style.willChange = 'transform';
-    });
+    el.editorMotionLayer.style.willChange = 'transform';
   }
 
   function clearEditorViewportAnimation(session = state.editorViewportAnimation) {
@@ -2530,9 +2655,8 @@
       });
       if (state.editorViewportAnimation === session) state.editorViewportAnimation = null;
     }
-    editorViewportMotionElements().forEach((element) => {
-      element.style.willChange = '';
-    });
+    el.editorMotionLayer.style.willChange = '';
+    el.editorPreviewWrap.classList.remove('viewport-transitioning');
   }
 
   function fitCropIntoPreview() {
@@ -2558,17 +2682,59 @@
       || Math.abs(transform.scaleY - 1) >= 0.002;
   }
 
-  function makeCounterScaleKeyframes(startScaleX, endScaleX, startScaleY, endScaleY) {
-    return Array.from({ length: 21 }, (_, index) => {
-      const offset = index / 20;
-      const currentScaleX = startScaleX + (endScaleX - startScaleX) * offset;
-      const currentScaleY = startScaleY + (endScaleY - startScaleY) * offset;
-      return {
-        offset,
-        transformOrigin: 'center',
-        transform: `scale(${1 / currentScaleX}, ${1 / currentScaleY})`,
-      };
+  function cancelEditorBackgroundResume() {
+    clearTimeout(state.editorBackgroundResumeTimer);
+    state.editorBackgroundResumeTimer = 0;
+    if (state.editorBackgroundResumeIdle && typeof window.cancelIdleCallback === 'function') {
+      window.cancelIdleCallback(state.editorBackgroundResumeIdle);
+    }
+    state.editorBackgroundResumeIdle = 0;
+  }
+
+  function suspendEditorBackgroundWork() {
+    cancelEditorBackgroundResume();
+    const cache = state.previewFrameCache;
+    state.editorBackgroundIntent = mergeEditorBackgroundIntent(state.editorBackgroundIntent, {
+      resumeCache: Boolean(cache && !cache.cancelled && cache.status !== 'ready'),
+      resumePreview: Boolean(state.trimPreviewCleanup),
     });
+    pausePreviewFrameCache();
+    if (state.trimPreviewCleanup) stopTrimPreview();
+    cancelEditorPreviewRender();
+    el.previewCanvas.style.visibility = 'hidden';
+  }
+
+  function resumeEditorBackgroundWork() {
+    cancelEditorBackgroundResume();
+    const intent = state.editorBackgroundIntent;
+    state.editorBackgroundIntent = null;
+    if (!intent || !state.clip || state.mode !== 'edit') return;
+    scheduleEditorPreviewRender();
+    if (intent.resumeCache) void resumePreviewFrameCache();
+    if (intent.resumePreview && !el.panel.classList.contains('hidden') && !state.trimPreviewCleanup) {
+      void ensureTrimPreviewPlaying();
+    }
+  }
+
+  function scheduleEditorBackgroundResume() {
+    if (!state.editorBackgroundIntent) return;
+    cancelEditorBackgroundResume();
+    state.editorBackgroundResumeTimer = window.setTimeout(() => {
+      state.editorBackgroundResumeTimer = 0;
+      if (typeof window.requestIdleCallback === 'function') {
+        state.editorBackgroundResumeIdle = window.requestIdleCallback(() => {
+          state.editorBackgroundResumeIdle = 0;
+          resumeEditorBackgroundWork();
+        }, { timeout: 600 });
+        return;
+      }
+      resumeEditorBackgroundWork();
+    }, EDITOR_BACKGROUND_RESUME_DELAY_MS);
+  }
+
+  function discardEditorBackgroundIntent() {
+    cancelEditorBackgroundResume();
+    state.editorBackgroundIntent = null;
   }
 
   function finishEditorViewportAnimation(session) {
@@ -2579,6 +2745,7 @@
     updateResolutionOptions();
     updateEstimatedFileSize();
     scheduleEditorPreviewRender();
+    scheduleEditorBackgroundResume();
   }
 
   function settleEditorViewportAnimation() {
@@ -2600,10 +2767,13 @@
   function animateCropIntoPreview(precomputedTarget = null) {
     if (!state.clip || el.editStage.classList.contains('hidden')) return;
     settleEditorViewportAnimation();
-    cancelEditorPreviewRender();
+    suspendEditorBackgroundWork();
     const firstLayout = readEditorVideoLayout();
     const fitted = precomputedTarget || calculateFittedEditorViewport();
-    if (!firstLayout || !fitted) return;
+    if (!firstLayout || !fitted) {
+      scheduleEditorBackgroundResume();
+      return;
+    }
 
     const transform = calculateViewportTransitionTransform(firstLayout, fitted);
     const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -2616,10 +2786,12 @@
       updateResolutionOptions();
       updateEstimatedFileSize();
       scheduleEditorPreviewRender();
+      scheduleEditorBackgroundResume();
       return;
     }
 
     prepareEditorViewportAnimation();
+    el.editorPreviewWrap.classList.add('viewport-transitioning');
     const motionAnimation = el.editorMotionLayer.animate([
       { transformOrigin: '0 0', transform: 'translate(0px, 0px) scale(1, 1)' },
       {
@@ -2631,21 +2803,8 @@
       easing: EDITOR_VIEWPORT_EASING,
       fill: 'both',
     });
-    const animations = [motionAnimation];
-    const session = { animations, targetLayout: fitted };
+    const session = { animations: [motionAnimation], targetLayout: fitted };
     state.editorViewportAnimation = session;
-
-    const fixedSizeControls = editorViewportMotionElements().filter((element) => element !== el.editorMotionLayer);
-    fixedSizeControls.forEach((element) => {
-      animations.push(element.animate(
-        makeCounterScaleKeyframes(1, transform.scaleX, 1, transform.scaleY),
-        {
-          duration: EDITOR_VIEWPORT_MOTION_MS,
-          easing: EDITOR_VIEWPORT_EASING,
-          fill: 'both',
-        },
-      ));
-    });
 
     motionAnimation.onfinish = () => finishEditorViewportAnimation(session);
   }
@@ -2762,12 +2921,10 @@
     if (el.timelineFilmstrip) el.timelineFilmstrip.replaceChildren();
     if (!cache) return;
     cache.cancelled = true;
+    cache.runToken += 1;
+    cache.stopRun?.();
+    cache.stopRun = null;
     try { cache.video?.pause(); } catch (_) { }
-    if (cache.video) {
-      cache.video.removeAttribute('src');
-      try { cache.video.load(); } catch (_) { }
-      cache.video.remove();
-    }
     cache.frames?.forEach((frame) => {
       try { frame.close(); } catch (_) { }
     });
@@ -2777,15 +2934,16 @@
   function renderTimelineFilmstrip(cache = state.previewFrameCache) {
     if (!el.timelineFilmstrip) return;
     el.timelineFilmstrip.replaceChildren();
-    if (!cache || cache.status !== 'ready' || !cache.frames.length) return;
+    const availableFrames = cache?.frames?.filter(Boolean) || [];
+    if (!cache || !availableFrames.length) return;
 
-    const cellCount = Math.min(8, cache.frames.length);
+    const cellCount = Math.min(8, availableFrames.length);
     const fragment = document.createDocumentFragment();
     for (let index = 0; index < cellCount; index += 1) {
       const frameIndex = cellCount === 1
         ? 0
-        : Math.round((index / (cellCount - 1)) * (cache.frames.length - 1));
-      const frame = cache.frames[frameIndex];
+        : Math.round((index / (cellCount - 1)) * (availableFrames.length - 1));
+      const frame = availableFrames[frameIndex];
       const canvas = document.createElement('canvas');
       canvas.width = 80;
       canvas.height = 44;
@@ -2883,107 +3041,95 @@
   }
 
   function choosePreviewCacheProfile(clip) {
-    const sourceWidth = Math.max(1, Number(clip.width) || 1);
-    const sourceHeight = Math.max(1, Number(clip.height) || 1);
-    const duration = Math.max(0.1, Number(clip.duration) || 0.1);
-    const fpsOptions = [PREVIEW_CACHE_FPS, 10, 8, 6];
-    const edgeOptions = [240, 208, 192, 176, 160, 144, PREVIEW_CACHE_MIN_EDGE];
-    for (const fps of fpsOptions) {
-      const frameCount = Math.ceil(duration * fps) + 1;
-      for (const longestEdge of edgeOptions) {
-        const scale = Math.min(1, longestEdge / Math.max(sourceWidth, sourceHeight));
-        const width = Math.max(2, Math.round(sourceWidth * scale));
-        const height = Math.max(2, Math.round(sourceHeight * scale));
-        const bytes = width * height * 4 * frameCount;
-        if (bytes <= PREVIEW_CACHE_MEMORY_BUDGET) {
-          return { fps, width, height, frameCount, bytes };
-        }
-      }
-    }
-    const fps = 6;
-    const scale = PREVIEW_CACHE_MIN_EDGE / Math.max(sourceWidth, sourceHeight);
-    const width = Math.max(2, Math.round(sourceWidth * Math.min(1, scale)));
-    const height = Math.max(2, Math.round(sourceHeight * Math.min(1, scale)));
-    return { fps, width, height, frameCount: Math.ceil(duration * fps) + 1, bytes: width * height * 4 };
+    return calculatePreviewCacheProfile(clip.width, clip.height, clip.duration);
   }
 
-  async function buildPreviewFrameCache(clip) {
-    if (!clip) return;
-    releasePreviewFrameCache();
-    clearTimeout(state.sizeEstimateTimer);
-    state.sizeEstimateToken += 1;
-    const profile = choosePreviewCacheProfile(clip);
-    const cache = {
-      status: 'building',
-      cancelled: false,
-      clip,
-      ...profile,
-      frames: [],
-      video: document.createElement('video'),
-    };
-    state.previewFrameCache = cache;
+  function hasPreviewCacheFrames() {
+    return Boolean(state.previewFrameCache?.frames?.some(Boolean));
+  }
+
+  function pausePreviewFrameCache() {
+    const cache = state.previewFrameCache;
+    if (!cache || cache.status === 'ready' || cache.cancelled) return;
+    cache.runToken += 1;
+    cache.running = false;
+    cache.stopRun?.();
+    cache.stopRun = null;
+    try { cache.video.pause(); } catch (_) { }
+  }
+
+  async function resumePreviewFrameCache(cache = state.previewFrameCache, { allowExport = false } = {}) {
+    if (!cache || cache.cancelled || cache.status === 'ready' || cache.running
+      || (state.mode === 'exporting' && !allowExport)) return;
     const video = cache.video;
-    video.muted = true;
-    video.playsInline = true;
-    video.preload = 'auto';
-    Object.assign(video.style, {
-      position: 'fixed',
-      width: '2px',
-      height: '2px',
-      left: '-10px',
-      top: '-10px',
-      opacity: '0',
-      pointerEvents: 'none',
-    });
-    document.body.appendChild(video);
+    const token = ++cache.runToken;
+    cache.running = true;
     const canvas = document.createElement('canvas');
-    canvas.width = profile.width;
-    canvas.height = profile.height;
-    const ctx = canvas.getContext('2d', { alpha: false });
+    canvas.width = cache.width;
+    canvas.height = cache.height;
+    const ctx = canvas.getContext('2d', { alpha: false, colorSpace: 'srgb' });
     if (!ctx) {
-      releasePreviewFrameCache();
+      cache.running = false;
       return;
     }
-    video.src = clip.url;
-    video.load();
 
     try {
-      await waitForEvent(video, 'loadedmetadata', 10_000);
-      if (cache.cancelled || state.previewFrameCache !== cache) return;
-      video.currentTime = 0;
-      video.playbackRate = 4;
-      let nextTime = 0;
-      const interval = 1 / profile.fps;
+      await seekVideo(video, cache.resumeTime, cache.clip.duration);
+      if (cache.cancelled || state.previewFrameCache !== cache || token !== cache.runToken) return;
+      video.playbackRate = 12;
       await new Promise((resolve, reject) => {
         let settled = false;
         let callbackId = 0;
+        let timerId = 0;
+        const stop = () => finish();
         const finish = (error = null) => {
           if (settled) return;
           settled = true;
+          clearTimeout(timerId);
           if (callbackId && typeof video.cancelVideoFrameCallback === 'function') {
             try { video.cancelVideoFrameCallback(callbackId); } catch (_) { }
           }
           video.removeEventListener('ended', onEnded);
+          if (cache.stopRun === stop) cache.stopRun = null;
           error ? reject(error) : resolve();
         };
         const capture = async (now, metadata = {}) => {
-          if (settled || cache.cancelled) return finish();
+          if (settled || cache.cancelled || token !== cache.runToken || (allowExport && state.cancelRequested)) {
+            return finish();
+          }
           const currentTime = Number(metadata.mediaTime) || Number(video.currentTime) || 0;
-          while (nextTime <= currentTime + 0.002 && nextTime <= clip.duration + 0.001) {
-            ctx.drawImage(video, 0, 0, profile.width, profile.height);
+          const bucket = clamp(
+            Math.round((currentTime / Math.max(0.001, cache.clip.duration)) * (cache.frameCount - 1)),
+            0,
+            cache.frameCount - 1,
+          );
+          if (!cache.frames[bucket]) {
+            ctx.drawImage(video, 0, 0, cache.width, cache.height);
             const frame = await createImageBitmap(canvas);
-            if (cache.cancelled || state.previewFrameCache !== cache) {
+            if (cache.cancelled || state.previewFrameCache !== cache || token !== cache.runToken) {
               try { frame.close(); } catch (_) { }
               return finish();
             }
-            cache.frames.push(frame);
-            nextTime += interval;
-            cache.progress = clamp(nextTime / Math.max(0.001, clip.duration), 0, 1);
+            cache.frames[bucket] = frame;
+            cache.captured += 1;
+            if (cache.captured === 1 || cache.captured % 12 === 0) {
+              const pixels = ctx.getImageData(0, 0, cache.width, cache.height).data;
+              const colors = new Set();
+              for (let offset = 0; offset < pixels.length; offset += 256) {
+                colors.add((pixels[offset] >> 4) << 8 | (pixels[offset + 1] >> 4) << 4 | (pixels[offset + 2] >> 4));
+              }
+              cache.complexityTotal += colors.size / Math.max(1, pixels.length / 256);
+              cache.complexitySamples += 1;
+              renderTimelineFilmstrip(cache);
+            }
           }
-          if (currentTime >= clip.duration - 0.01 || video.ended) return finish();
+          cache.resumeTime = Math.max(cache.resumeTime, currentTime);
+          cache.progress = clamp(currentTime / Math.max(0.001, cache.clip.duration), 0, 1);
+          if (currentTime >= cache.clip.duration - 0.01 || video.ended) return finish();
           callbackId = video.requestVideoFrameCallback(capture);
         };
         const onEnded = () => finish();
+        cache.stopRun = stop;
         video.addEventListener('ended', onEnded, { once: true });
         if (typeof video.requestVideoFrameCallback === 'function') {
           callbackId = video.requestVideoFrameCallback(capture);
@@ -2991,28 +3137,72 @@
           const tick = () => {
             if (settled) return;
             capture(performance.now()).catch(finish);
-            if (!settled) window.setTimeout(tick, 16);
+            if (!settled) timerId = window.setTimeout(tick, 16);
           };
           tick();
         }
         video.play().catch(finish);
       });
-      if (!cache.cancelled && state.previewFrameCache === cache && cache.frames.length) {
+      if (!cache.cancelled && state.previewFrameCache === cache && token === cache.runToken
+        && cache.resumeTime >= cache.clip.duration - 0.05) {
         cache.status = 'ready';
         renderTimelineFilmstrip(cache);
       }
     } catch (_) {
-      if (state.previewFrameCache === cache) releasePreviewFrameCache();
+      // Timeline interaction may preempt the background scan; the next idle window resumes it.
     } finally {
-      try { video.pause(); } catch (_) { }
+      if (token === cache.runToken) {
+        cache.running = false;
+        try { video.pause(); } catch (_) { }
+      }
     }
+  }
+
+  function buildPreviewFrameCache(clip) {
+    if (!clip || !el.scrubVideo) return;
+    releasePreviewFrameCache();
+    const profile = choosePreviewCacheProfile(clip);
+    const cache = {
+      status: 'building',
+      cancelled: false,
+      running: false,
+      runToken: 0,
+      resumeTime: 0,
+      progress: 0,
+      captured: 0,
+      complexityTotal: 0,
+      complexitySamples: 0,
+      stopRun: null,
+      clip,
+      ...profile,
+      frames: new Array(profile.frameCount),
+      video: el.scrubVideo,
+    };
+    state.previewFrameCache = cache;
+    void resumePreviewFrameCache(cache);
+  }
+
+  async function completePreviewFrameCacheForExport() {
+    const cache = state.previewFrameCache;
+    if (!cache || cache.cancelled || cache.status === 'ready') return;
+    await resumePreviewFrameCache(cache, { allowExport: true });
+    if (state.cancelRequested) throw new CancelledError();
   }
 
   function getCachedPreviewFrame(time) {
     const cache = state.previewFrameCache;
-    if (!cache || cache.status !== 'ready' || !cache.frames.length) return null;
-    const index = clamp(Math.round((Number(time) || 0) * cache.fps), 0, cache.frames.length - 1);
-    return cache.frames[index] || null;
+    if (!cache || !cache.frames.length) return null;
+    const target = clamp(
+      Math.round(((Number(time) || 0) / Math.max(0.001, cache.clip.duration)) * (cache.frameCount - 1)),
+      0,
+      cache.frameCount - 1,
+    );
+    if (cache.frames[target]) return cache.frames[target];
+    for (let distance = 1; distance < cache.frameCount; distance += 1) {
+      if (cache.frames[target - distance]) return cache.frames[target - distance];
+      if (cache.frames[target + distance]) return cache.frames[target + distance];
+    }
+    return null;
   }
 
   function renderCachedPreviewFrame(settings, time) {
@@ -3059,6 +3249,7 @@
     try { localStorage.setItem(LIVE_CAPTURE_MODE_KEY, mode); } catch (_) { }
     liveMediaCollector?.setEnabled(mode === 'rewind');
     updateModeUi();
+    updateLiveRewindTitle();
   }
 
   function liveWarmupMessage(video) {
@@ -3130,6 +3321,7 @@
   }
 
   function disposeClip() {
+    discardEditorBackgroundIntent();
     clearEditorViewportAnimation();
     cancelEditorPreviewRender();
     stopTrimPreview();
@@ -3802,6 +3994,7 @@
       if (el.editorSettingsScroll) el.editorSettingsScroll.scrollTop = 0;
       fitEditorLayout();
       updateModeUi();
+      updateEstimatedFileSize();
       setStatus('');
       requestAnimationFrame(() => { void ensureTrimPreviewPlaying(); });
       if (recording.stopReason === 'limit') {
@@ -3826,7 +4019,7 @@
     fitEditorLayout();
     updateResolutionOptions();
     updateEstimatedFileSize();
-    if (state.clip.kind === 'blob') void buildPreviewFrameCache(state.clip);
+    buildPreviewFrameCache(state.clip);
   }
 
   function getEditorMapping() {
@@ -3971,8 +4164,7 @@
       viewport: { width: viewport.width, height: viewport.height },
       fittedLayout: calculateFittedEditorViewport(viewport),
     };
-    cancelEditorPreviewRender();
-    el.previewCanvas.style.visibility = 'hidden';
+    suspendEditorBackgroundWork();
     prepareEditorViewportAnimation();
     event.preventDefault();
     event.stopPropagation();
@@ -4075,7 +4267,7 @@
       const target = state.timelinePreviewTarget;
       let settings;
       try { settings = readExportSettings(); } catch (_) { return; }
-      if (state.previewFrameCache?.status === 'ready') {
+      if (hasPreviewCacheFrames()) {
         if (state.timelinePreviewType === 'handle') el.scrubVideo.classList.add('active');
         else el.scrubVideo.classList.remove('active');
         renderCachedPreviewFrame(settings, target);
@@ -4096,7 +4288,7 @@
   function renderTimelinePreviewIfCurrent(video) {
     if (!state.timelineDrag || !video || state.timelinePreviewTarget === null) return;
     const target = state.timelinePreviewTarget;
-    if (state.previewFrameCache?.status === 'ready') {
+    if (hasPreviewCacheFrames()) {
       try { renderCachedPreviewFrame(readExportSettings(), target); } catch (_) { }
       return;
     }
@@ -4122,6 +4314,7 @@
       renderExportPreviewFrame();
       if (type === 'handle') el.scrubVideo.classList.remove('active');
       if (resumePlayback) void ensureTrimPreviewPlaying();
+      void resumePreviewFrameCache();
     }).catch(() => { });
   }
 
@@ -4148,6 +4341,7 @@
     if (event.button !== 0 || state.mode !== 'edit' || !state.clip) return;
     state.timelineResumePlayback = Boolean(state.trimPreviewCleanup && !el.clipVideo.paused);
     stopTrimPreview();
+    pausePreviewFrameCache();
     state.timelineSettleToken += 1;
     const handleType = event.target?.dataset?.timelineHandle;
     state.timelineDrag = {
@@ -4175,7 +4369,7 @@
     state.timelineResumePlayback = false;
     state.timelineDrag = null;
     try { el.timelineTrack.releasePointerCapture?.(drag.pointerId); } catch (_) { }
-    if (state.previewFrameCache?.status === 'ready' && Number.isFinite(target)) {
+    if (hasPreviewCacheFrames() && Number.isFinite(target)) {
       cancelTimelinePreview();
       settleTimelinePreview(
         drag.type === 'start' || drag.type === 'end' ? 'handle' : 'playhead',
@@ -4184,10 +4378,11 @@
       );
     } else {
       hideTimelineHandlePreview();
+      void resumePreviewFrameCache();
     }
     updateTrimUi();
     updateEstimatedFileSize();
-    if (shouldResumePlayback && state.previewFrameCache?.status !== 'ready') {
+    if (shouldResumePlayback && !hasPreviewCacheFrames()) {
       void ensureTrimPreviewPlaying();
     }
   }
@@ -4733,7 +4928,7 @@
       try { return readExportSettings(); } catch (_) { return null; }
     })();
     if (!nextSettings) return null;
-    if (state.editorCropSession || state.editorViewportAnimation) return null;
+    if (state.editorCropSession || state.editorViewportAnimation || state.editorBackgroundIntent) return null;
 
     const layout = readEditorVideoLayout();
     if (!layout) return null;
@@ -4771,7 +4966,7 @@
 
   function renderExportPreviewFrame(settings = null) {
     if (!state.clip || state.mode !== 'edit' || !el.previewCanvas) return;
-    if (state.editorCropSession || state.editorViewportAnimation) return;
+    if (state.editorCropSession || state.editorViewportAnimation || state.editorBackgroundIntent) return;
     const nextSettings = updatePreviewCanvasLayout(settings);
     const sourceVideo = el.scrubVideo?.classList.contains('active') ? el.scrubVideo : el.clipVideo;
     if (!nextSettings || !sourceVideo || sourceVideo.readyState < 2) return;
@@ -4792,102 +4987,412 @@
 
   async function loadEncodingResourceTexts() {
     if (state.encodingResourceTexts) return state.encodingResourceTexts;
-    const [modernGif, gifsicle] = await Promise.all([
-      readUserscriptResource('MODERN_GIF_MODULE'),
+    const [modernPalette, gifenc, gifsicle] = await Promise.all([
+      readUserscriptResource('MODERN_PALETTE_MODULE'),
+      readUserscriptResource('GIFENC_MODULE'),
       readUserscriptResource('GIFSICLE_MODULE'),
     ]);
-    if (!modernGif || !gifsicle) throw new Error('编码组件加载失败，请刷新页面重试。');
-    state.encodingResourceTexts = { modernGif, gifsicle };
+    if (!modernPalette || !gifenc || !gifsicle) throw new Error('编码组件加载失败，请刷新页面重试。');
+    state.encodingResourceTexts = { modernPalette, gifenc, gifsicle };
     return state.encodingResourceTexts;
   }
 
-  // Keep encoding and post-compression in separate workers so either stage can be cancelled immediately.
-  function makeEncodingWorkerSource(modernGifUrl, gifsicleUrl) {
+  function makeEncodingWorkerSource(modernPaletteUrl, gifencUrl, gifsicleUrl) {
     return `
-      const modernGifUrl = ${JSON.stringify(modernGifUrl)};
+      const modernPaletteUrl = ${JSON.stringify(modernPaletteUrl)};
+      const gifencUrl = ${JSON.stringify(gifencUrl)};
       const gifsicleUrl = ${JSON.stringify(gifsicleUrl)};
-      let Encoder = null;
-      let encoder = null;
-      let preset = null;
-      let queue = Promise.resolve();
+      const TRANSPARENT_INDEX = ${GIF_TRANSPARENT_INDEX};
+      let encoderApi = null;
+      let settings = null;
+      let mappingPalette = null;
+      let globalPalette = null;
+      let canvas = null;
+      let ctx = null;
 
       function reportError(error) {
         const message = String(error && (error.message || error) || '编码失败');
         self.postMessage({ type: 'error', message });
-        self.close();
       }
 
-      async function handleMessage(message) {
-        if (message.type === 'init') {
-          const modules = await Promise.all([import(modernGifUrl), import(gifsicleUrl)]);
-          Encoder = globalThis.modernGif?.Encoder;
-          const compressorSource = modules[1].default?.tool?.workerLocalUrl;
-          if (typeof Encoder !== 'function' || !compressorSource) {
-            throw new Error('编码组件接口不完整。');
+      function clamp(value, min, max) {
+        return Math.min(max, Math.max(min, value));
+      }
+
+      function addRoundedRectPath(context, width, height, radius) {
+        const safeRadius = clamp(radius, 0, Math.min(width, height) / 2);
+        context.moveTo(safeRadius, 0);
+        context.lineTo(width - safeRadius, 0);
+        context.quadraticCurveTo(width, 0, width, safeRadius);
+        context.lineTo(width, height - safeRadius);
+        context.quadraticCurveTo(width, height, width - safeRadius, height);
+        context.lineTo(safeRadius, height);
+        context.quadraticCurveTo(0, height, 0, height - safeRadius);
+        context.lineTo(0, safeRadius);
+        context.quadraticCurveTo(0, 0, safeRadius, 0);
+      }
+
+      function wrapCaption(context, text, maxWidth, maxLines) {
+        const result = [];
+        const paragraphs = String(text || '').replace(/\\r/g, '').split('\\n');
+        for (const paragraph of paragraphs) {
+          if (result.length >= maxLines) break;
+          if (!paragraph) {
+            result.push('');
+            continue;
           }
-          preset = message.preset;
-          encoder = new Encoder({
-            width: message.width,
-            height: message.height,
-            colorTableSize: 256,
-            backgroundColorIndex: 255,
-            maxColors: preset.maxColors,
-            premultipliedAlpha: true,
-            dither: preset.dither || undefined,
-          });
-          self.postMessage({ type: 'ready', compressorSource });
-          return;
+          let line = '';
+          for (const char of paragraph) {
+            const candidate = line + char;
+            if (line && context.measureText(candidate).width > maxWidth) {
+              result.push(line);
+              line = char;
+              if (result.length >= maxLines) break;
+            } else {
+              line = candidate;
+            }
+          }
+          if (result.length < maxLines && line) result.push(line);
         }
+        if (result.length === maxLines) {
+          let last = result[result.length - 1];
+          while (last && context.measureText(last + '…').width > maxWidth) last = last.slice(0, -1);
+          result[result.length - 1] = last + '…';
+        }
+        return result;
+      }
 
-        if (!encoder) throw new Error('编码器尚未初始化。');
-        if (message.type === 'frame') {
-          await encoder.encode({
-            width: message.width,
-            height: message.height,
+      function drawTextLayers(context, width, height, layers) {
+        for (const layer of layers || []) {
+          const value = String(layer.text || '').trim();
+          if (!value) continue;
+          const fontSize = Math.max(16, Math.round(width * layer.fontScale));
+          const lineHeight = Math.round(fontSize * 1.18);
+          context.save();
+          context.font = '850 ' + fontSize + 'px "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif';
+          context.textAlign = 'center';
+          context.textBaseline = 'middle';
+          context.lineJoin = 'round';
+          context.miterLimit = 2;
+          context.fillStyle = layer.textColor;
+          context.strokeStyle = layer.strokeColor;
+          context.lineWidth = Math.max(1, fontSize * layer.strokeScale * 2);
+          const lines = wrapCaption(context, value, width * 0.9, 6);
+          const span = Math.max(0, lines.length - 1) * lineHeight;
+          const centerX = clamp(layer.x, 0, 1) * width;
+          const centerY = clamp(layer.y, 0, 1) * height;
+          lines.forEach((line, index) => {
+            const y = centerY - span / 2 + index * lineHeight;
+            if (layer.strokeScale > 0) context.strokeText(line, centerX, y);
+            context.fillText(line, centerX, y);
+          });
+          context.restore();
+        }
+      }
+
+      function composeFrame(source, frameSettings) {
+        const width = frameSettings.outputWidth;
+        const height = frameSettings.outputHeight;
+        if (!canvas || canvas.width !== width || canvas.height !== height) {
+          canvas = new OffscreenCanvas(width, height);
+          ctx = canvas.getContext('2d', { alpha: true, colorSpace: 'srgb' });
+          ctx.imageSmoothingEnabled = true;
+          ctx.imageSmoothingQuality = 'high';
+        }
+        const crop = frameSettings.crop;
+        const sourceWidth = Number(source.displayWidth || source.width);
+        const sourceHeight = Number(source.displayHeight || source.height);
+        const sx = crop.x * sourceWidth;
+        const sy = crop.y * sourceHeight;
+        const sw = crop.w * sourceWidth;
+        const sh = crop.h * sourceHeight;
+        ctx.clearRect(0, 0, width, height);
+        if (!frameSettings.transparentCorners) {
+          ctx.fillStyle = '#000';
+          ctx.fillRect(0, 0, width, height);
+        }
+        ctx.drawImage(source, sx, sy, sw, sh, 0, 0, width, height);
+        drawTextLayers(ctx, width, height, frameSettings.textLayers);
+        if (frameSettings.transparentCorners && frameSettings.outputRadius > 0) {
+          ctx.save();
+          ctx.globalCompositeOperation = 'destination-in';
+          ctx.fillStyle = '#fff';
+          ctx.beginPath();
+          addRoundedRectPath(ctx, width, height, frameSettings.outputRadius);
+          ctx.fill();
+          ctx.restore();
+        }
+        return ctx.getImageData(0, 0, width, height);
+      }
+
+      function parseHexColor(value) {
+        const match = String(value || '').match(/^#([0-9a-f]{6})$/i);
+        if (!match) return null;
+        const number = Number.parseInt(match[1], 16);
+        return [(number >> 16) & 255, (number >> 8) & 255, number & 255];
+      }
+
+      function forcePaletteColors(palette, colors, maxColors) {
+        const result = palette.slice(0, maxColors).map((color) => color.slice(0, 3));
+        for (const color of colors) {
+          if (!color || result.some((item) => item[0] === color[0] && item[1] === color[1] && item[2] === color[2])) continue;
+          if (result.length >= maxColors) result.pop();
+          result.push(color);
+        }
+        while (result.length < maxColors) result.push(result[result.length - 1] || [0, 0, 0]);
+        return result;
+      }
+
+      async function buildPalette(message) {
+        const { Palette } = await import(modernPaletteUrl);
+        const palette = new Palette({
+          maxColors: message.preset.maxColors,
+          premultipliedAlpha: true,
+          tint: [255, 255, 255],
+        });
+        try {
+          for (const frame of message.frames) {
+            const imageData = composeFrame(frame, message.settings);
+            palette.addSample(imageData.data);
+            frame.close();
+          }
+          const colors = (await palette.generate()).map((color) => [color.rgb.r, color.rgb.g, color.rgb.b]);
+          const forced = [];
+          for (const layer of message.settings.textLayers || []) {
+            forced.push(parseHexColor(layer.textColor), parseHexColor(layer.strokeColor));
+          }
+          const mapped = forcePaletteColors(colors, forced, message.preset.maxColors);
+          const global = mapped.slice();
+          while (global.length < TRANSPARENT_INDEX) global.push(global[global.length - 1] || [0, 0, 0]);
+          global.length = TRANSPARENT_INDEX;
+          global.push([0, 0, 0]);
+          self.postMessage({ type: 'palette', mappingPalette: mapped, globalPalette: global });
+        } finally {
+          for (const frame of message.frames) {
+            try { frame.close(); } catch (_) { }
+          }
+        }
+      }
+
+      function applyFloydSteinberg(data, width, height, palette, nearestColorIndex) {
+        const indexed = new Uint8Array(width * height);
+        let currentR = new Float32Array(width + 2);
+        let currentG = new Float32Array(width + 2);
+        let currentB = new Float32Array(width + 2);
+        let nextR = new Float32Array(width + 2);
+        let nextG = new Float32Array(width + 2);
+        let nextB = new Float32Array(width + 2);
+        for (let y = 0; y < height; y += 1) {
+          nextR.fill(0); nextG.fill(0); nextB.fill(0);
+          for (let x = 0; x < width; x += 1) {
+            const pixel = y * width + x;
+            const offset = pixel * 4;
+            if (data[offset + 3] < 128) {
+              indexed[pixel] = TRANSPARENT_INDEX;
+              continue;
+            }
+            const r = clamp(Math.round(data[offset] + currentR[x + 1]), 0, 255);
+            const g = clamp(Math.round(data[offset + 1] + currentG[x + 1]), 0, 255);
+            const b = clamp(Math.round(data[offset + 2] + currentB[x + 1]), 0, 255);
+            const paletteIndex = nearestColorIndex(palette, [r, g, b]);
+            indexed[pixel] = paletteIndex;
+            const color = palette[paletteIndex];
+            const errorR = r - color[0];
+            const errorG = g - color[1];
+            const errorB = b - color[2];
+            currentR[x + 2] += errorR * 7 / 16;
+            currentG[x + 2] += errorG * 7 / 16;
+            currentB[x + 2] += errorB * 7 / 16;
+            nextR[x] += errorR * 3 / 16;
+            nextG[x] += errorG * 3 / 16;
+            nextB[x] += errorB * 3 / 16;
+            nextR[x + 1] += errorR * 5 / 16;
+            nextG[x + 1] += errorG * 5 / 16;
+            nextB[x + 1] += errorB * 5 / 16;
+            nextR[x + 2] += errorR / 16;
+            nextG[x + 2] += errorG / 16;
+            nextB[x + 2] += errorB / 16;
+          }
+          [currentR, nextR] = [nextR, currentR];
+          [currentG, nextG] = [nextG, currentG];
+          [currentB, nextB] = [nextB, currentB];
+        }
+        return indexed;
+      }
+
+      async function initializeEncoder(message) {
+        encoderApi = await import(gifencUrl);
+        settings = message.settings;
+        mappingPalette = message.mappingPalette;
+        globalPalette = message.globalPalette;
+        let compressorSource = '';
+        if (message.loadCompressor) {
+          const module = await import(gifsicleUrl);
+          compressorSource = module.default?.tool?.workerLocalUrl || '';
+        }
+        self.postMessage({ type: 'ready', compressorSource });
+      }
+
+      async function encodeFrame(message) {
+        const frame = message.frame;
+        try {
+          const imageData = composeFrame(frame, settings);
+          let indexed;
+          if (settings.qualityPreset.dither === 'floyd-steinberg') {
+            indexed = applyFloydSteinberg(
+              imageData.data,
+              imageData.width,
+              imageData.height,
+              mappingPalette,
+              encoderApi.nearestColorIndex,
+            );
+          } else {
+            indexed = encoderApi.applyPalette(imageData.data, mappingPalette, 'rgb565');
+            for (let pixel = 0; pixel < indexed.length; pixel += 1) {
+              if (imageData.data[pixel * 4 + 3] < 128) indexed[pixel] = TRANSPARENT_INDEX;
+            }
+          }
+          const gif = encoderApi.GIFEncoder({ auto: false });
+          gif.writeFrame(indexed, settings.outputWidth, settings.outputHeight, {
+            first: message.index === 0,
+            palette: message.index === 0 ? globalPalette : null,
+            transparent: settings.transparentCorners,
+            transparentIndex: TRANSPARENT_INDEX,
             delay: message.delay,
-            data: new Uint8ClampedArray(message.buffer),
+            repeat: 0,
+            dispose: 1,
           });
-          return;
+          const bytes = gif.bytes();
+          self.postMessage({ type: 'frame', id: message.id, index: message.index, bytes }, [bytes.buffer]);
+        } finally {
+          frame.close();
         }
-        if (message.type !== 'finish') return;
-
-        self.postMessage({ type: 'phase', phase: 'encoding' });
-        const encoded = await encoder.flush('arrayBuffer');
-        encoder = null;
-        self.postMessage({ type: 'encoded', buffer: encoded }, [encoded]);
-        self.close();
       }
 
       self.onmessage = (event) => {
-        queue = queue.then(() => handleMessage(event.data)).catch(reportError);
+        const message = event.data || {};
+        let task = null;
+        if (message.type === 'palette') task = buildPalette(message);
+        else if (message.type === 'init') task = initializeEncoder(message);
+        else if (message.type === 'frame') task = encodeFrame(message);
+        if (task) Promise.resolve(task).catch(reportError);
       };
     `;
+  }
+
+  function makeResourceModuleUrl(source, urls) {
+    const url = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
+    urls.push(url);
+    return url;
+  }
+
+  function assembleEncodedGif(chunks) {
+    const ordered = orderFrameChunks(chunks);
+    const header = new Uint8Array([71, 73, 70, 56, 57, 97]);
+    const total = header.byteLength + ordered.reduce((sum, bytes) => sum + bytes.byteLength, 0) + 1;
+    const output = new Uint8Array(total);
+    output.set(header, 0);
+    let offset = header.byteLength;
+    for (const bytes of ordered) {
+      output.set(bytes, offset);
+      offset += bytes.byteLength;
+    }
+    output[offset] = 0x3b;
+    return output.buffer;
+  }
+
+  function makeWorkerFrameSettings(settings, overrides = {}) {
+    return {
+      outputWidth: settings.outputWidth,
+      outputHeight: settings.outputHeight,
+      outputRadius: settings.outputRadius,
+      transparentCorners: settings.transparentCorners,
+      crop: { ...settings.crop },
+      textLayers: settings.textLayers.map((layer) => ({ ...layer })),
+      qualityPreset: { ...settings.qualityPreset },
+      ...overrides,
+    };
+  }
+
+  async function createGlobalPalette(settings, resources, urls) {
+    const cacheFrames = (state.previewFrameCache?.frames || []).filter(Boolean);
+    const selected = [];
+    const sampleCount = Math.min(64, cacheFrames.length);
+    for (let index = 0; index < sampleCount; index += 1) {
+      const sourceIndex = sampleCount === 1
+        ? 0
+        : Math.round((index / (sampleCount - 1)) * (cacheFrames.length - 1));
+      selected.push(await createImageBitmap(cacheFrames[sourceIndex]));
+    }
+    if (!selected.length) selected.push(await createImageBitmap(settings.video));
+
+    const longest = Math.max(settings.outputWidth, settings.outputHeight);
+    const sampleScale = Math.min(1, PREVIEW_CACHE_MAX_EDGE / longest);
+    const paletteSettings = makeWorkerFrameSettings(settings, {
+      outputWidth: Math.max(2, Math.round(settings.outputWidth * sampleScale)),
+      outputHeight: Math.max(2, Math.round(settings.outputHeight * sampleScale)),
+      outputRadius: Math.max(0, Math.round(settings.outputRadius * sampleScale)),
+    });
+    const modernPaletteUrl = makeResourceModuleUrl(resources.modernPalette, urls);
+    const gifencUrl = makeResourceModuleUrl(resources.gifenc, urls);
+    const gifsicleUrl = makeResourceModuleUrl(resources.gifsicle, urls);
+    const workerUrl = makeResourceModuleUrl(
+      makeEncodingWorkerSource(modernPaletteUrl, gifencUrl, gifsicleUrl),
+      urls,
+    );
+    const worker = new Worker(workerUrl, { type: 'module', name: 'bella-gif-palette' });
+    return new Promise((resolve, reject) => {
+      let finished = false;
+      const finish = (error, value) => {
+        if (finished) return;
+        finished = true;
+        worker.terminate();
+        if (state.cancelExportPreparation === cancel) state.cancelExportPreparation = null;
+        error ? reject(error) : resolve({ ...value, moduleUrls: { modernPaletteUrl, gifencUrl, gifsicleUrl, workerUrl } });
+      };
+      const cancel = () => finish(new CancelledError());
+      state.cancelExportPreparation = cancel;
+      worker.addEventListener('message', (event) => {
+        const message = event.data || {};
+        if (message.type === 'palette') finish(null, message);
+        else if (message.type === 'error') finish(new Error(message.message || '调色板生成失败。'));
+      });
+      worker.addEventListener('error', (event) => finish(new Error(event.message || '调色板 Worker 运行失败。')));
+      worker.postMessage({
+        type: 'palette',
+        frames: selected,
+        settings: paletteSettings,
+        preset: settings.qualityPreset,
+      }, selected);
+    });
   }
 
   async function createGifEncodingSession(settings, timeoutMs = ENCODE_TIMEOUT_MS) {
     const resources = await loadEncodingResourceTexts();
     const urls = [];
-    const makeModuleUrl = (source) => {
-      const url = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
-      urls.push(url);
-      return url;
-    };
-    const modernGifUrl = makeModuleUrl(resources.modernGif);
-    const gifsicleUrl = makeModuleUrl(resources.gifsicle);
-    const workerUrl = makeModuleUrl(makeEncodingWorkerSource(modernGifUrl, gifsicleUrl));
-    const worker = new Worker(workerUrl, { type: 'module', name: 'bella-gif-encoder' });
+    settings.onPhase?.('palette');
+    let paletteResult;
+    try {
+      paletteResult = await createGlobalPalette(settings, resources, urls);
+    } catch (error) {
+      urls.forEach((url) => URL.revokeObjectURL(url));
+      throw error;
+    }
+    const { gifencUrl, gifsicleUrl, workerUrl } = paletteResult.moduleUrls;
+    const workerCount = calculateEncoderWorkerCount(navigator.hardwareConcurrency);
+    const workers = [];
+    const activeTasks = new Map();
+    const activePromises = new Set();
+    const chunks = [];
+    let nextTaskId = 1;
+    let encodedFrames = 0;
+    let finishing = false;
     let compressionWorker = null;
     let compressionWorkerUrl = null;
     let compressorSource = '';
     let settled = false;
-    let readyResolve;
-    let readyReject;
     let resultResolve;
     let resultReject;
-    const ready = new Promise((resolve, reject) => {
-      readyResolve = resolve;
-      readyReject = reject;
-    });
     const result = new Promise((resolve, reject) => {
       resultResolve = resolve;
       resultReject = reject;
@@ -4904,8 +5409,9 @@
       if (settled) return;
       settled = true;
       const normalized = error instanceof Error ? error : new Error(String(error));
-      readyReject(normalized);
       resultReject(normalized);
+      activeTasks.forEach((task) => task.reject(normalized));
+      activeTasks.clear();
       stopCompressionWorker();
     };
     const compressGif = async (encoded) => {
@@ -4944,71 +5450,111 @@
     };
     const timeout = window.setTimeout(() => {
       settleError(new Error('导出超时，请缩短片段或稍后重试。'));
-      worker.terminate();
+      workers.forEach((item) => item.worker.terminate());
       stopCompressionWorker();
     }, timeoutMs);
 
-    worker.addEventListener('message', (event) => {
-      const message = event.data || {};
-      if (message.type === 'ready') {
-        compressorSource = message.compressorSource || '';
-        readyResolve();
-        return;
-      }
-      if (message.type === 'phase') {
-        settings.onPhase?.(message.phase);
-        return;
-      }
-      if (message.type === 'error') {
-        settleError(new Error(message.message || '编码失败。'));
-        return;
-      }
-      if (message.type === 'encoded' && !settled) void compressGif(message.buffer);
-    });
-    worker.addEventListener('error', (event) => {
-      settleError(new Error(event.message || '编码 Worker 运行失败。'));
-    });
-    worker.postMessage({
-      type: 'init',
-      width: settings.outputWidth,
-      height: settings.outputHeight,
-      preset: settings.qualityPreset,
-    });
     try {
-      await ready;
+      await Promise.all(Array.from({ length: workerCount }, (_, index) => new Promise((resolve, reject) => {
+        const worker = new Worker(workerUrl, { type: 'module', name: `bella-gif-encoder-${index + 1}` });
+        const item = { worker, inFlight: 0 };
+        workers.push(item);
+        worker.addEventListener('message', (event) => {
+          const message = event.data || {};
+          if (message.type === 'ready') {
+            if (message.compressorSource) compressorSource = message.compressorSource;
+            resolve();
+            return;
+          }
+          if (message.type === 'error') {
+            const error = new Error(message.message || '编码失败。');
+            reject(error);
+            settleError(error);
+            return;
+          }
+          if (message.type !== 'frame') return;
+          const task = activeTasks.get(message.id);
+          if (!task) return;
+          activeTasks.delete(message.id);
+          item.inFlight = Math.max(0, item.inFlight - 1);
+          chunks.push({ index: message.index, bytes: new Uint8Array(message.bytes) });
+          encodedFrames += 1;
+          if (finishing) settings.onProgress?.('encoding', encodedFrames, settings.finalFrames);
+          task.resolve();
+        });
+        worker.addEventListener('error', (event) => {
+          const error = new Error(event.message || '编码 Worker 运行失败。');
+          reject(error);
+          settleError(error);
+        });
+        worker.postMessage({
+          type: 'init',
+          settings: makeWorkerFrameSettings(settings),
+          mappingPalette: paletteResult.mappingPalette,
+          globalPalette: paletteResult.globalPalette,
+          loadCompressor: index === 0,
+        });
+      })));
+      if (!compressorSource) throw new Error('GIF 压缩组件接口不完整。');
     } catch (error) {
       clearTimeout(timeout);
-      worker.terminate();
+      workers.forEach((item) => item.worker.terminate());
       stopCompressionWorker();
       urls.forEach((url) => URL.revokeObjectURL(url));
       throw error;
     }
 
     return {
-      addFrame(imageData, delay) {
-        if (settled) throw new Error('编码会话已结束。');
-        const buffer = imageData.data.buffer;
-        worker.postMessage({
-          type: 'frame',
-          width: imageData.width,
-          height: imageData.height,
-          delay,
-          buffer,
-        }, [buffer]);
+      async addFrame(frame, index, delay) {
+        let posted = false;
+        try {
+          while (!settled) {
+            const workerIndex = selectEncoderWorker(workers.map((item) => item.inFlight));
+            if (workerIndex >= 0) {
+              const available = workers[workerIndex];
+              const id = nextTaskId++;
+              let resolveTask;
+              let rejectTask;
+              const taskPromise = new Promise((resolve, reject) => {
+                resolveTask = resolve;
+                rejectTask = reject;
+              });
+              taskPromise.catch(() => { });
+              activePromises.add(taskPromise);
+              taskPromise.finally(() => activePromises.delete(taskPromise)).catch(() => { });
+              activeTasks.set(id, { resolve: resolveTask, reject: rejectTask });
+              available.inFlight += 1;
+              available.worker.postMessage({ type: 'frame', id, index, delay, frame }, [frame]);
+              posted = true;
+              return;
+            }
+            await Promise.race(activePromises);
+          }
+          throw new CancelledError();
+        } finally {
+          if (!posted) {
+            try { frame.close(); } catch (_) { }
+          }
+        }
       },
-      finish() {
-        if (!settled) worker.postMessage({ type: 'finish' });
+      async finish() {
+        finishing = true;
+        settings.onProgress?.('encoding', encodedFrames, settings.finalFrames);
+        await Promise.all([...activePromises]);
+        if (settled) return result;
+        const encoded = assembleEncodedGif(chunks);
+        void compressGif(encoded);
         return result;
       },
       cancel(error = new CancelledError()) {
         settleError(error);
         clearTimeout(timeout);
-        worker.terminate();
+        workers.forEach((item) => item.worker.terminate());
         stopCompressionWorker();
       },
       destroy() {
         clearTimeout(timeout);
-        worker.terminate();
+        workers.forEach((item) => item.worker.terminate());
         stopCompressionWorker();
         urls.forEach((url) => URL.revokeObjectURL(url));
       },
@@ -5085,7 +5631,7 @@
       : 'bei';
     const qualityPreset = GIF_QUALITY_PRESETS[quality];
     const cornerRadiusRatio = getCornerRadiusRatio();
-    const baseFrames = Math.max(1, Math.ceil((end - start) * fps));
+    const baseFrames = calculateExportFrameCount(end - start, fps);
     const finalFrames = baseFrames;
     if (finalFrames > MAX_EXPORT_FRAMES) {
       throw new Error('帧数超过上限，请缩短片段或降低帧率。');
@@ -5137,7 +5683,12 @@
     const textFactor = 1 + (settings.textLayers?.length || 0) * 0.04;
     const preset = settings.qualityPreset || GIF_QUALITY_PRESETS.bei;
     const calibration = clamp(Number(state.sizeEstimateCalibration[settings.quality]) || 1, 0.35, 3.2);
-    const base = (framePayload * preset.estimateFactor * textFactor) + 2508;
+    const cache = state.previewFrameCache;
+    const complexity = cache?.complexitySamples
+      ? clamp(cache.complexityTotal / cache.complexitySamples, 0.2, 1)
+      : 0.55;
+    const complexityFactor = 0.8 + complexity * 0.4;
+    const base = (framePayload * preset.estimateFactor * textFactor * complexityFactor) + 2508;
     return Math.max(1024, base * calibration);
   }
 
@@ -5145,22 +5696,6 @@
     if (!Number.isFinite(bytes) || bytes <= 0) return '--';
     if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
     return `${(bytes / 1024 / 1024).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0)} MB`;
-  }
-
-  function estimateSettingsSignature(settings) {
-    const crop = settings.crop || {};
-    const text = (settings.textLayers || []).map((layer) => [
-      String(layer.text || ''),
-      Number(layer.x || 0).toFixed(3), Number(layer.y || 0).toFixed(3),
-      Number(layer.fontScale || 0).toFixed(3),
-    ]);
-    return JSON.stringify([
-      settings.outputWidth, settings.outputHeight, settings.fps, settings.speed, settings.quality,
-      Number(settings.cornerRadiusRatio || 0).toFixed(4),
-      Number(settings.start).toFixed(3), Number(settings.end).toFixed(3),
-      Number(crop.x || 0).toFixed(4), Number(crop.y || 0).toFixed(4),
-      Number(crop.w || 0).toFixed(4), Number(crop.h || 0).toFixed(4), text,
-    ]);
   }
 
   function setEstimatedSizeText(text, title = '') {
@@ -5171,96 +5706,20 @@
     if (el.actionEstimate) el.actionEstimate.textContent = text;
   }
 
-  async function estimateGifBytesBySampling(settings, token) {
-    if (!state.clip) return estimateGifBytes(settings);
-    const clip = state.clip;
-
-    const sampleCount = Math.min(5, Math.max(2, settings.baseFrames));
-    const sampleVideo = document.createElement('video');
-    sampleVideo.muted = true;
-    sampleVideo.playsInline = true;
-    sampleVideo.preload = 'auto';
-    try {
-      await attachClipToVideo(clip, sampleVideo);
-      if (token !== state.sizeEstimateToken) throw new Error('stale');
-
-      let session = null;
-      try {
-        session = await createGifEncodingSession(settings, 120_000);
-        state.sizeEstimateEncodingSession = session;
-        const canvas = document.createElement('canvas');
-        canvas.width = settings.outputWidth;
-        canvas.height = settings.outputHeight;
-        const ctx = canvas.getContext('2d', { alpha: true, colorSpace: 'srgb' });
-        if (!ctx) throw new Error('无法创建估算画布。');
-        ctx.imageSmoothingEnabled = true;
-        ctx.imageSmoothingQuality = 'high';
-        const delay = settings.delay;
-
-        for (let i = 0; i < sampleCount; i += 1) {
-          if (token !== state.sizeEstimateToken) throw new Error('stale');
-          const ratio = sampleCount <= 1 ? 0 : i / (sampleCount - 1);
-          const target = Math.min(settings.end - 0.001, settings.start + (settings.end - settings.start) * ratio);
-          await seekVideo(sampleVideo, target, state.clip.duration);
-          drawExportCanvasFrame(ctx, settings, sampleVideo, 'estimate');
-          session.addFrame(ctx.getImageData(0, 0, settings.outputWidth, settings.outputHeight), delay);
-        }
-
-        const blob = await session.finish();
-        if (token !== state.sizeEstimateToken) throw new Error('stale');
-        const containerOverhead = Math.min(1400, blob.size * 0.18);
-        const perFrame = Math.max(1, (blob.size - containerOverhead) / sampleCount);
-        const calibration = clamp(Number(state.sizeEstimateCalibration[settings.quality]) || 1, 0.35, 3.2);
-        return Math.max(1024, (containerOverhead + perFrame * settings.finalFrames) * calibration);
-      } finally {
-        session?.destroy();
-        if (state.sizeEstimateEncodingSession === session) state.sizeEstimateEncodingSession = null;
-      }
-    } finally {
-      try { sampleVideo.pause(); } catch (_) { }
-      cleanupClipAttachment(clip, sampleVideo);
-    }
-  }
-
-  function scheduleSampledSizeEstimate(settings) {
-    clearTimeout(state.sizeEstimateTimer);
-    state.sizeEstimateEncodingSession?.cancel(new Error('stale'));
-    const token = ++state.sizeEstimateToken;
-    const signature = estimateSettingsSignature(settings);
-    state.sizeEstimateTimer = window.setTimeout(async () => {
-      if (token !== state.sizeEstimateToken || state.mode !== 'edit' || state.busy) return;
-      try {
-        const bytes = await estimateGifBytesBySampling(settings, token);
-        if (token !== state.sizeEstimateToken || state.mode !== 'edit') return;
-        state.lastSampleEstimate = { signature, bytes };
-        setEstimatedSizeText(`预计 ${formatFileSize(bytes)}`, '根据当前片段估算。');
-      } catch (error) {
-        if (String(error?.message || '') === 'stale') return;
-      }
-    }, 700);
-  }
-
   function updateEstimatedFileSize({ actualBytes = 0 } = {}) {
     if (!el.estimatedSize) return;
     if (actualBytes > 0) {
-      clearTimeout(state.sizeEstimateTimer);
-      state.sizeEstimateToken += 1;
-      state.sizeEstimateEncodingSession?.cancel(new Error('stale'));
       setEstimatedSizeText(`实际 ${formatFileSize(actualBytes)}`);
       return;
     }
     if (!state.clip || state.mode === 'capture' || state.mode === 'recording') {
-      clearTimeout(state.sizeEstimateTimer);
-      state.sizeEstimateToken += 1;
-      state.sizeEstimateEncodingSession?.cancel(new Error('stale'));
       setEstimatedSizeText('预计 --');
       return;
     }
     try {
       const settings = readExportSettings();
       const bytes = estimateGifBytes(settings);
-      setEstimatedSizeText(`预计 ${formatFileSize(bytes)}`, '根据当前片段估算。');
-      scheduleSampledSizeEstimate(settings);
+      setEstimatedSizeText(`预计 ${formatFileSize(bytes)}`, '根据当前片段复杂度估算。');
     } catch (_) {
       setEstimatedSizeText('预计 --');
     }
@@ -5296,15 +5755,16 @@
       settings = readExportSettings();
 
       stopTrimPreview();
-      clearTimeout(state.sizeEstimateTimer);
-      state.sizeEstimateToken += 1;
-      state.sizeEstimateEncodingSession?.cancel(new Error('stale'));
-      state.sizeEstimateEncodingSession = null;
+      pausePreviewFrameCache();
       state.busy = true;
       state.mode = 'exporting';
       state.cancelRequested = false;
       updateModeUi();
       setProgress(0);
+      setStatus('正在准备全片色彩……');
+
+      await completePreviewFrameCacheForExport();
+      if (state.cancelRequested) throw new CancelledError();
 
       const video = settings.video;
       snapshot = { currentTime: video.currentTime, paused: video.paused, playbackRate: video.playbackRate };
@@ -5313,48 +5773,46 @@
       encodingSession = await createGifEncodingSession({
         ...settings,
         onPhase: (phase) => {
-          if (phase === 'encoding') {
-            setProgress(68);
-            setStatus('正在编码 GIF……');
+          if (phase === 'palette') {
+            setProgress(calculateExportProgress('palette', 0, 1));
+            setStatus('正在准备全片色彩……');
           } else if (phase === 'compressing') {
             setProgress(88);
             setStatus('正在压缩体积……');
           }
         },
+        onProgress: (phase, completed, total) => {
+          if (phase !== 'encoding') return;
+          setProgress(calculateExportProgress('encoding', completed, total));
+          setStatus(`正在并行编码：${completed}/${total}`);
+        },
       });
       state.exportEncodingSession = encodingSession;
       if (state.cancelRequested) throw new CancelledError();
 
-      const canvas = document.createElement('canvas');
-      canvas.width = settings.outputWidth;
-      canvas.height = settings.outputHeight;
-      const ctx = canvas.getContext('2d', { alpha: true, colorSpace: 'srgb' });
-      if (!ctx) throw new Error('无法创建 GIF 画布。');
-      ctx.imageSmoothingEnabled = true;
-      ctx.imageSmoothingQuality = 'high';
       const delay = settings.delay;
 
-      const drawExportFrame = () => {
-        drawExportCanvasFrame(ctx, settings, video, 'export');
-        encodingSession.addFrame(
-          ctx.getImageData(0, 0, settings.outputWidth, settings.outputHeight),
-          delay,
-        );
+      const queueExportFrame = async (index) => {
+        if (state.cancelRequested) throw new CancelledError();
+        const frame = new VideoFrame(video, {
+          timestamp: Math.max(0, Math.round((Number(video.currentTime) || 0) * 1_000_000)),
+        });
+        await encodingSession.addFrame(frame, index, delay);
       };
 
       const updateExtractionProgress = (count) => {
-        setProgress((count / settings.baseFrames) * 60);
-    setStatus(`正在提取画面：${count}/${settings.baseFrames}`);
+        setProgress(calculateExportProgress('extracting', count, settings.baseFrames));
+        setStatus(`正在提取画面：${count}/${settings.baseFrames}`);
       };
 
       if (typeof video.requestVideoFrameCallback === 'function') {
-        const extractionPlaybackRate = 2;
-        const frameTolerance = 0.5 / RECORD_FPS;
+        const extractionPlaybackRate = calculateExtractionPlaybackRate(settings.fps);
+        const frameTolerance = 0.5 / settings.fps;
         await seekVideo(video, settings.start, state.clip.duration);
         if (state.cancelRequested) throw new CancelledError();
 
         let extractedFrames = 0;
-        drawExportFrame();
+        await queueExportFrame(extractedFrames);
         extractedFrames = 1;
         updateExtractionProgress(extractedFrames);
 
@@ -5389,25 +5847,29 @@
               reject(error instanceof Error ? error : new Error(String(error)));
             };
 
-            const fillRemainingWithCurrentFrame = () => {
+            const fillRemainingWithCurrentFrame = async () => {
               while (extractedFrames < settings.baseFrames) {
-                drawExportFrame();
+                await queueExportFrame(extractedFrames);
                 extractedFrames += 1;
                 updateExtractionProgress(extractedFrames);
               }
             };
 
             const onError = () => fail(new Error('视频解码失败。'));
-            const onEnded = () => {
+            const onEnded = async () => {
               if (state.cancelRequested) {
                 fail(new CancelledError());
                 return;
               }
-              fillRemainingWithCurrentFrame();
-              finish();
+              try {
+                await fillRemainingWithCurrentFrame();
+                finish();
+              } catch (error) {
+                fail(error);
+              }
             };
 
-            const onFrame = (_now, metadata) => {
+            const onFrame = async (_now, metadata) => {
               if (settled) return;
               if (state.cancelRequested) {
                 fail(new CancelledError());
@@ -5417,29 +5879,35 @@
               const mediaTime = Number(metadata?.mediaTime);
               const currentTime = Number.isFinite(mediaTime) ? mediaTime : Number(video.currentTime) || 0;
 
-              while (extractedFrames < settings.baseFrames) {
-                const target = Math.min(
-                  settings.end - 0.001,
-                  settings.start + extractedFrames / settings.fps,
-                );
-                if (target > currentTime + frameTolerance) break;
-                drawExportFrame();
-                extractedFrames += 1;
-                updateExtractionProgress(extractedFrames);
-              }
+              try {
+                while (extractedFrames < settings.baseFrames) {
+                  const target = calculateExportFrameTime(
+                    settings.start,
+                    settings.end,
+                    extractedFrames,
+                    settings.fps,
+                  );
+                  if (target > currentTime + frameTolerance) break;
+                  await queueExportFrame(extractedFrames);
+                  extractedFrames += 1;
+                  updateExtractionProgress(extractedFrames);
+                }
 
-              if (extractedFrames >= settings.baseFrames) {
-                finish();
-                return;
-              }
+                if (extractedFrames >= settings.baseFrames) {
+                  finish();
+                  return;
+                }
 
-              if (currentTime >= settings.end - 0.001) {
-                fillRemainingWithCurrentFrame();
-                finish();
-                return;
-              }
+                if (currentTime >= settings.end - 0.001) {
+                  await fillRemainingWithCurrentFrame();
+                  finish();
+                  return;
+                }
 
-              callbackId = video.requestVideoFrameCallback(onFrame);
+                callbackId = video.requestVideoFrameCallback(onFrame);
+              } catch (error) {
+                fail(error);
+              }
             };
 
             const expectedMs = ((settings.end - settings.start) / extractionPlaybackRate) * 1000;
@@ -5457,21 +5925,20 @@
       } else {
         for (let index = 0; index < settings.baseFrames; index += 1) {
           if (state.cancelRequested) throw new CancelledError();
-          const target = Math.min(settings.end - 0.001, settings.start + index / settings.fps);
+          const target = calculateExportFrameTime(settings.start, settings.end, index, settings.fps);
           await seekVideo(video, target, state.clip.duration);
-          drawExportFrame();
+          await queueExportFrame(index);
           updateExtractionProgress(index + 1);
         }
       }
 
       if (state.cancelRequested) throw new CancelledError();
-      setProgress(60);
+      setProgress(calculateExportProgress('encoding', 0, settings.baseFrames));
+      setStatus('正在并行编码……');
       const blob = await encodingSession.finish();
       if (state.cancelRequested) throw new CancelledError();
 
-      const signature = estimateSettingsSignature(settings);
-      const sampled = state.lastSampleEstimate?.signature === signature ? Number(state.lastSampleEstimate.bytes) : 0;
-      const preCalibrationEstimate = Math.max(1, sampled || estimateGifBytes({ ...settings }));
+      const preCalibrationEstimate = Math.max(1, estimateGifBytes(settings));
       const previousCalibration = Number(state.sizeEstimateCalibration[settings.quality]) || 1;
       const correction = clamp(blob.size / preCalibrationEstimate, 0.55, 1.8);
       state.sizeEstimateCalibration[settings.quality] = clamp(
@@ -5488,6 +5955,14 @@
     } catch (error) {
       setStatus(friendlyError(error), error instanceof CancelledError ? '' : 'error');
     } finally {
+      encodingSession?.destroy();
+      if (state.exportEncodingSession === encodingSession) state.exportEncodingSession = null;
+      state.busy = false;
+      state.cancelRequested = false;
+      state.mode = state.clip ? 'edit' : 'capture';
+      updateModeUi();
+      if (state.mode === 'edit') updateEditorCropBox();
+
       if (snapshot && state.clip) {
         try {
           el.clipVideo.playbackRate = Number.isFinite(snapshot.playbackRate) ? snapshot.playbackRate : 1;
@@ -5496,13 +5971,7 @@
           else await el.clipVideo.play();
         } catch (_) { }
       }
-      encodingSession?.destroy();
-      if (state.exportEncodingSession === encodingSession) state.exportEncodingSession = null;
-      state.busy = false;
-      state.cancelRequested = false;
-      state.mode = state.clip ? 'edit' : 'capture';
-      updateModeUi();
-      if (state.mode === 'edit') updateEditorCropBox();
+      if (state.mode === 'edit') void resumePreviewFrameCache();
     }
   }
 
@@ -5510,6 +5979,8 @@
     if (state.mode !== 'exporting' || !state.busy) return;
     state.cancelRequested = true;
     setStatus('正在取消导出…');
+    pausePreviewFrameCache();
+    state.cancelExportPreparation?.();
     state.exportEncodingSession?.cancel(new CancelledError());
   }
 
@@ -5547,7 +6018,7 @@
     returnToCaptureStage();
   }
 
-  function updateVideoStatus() {
+  function handlePageRouteChange() {
     const key = currentPageKey();
     if (!state.pageKey) state.pageKey = key;
     else if (state.pageKey !== key && state.mode !== 'recording' && state.mode !== 'exporting') {
@@ -5558,18 +6029,33 @@
       el.panel.classList.add('hidden');
       updateModeUi();
     }
+    invalidateMainVideo();
+  }
 
-    if (state.pageSelection && !state.pageSelectionSession) updatePageSelectionUi();
-    if (state.clip && Number.isFinite(el.clipVideo.currentTime)) updateTimelinePlayhead();
-    if (IS_LIVE_PAGE && el.liveRewindModeBtn) {
-      const video = getMainVideo();
-      liveMediaCollector?.setActiveVideo(video);
-      const status = liveMediaCollector?.getStatus(video);
-      const seconds = Math.max(0, Number(status?.duration) || 0);
-      el.liveRewindModeBtn.title = state.liveCaptureMode === 'rewind'
-        ? `已缓存 ${seconds.toFixed(1)} 秒`
-        : '切换后开始缓存直播画面';
-    }
+  function updateLiveRewindTitle(status = null) {
+    if (!IS_LIVE_PAGE || !el.liveRewindModeBtn) return;
+    const video = getMainVideo();
+    liveMediaCollector?.setActiveVideo(video);
+    const currentStatus = status || liveMediaCollector?.getStatus(video);
+    const seconds = Math.max(0, Number(currentStatus?.duration) || 0);
+    el.liveRewindModeBtn.title = state.liveCaptureMode === 'rewind'
+      ? `已缓存 ${seconds.toFixed(1)} 秒`
+      : '切换后开始缓存直播画面';
+  }
+
+  function scheduleViewportSync(resized = false) {
+    state.viewportNeedsResize ||= resized;
+    if (state.viewportSyncRaf) return;
+    state.viewportSyncRaf = requestAnimationFrame(() => {
+      state.viewportSyncRaf = 0;
+      const shouldFit = state.viewportNeedsResize;
+      state.viewportNeedsResize = false;
+      if (shouldFit) keepFloatingUiInViewport();
+      updatePageSelectionBoundary();
+      updatePageSelectionUi();
+      if (!shouldFit) updateEditorCropBox();
+      else if (!el.panel.classList.contains('hidden')) fitEditorLayout();
+    });
   }
 
   function handleExportInputChange(event) {
@@ -5582,6 +6068,22 @@
     }
     updateEstimatedFileSize();
   }
+
+  const videoObserver = new MutationObserver((records) => {
+    const changed = records.some((record) => {
+      if (record.type === 'attributes') {
+        return record.target instanceof HTMLVideoElement || record.target instanceof HTMLSourceElement;
+      }
+      return [...record.addedNodes, ...record.removedNodes].some((node) => (
+        node instanceof HTMLVideoElement || node.querySelector?.('video')
+      ));
+    });
+    if (changed) invalidateMainVideo();
+  });
+
+  const handleVideoIdentityChange = (event) => {
+    if (event.target instanceof HTMLVideoElement) invalidateMainVideo();
+  };
 
   el.launcher.addEventListener('pointerdown', handleLauncherPointerDown);
   el.launcher.addEventListener('pointermove', handleLauncherPointerMove);
@@ -5713,41 +6215,47 @@
     }
   }, true);
 
-  window.addEventListener('resize', () => {
-    keepFloatingUiInViewport();
-    updatePageSelectionBoundary();
-    updatePageSelectionUi();
-    if (!el.panel.classList.contains('hidden')) fitEditorLayout();
-  });
-  window.addEventListener('scroll', () => {
-    updatePageSelectionBoundary();
-    updatePageSelectionUi();
-    updateEditorCropBox();
-  }, true);
+  window.addEventListener('resize', () => scheduleViewportSync(true));
+  window.addEventListener('scroll', () => scheduleViewportSync(false), true);
 
   window.addEventListener('beforeunload', () => {
+    discardEditorBackgroundIntent();
     clearEditorViewportAnimation();
+    if (state.viewportSyncRaf) cancelAnimationFrame(state.viewportSyncRaf);
     cancelEditorPreviewRender();
     stopTrimPreview();
     releasePreviewFrameCache();
     cleanupRecordingResources(state.recording);
     state.exportEncodingSession?.destroy();
-    state.sizeEstimateEncodingSession?.destroy();
+    state.cancelExportPreparation?.();
     if (state.clip?.attachments) {
       for (const video of [...state.clip.attachments.keys()]) cleanupClipAttachment(state.clip, video);
     }
     if (state.clip?.url) URL.revokeObjectURL(state.clip.url);
     liveMediaCollector?.dispose();
+    videoObserver.disconnect();
+    document.removeEventListener('loadedmetadata', handleVideoIdentityChange, true);
+    document.removeEventListener('emptied', handleVideoIdentityChange, true);
+    pageWindow.navigation?.removeEventListener('currententrychange', handlePageRouteChange);
   });
 
   restoreExportPreferences();
   liveMediaCollector?.setEnabled(state.liveCaptureMode === 'rewind');
+  liveMediaCollector?.setStatusListener((status) => updateLiveRewindTitle(status));
   restoreLauncherPosition();
   renderTextLayerTabs();
   renderTextLayers();
-  setInterval(updateVideoStatus, 300);
+  videoObserver.observe(document.documentElement, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ['src'],
+  });
+  document.addEventListener('loadedmetadata', handleVideoIdentityChange, true);
+  document.addEventListener('emptied', handleVideoIdentityChange, true);
+  pageWindow.navigation?.addEventListener('currententrychange', handlePageRouteChange);
   updateModeUi();
-  updateVideoStatus();
+  handlePageRouteChange();
   }
 
   if (document.documentElement && document.body) startApp();
