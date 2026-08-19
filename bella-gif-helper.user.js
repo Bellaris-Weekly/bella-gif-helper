@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         贝报 GIF 助手
 // @namespace    https://www.bk0717.com/
-// @version      1.3.0
+// @version      1.3.1
 // @description  B站直播回溯、视频框选录制与 GIF 编辑
 // @author       贝极星周报
 // @homepageURL  https://github.com/Bellaris-Weekly/bella-gif-helper
@@ -155,8 +155,31 @@
   function mergeEditorBackgroundIntent(current = null, next = null) {
     return {
       resumeCache: Boolean(current?.resumeCache || next?.resumeCache),
-      resumePreview: Boolean(current?.resumePreview || next?.resumePreview),
     };
+  }
+
+  function sanitizeFileNamePart(value, fallback = '') {
+    const cleaned = String(value || '')
+      .replace(/[\u0000-\u001f<>:"/\\|?*]+/g, '_')
+      .replace(/\s+/g, '_')
+      .replace(/_+/g, '_')
+      .replace(/^[_\.]+|[_\.]+$/g, '');
+    return cleaned || fallback;
+  }
+
+  function calculateLiveFirstFrameTime(liveWallClockStartMs, trimStart) {
+    const start = Number(liveWallClockStartMs);
+    if (!Number.isFinite(start)) return null;
+    return start + Math.max(0, Number(trimStart) || 0) * 1000;
+  }
+
+  function formatGifFileName(dateValue, sourceLabel) {
+    const timestamp = dateValue instanceof Date ? dateValue.getTime() : Number(dateValue);
+    if (!Number.isFinite(timestamp) || dateValue === null) throw new Error('无法确定 GIF 首帧时间。');
+    const date = new Date(timestamp);
+    const pad = (value) => String(value).padStart(2, '0');
+    const timeDate = `${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}_${pad(date.getMonth() + 1)}${pad(date.getDate())}`;
+    return `贝报gif_${timeDate}_${sanitizeFileNamePart(sourceLabel, '视频')}.gif`;
   }
 
   function asBytes(value, copy = false) {
@@ -570,9 +593,14 @@
   }
 
   class LiveRewindTrack {
-    constructor({ maxBufferSeconds = LIVE_REWIND_BUFFER_SECONDS, targetSeconds = LIVE_REWIND_TARGET_SECONDS } = {}) {
+    constructor({
+      maxBufferSeconds = LIVE_REWIND_BUFFER_SECONDS,
+      targetSeconds = LIVE_REWIND_TARGET_SECONDS,
+      now = () => Date.now(),
+    } = {}) {
       this.maxBufferSeconds = maxBufferSeconds;
       this.targetSeconds = targetSeconds;
+      this.now = now;
       this.enabled = true;
       this.mimeType = '';
       this.playbackMimeType = '';
@@ -687,6 +715,7 @@
       }
       this.segments.push({
         ...segment,
+        receivedAtMs: Number.isFinite(segment.receivedAtMs) ? segment.receivedAtMs : this.now(),
         data: segment.data ? new Uint8Array(segment.data) : new Uint8Array([0]),
         keyframes: [...(segment.keyframes || [])].filter(Number.isFinite).sort((a, b) => a - b),
       });
@@ -727,6 +756,8 @@
         sourceStart: desiredStart,
         sourceEnd: latestEnd,
         bufferedStart: earliestStart,
+        liveWallClockStartMs: this.segments[this.segments.length - 1].receivedAtMs
+          - Math.max(0, latestEnd - mediaStart) * 1000,
         generation: this.generation,
       };
     }
@@ -878,7 +909,10 @@
     GIF_TRANSPARENT_INDEX,
     calculateCropViewport,
     calculateViewportTransitionTransform,
+    calculateLiveFirstFrameTime,
+    formatGifFileName,
     mergeEditorBackgroundIntent,
+    sanitizeFileNamePart,
   };
   if (typeof module === 'object' && module.exports && typeof document === 'undefined') {
     module.exports = liveRewindTestApi;
@@ -2404,6 +2438,17 @@
     return `${location.pathname}?p=${p}`;
   }
 
+  function getLiveRoomIdentity() {
+    const roomId = location.pathname.match(/^\/(\d+)/)?.[1] || '直播间';
+    const ownerElement = document.querySelector('.room-owner-username');
+    const titleParts = document.title.split(' - ').map((part) => part.trim()).filter(Boolean);
+    const titleOwner = titleParts.length >= 3 ? titleParts[titleParts.length - 2] : '';
+    return {
+      streamerName: String(ownerElement?.textContent || titleOwner || '主播').trim(),
+      roomId,
+    };
+  }
+
   function updateModeUi() {
     const editVisible = state.mode === 'edit' || state.mode === 'exporting';
     el.captureStage.classList.add('hidden');
@@ -2696,10 +2741,8 @@
     const cache = state.previewFrameCache;
     state.editorBackgroundIntent = mergeEditorBackgroundIntent(state.editorBackgroundIntent, {
       resumeCache: Boolean(cache && !cache.cancelled && cache.status !== 'ready'),
-      resumePreview: Boolean(state.trimPreviewCleanup),
     });
     pausePreviewFrameCache();
-    if (state.trimPreviewCleanup) stopTrimPreview();
     cancelEditorPreviewRender();
     el.previewCanvas.style.visibility = 'hidden';
   }
@@ -2711,9 +2754,6 @@
     if (!intent || !state.clip || state.mode !== 'edit') return;
     scheduleEditorPreviewRender();
     if (intent.resumeCache) void resumePreviewFrameCache();
-    if (intent.resumePreview && !el.panel.classList.contains('hidden') && !state.trimPreviewCleanup) {
-      void ensureTrimPreviewPlaying();
-    }
   }
 
   function scheduleEditorBackgroundResume() {
@@ -3288,6 +3328,8 @@
         initialTrimStart: snapshot.trimStart,
         initialTrimEnd: snapshot.trimEnd,
         clipKind: 'live-rewind',
+        liveWallClockStartMs: snapshot.liveWallClockStartMs,
+        liveIdentity: getLiveRoomIdentity(),
       });
       state.mode = 'edit';
       el.panel.classList.remove('hidden');
@@ -3743,6 +3785,7 @@
       video.pause();
       video.playbackRate = 1;
       drawSelectedVideoFrame(video, recordingSelection, ctx, captureWidth, captureHeight);
+      const liveWallClockStartMs = IS_LIVE_PAGE ? Date.now() : null;
 
       const stream = captureStream.call(canvas, RECORD_FPS);
       const mimeType = chooseRecorderMimeType();
@@ -3764,6 +3807,8 @@
         captureWidth,
         captureHeight,
         mimeType: recorder.mimeType || mimeType || 'video/webm',
+        liveWallClockStartMs,
+        liveIdentity: IS_LIVE_PAGE ? getLiveRoomIdentity() : null,
         startedAt: performance.now(),
         lastDrawAt: 0,
         rafId: 0,
@@ -3987,6 +4032,8 @@
         captureWidth: recording.captureWidth,
         captureHeight: recording.captureHeight,
         stopReason: recording.stopReason,
+        liveWallClockStartMs: recording.liveWallClockStartMs,
+        liveIdentity: recording.liveIdentity,
       });
       state.mode = 'edit';
       el.panel.classList.remove('hidden');
@@ -5726,11 +5773,14 @@
   }
 
   function makeFileName(settings) {
-    const bvid = location.pathname.match(/\/(BV[\w]+)/i)?.[1] || 'bilibili';
-    const now = new Date();
-    const pad = (value) => String(value).padStart(2, '0');
-    const timeDate = `${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}_${pad(now.getMonth() + 1)}${pad(now.getDate())}`;
-    return `贝报gif_${timeDate}_${bvid}.gif`;
+    if (IS_LIVE_PAGE) {
+      const identity = state.clip.liveIdentity;
+      const sourceLabel = `${identity.streamerName}_${identity.roomId}`;
+      const firstFrameTime = calculateLiveFirstFrameTime(state.clip.liveWallClockStartMs, settings.start);
+      return formatGifFileName(firstFrameTime, sourceLabel);
+    }
+    const bvid = location.pathname.match(/\/(BV[\w]+)/i)?.[1] || '视频';
+    return formatGifFileName(Date.now(), bvid);
   }
 
 
@@ -5749,10 +5799,12 @@
   async function generateGif() {
     if (state.mode !== 'edit' || state.busy) return;
     let settings;
+    let fileName;
     let snapshot;
     let encodingSession = null;
     try {
       settings = readExportSettings();
+      fileName = makeFileName(settings);
 
       stopTrimPreview();
       pausePreviewFrameCache();
@@ -5948,7 +6000,6 @@
       );
       updateEstimatedFileSize({ actualBytes: blob.size });
       setProgress(100);
-      const fileName = makeFileName(settings);
       downloadBlob(blob, fileName);
       setStatus(`已导出并下载 · ${formatFileSize(blob.size)}`, 'success');
       showToast(`下载完成 · ${formatFileSize(blob.size)}`, 'success');

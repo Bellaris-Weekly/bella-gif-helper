@@ -3,8 +3,10 @@ const assert = require('node:assert/strict');
 
 const {
   LiveRewindTrack,
+  calculateLiveFirstFrameTime,
   filterLiveInitToTrack,
   filterLiveMediaToTrack,
+  formatGifFileName,
   installLiveMediaCollector,
   parseLiveInit,
   parseLiveMedia,
@@ -239,7 +241,8 @@ test('预热不足 60 秒时返回当前全部可解码内容', () => {
 });
 
 test('关键帧预留不改变默认的最近 60 秒范围', () => {
-  const track = readyTrack();
+  const receivedAtMs = new Date(2026, 7, 20, 14, 5, 9).getTime();
+  const track = readyTrack({ now: () => receivedAtMs });
   for (let second = 0; second < 72; second += 1) {
     appendParsedSecond(track, second, { keyframe: second % 10 === 0 });
   }
@@ -248,6 +251,22 @@ test('关键帧预留不改变默认的最近 60 秒范围', () => {
   assert.equal(snapshot.trimStart, 2);
   assert.equal(snapshot.trimEnd, 62);
   assert.equal(snapshot.trimEnd - snapshot.trimStart, 60);
+  assert.equal(
+    calculateLiveFirstFrameTime(snapshot.liveWallClockStartMs, snapshot.trimStart),
+    receivedAtMs - 60_000,
+  );
+});
+
+test('直播录制按最终裁剪首帧计算文件时间并清理来源名称', () => {
+  const recordingStart = new Date(2026, 7, 20, 14, 5, 9).getTime();
+  const firstFrameTime = calculateLiveFirstFrameTime(recordingStart, 4.25);
+
+  assert.equal(firstFrameTime, recordingStart + 4250);
+  assert.equal(
+    formatGifFileName(firstFrameTime, '主播 名/测试_1700657229'),
+    '贝报gif_140513_0820_主播_名_测试_1700657229.gif',
+  );
+  assert.throws(() => formatGifFileName(null, '主播_1700657229'), /无法确定 GIF 首帧时间/);
 });
 
 test('2 Mbps 与 8 Mbps 都按时间而不是字节数清理', () => {

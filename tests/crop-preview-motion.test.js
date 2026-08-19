@@ -71,25 +71,21 @@ test('viewport transition maps every child point through the parent transform', 
   assert.equal(childPoint.y * transform.scaleY + transform.translateY, 280);
 });
 
-test('repeated crop interactions preserve every deferred background task', () => {
+test('repeated crop interactions preserve deferred cache work', () => {
   const firstDrag = mergeEditorBackgroundIntent(null, {
     resumeCache: true,
-    resumePreview: false,
   });
   const interruptedDrag = mergeEditorBackgroundIntent(firstDrag, {
     resumeCache: false,
-    resumePreview: true,
   });
 
   assert.deepEqual(interruptedDrag, {
     resumeCache: true,
-    resumePreview: true,
   });
 });
 
 test('crop interaction does not invent background work that was inactive', () => {
   assert.deepEqual(mergeEditorBackgroundIntent(null, null), {
     resumeCache: false,
-    resumePreview: false,
   });
 });
