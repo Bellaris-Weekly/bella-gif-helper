@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         贝报 GIF 助手
 // @namespace    https://www.bk0717.com/
-// @version      0.6.12
-// @description  B站视频框选录制与 GIF 编辑；
+// @version      1.1.0
+// @description  B站直播回溯、视频框选录制与 GIF 编辑
 // @author       贝极星周报
 // @homepageURL  https://github.com/Bellaris-Weekly/bella-gif-helper
 // @icon         https://i0.hdslb.com/bfs/garb/item/70de4619ce5e8a7b5bbe5c4124aa69353d8102e4.png
@@ -16,17 +16,752 @@
 // @match        https://www.bilibili.com/cheese/play/*
 // @match        https://live.bilibili.com/*
 // @match        https://m.bilibili.com/video/*
-// @require      https://cdn.jsdelivr.net/npm/gif.js@0.2.0/dist/gif.js
-// @resource     GIF_WORKER https://cdn.jsdelivr.net/npm/gif.js@0.2.0/dist/gif.worker.js
+// @match        https://live.bilibili.com/*
+// @resource     MODERN_GIF_MODULE https://cdn.jsdelivr.net/npm/modern-gif@2.1.0/dist/index.js
+// @resource     GIFSICLE_MODULE https://cdn.jsdelivr.net/npm/gifsicle-wasm-browser@1.5.19/dist/gifsicle.min.js
 // @grant        GM_getResourceText
-// @run-at       document-idle
+// @grant        unsafeWindow
+// @run-at       document-start
 // @noframes
 // ==/UserScript==
 
-// GIF 编码使用 Johan Nordberg 的 gif.js 0.2.0（MIT License）。
+// GIF 编码使用 modern-gif 2.1.0（MIT License）。
+// GIF 后压缩使用 Gifsicle WASM（Gifsicle GPL-2.0-or-later）。
 
 (() => {
   'use strict';
+
+  const LIVE_REWIND_BUFFER_SECONDS = 75;
+  const LIVE_REWIND_TARGET_SECONDS = 60;
+  const LIVE_CAPTURE_MODE_KEY = 'biliGifMakerLiveCaptureModeV1';
+  const GIF_QUALITY_PRESETS = Object.freeze({
+    nai: Object.freeze({ maxColors: 255, dither: 'floyd-steinberg', lossy: 0, estimateFactor: 0.30 }),
+    bei: Object.freeze({ maxColors: 255, dither: null, lossy: 25, estimateFactor: 0.22 }),
+    ran: Object.freeze({ maxColors: 192, dither: null, lossy: 50, estimateFactor: 0.16 }),
+  });
+
+  function buildGifsicleCommand(preset) {
+    const lossy = preset.lossy > 0 ? ` --lossy=${preset.lossy}` : '';
+    return `-O1${lossy} input.gif -o /out/output.gif`;
+  }
+
+  function normalizeGifDelay(fps, speed) {
+    return Math.max(20, Math.round(((1000 / fps) / speed) / 10) * 10);
+  }
+
+  function asBytes(value, copy = false) {
+    let view;
+    if (Object.prototype.toString.call(value) === '[object ArrayBuffer]') view = new Uint8Array(value);
+    else if (ArrayBuffer.isView(value)) view = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+    else return null;
+    return copy ? new Uint8Array(view) : view;
+  }
+
+  function readUint64(view, offset) {
+    return (BigInt(view.getUint32(offset)) << 32n) | BigInt(view.getUint32(offset + 4));
+  }
+
+  function writeUint64(view, offset, value) {
+    const safe = value < 0n ? 0n : value;
+    view.setUint32(offset, Number((safe >> 32n) & 0xffffffffn));
+    view.setUint32(offset + 4, Number(safe & 0xffffffffn));
+  }
+
+  function readIsoBoxes(bytes, start = 0, end = bytes?.byteLength || 0) {
+    if (!bytes || start < 0 || end > bytes.byteLength || start > end) return [];
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const boxes = [];
+    let offset = start;
+    while (offset + 8 <= end) {
+      let size = view.getUint32(offset);
+      const type = String.fromCharCode(bytes[offset + 4], bytes[offset + 5], bytes[offset + 6], bytes[offset + 7]);
+      let headerSize = 8;
+      if (size === 1) {
+        if (offset + 16 > end) break;
+        const largeSize = readUint64(view, offset + 8);
+        if (largeSize > BigInt(Number.MAX_SAFE_INTEGER)) break;
+        size = Number(largeSize);
+        headerSize = 16;
+      } else if (size === 0) {
+        size = end - offset;
+      }
+      if (size < headerSize || offset + size > end) break;
+      boxes.push({ type, start: offset, end: offset + size, size, headerSize, dataStart: offset + headerSize });
+      offset += size;
+    }
+    return boxes;
+  }
+
+  function childBox(bytes, parent, type) {
+    return readIsoBoxes(bytes, parent.dataStart, parent.end).find((box) => box.type === type) || null;
+  }
+
+  function childBoxes(bytes, parent, type) {
+    return readIsoBoxes(bytes, parent.dataStart, parent.end).filter((box) => !type || box.type === type);
+  }
+
+  function hashBytes(bytes) {
+    let hash = 0x811c9dc5;
+    for (let index = 0; index < bytes.byteLength; index += 1) {
+      hash ^= bytes[index];
+      hash = Math.imul(hash, 0x01000193);
+    }
+    return (hash >>> 0).toString(16).padStart(8, '0');
+  }
+
+  function toVideoOnlyMimeType(mimeType) {
+    const value = String(mimeType || '');
+    const codecsMatch = value.match(/codecs\s*=\s*(?:"([^"]*)"|'([^']*)'|([^;]*))/i);
+    if (!codecsMatch) return value;
+    const codecs = (codecsMatch[1] || codecsMatch[2] || codecsMatch[3] || '')
+      .split(',')
+      .map((codec) => codec.trim())
+      .filter(Boolean);
+    const videoCodecs = codecs.filter((codec) => (
+      /^(?:avc1|avc3|hev1|hvc1|av01|vp0[89]|vp9|dvhe|dvh1)(?:\.|$)/i.test(codec)
+    ));
+    if (!videoCodecs.length || videoCodecs.length === codecs.length) return value;
+    return value.replace(codecsMatch[0], `codecs="${videoCodecs.join(',')}"`);
+  }
+
+  function parseLiveInit(bytes) {
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const moov = readIsoBoxes(bytes).find((box) => box.type === 'moov');
+    if (!moov) return null;
+    const tracks = childBoxes(bytes, moov, 'trak');
+    let selected = null;
+    for (const trak of tracks) {
+      const mdia = childBox(bytes, trak, 'mdia');
+      const hdlr = mdia && childBox(bytes, mdia, 'hdlr');
+      if (!mdia || !hdlr || hdlr.dataStart + 12 > hdlr.end) continue;
+      const handler = String.fromCharCode(
+        bytes[hdlr.dataStart + 8], bytes[hdlr.dataStart + 9],
+        bytes[hdlr.dataStart + 10], bytes[hdlr.dataStart + 11],
+      );
+      if (handler !== 'vide') continue;
+      const tkhd = childBox(bytes, trak, 'tkhd');
+      const mdhd = childBox(bytes, mdia, 'mdhd');
+      if (!tkhd || !mdhd) continue;
+      const tkhdVersion = bytes[tkhd.dataStart];
+      const mdhdVersion = bytes[mdhd.dataStart];
+      const trackIdOffset = tkhd.dataStart + (tkhdVersion === 1 ? 20 : 12);
+      const timescaleOffset = mdhd.dataStart + (mdhdVersion === 1 ? 20 : 12);
+      if (trackIdOffset + 4 > tkhd.end || timescaleOffset + 4 > mdhd.end) continue;
+      selected = {
+        trackId: view.getUint32(trackIdOffset),
+        timescale: view.getUint32(timescaleOffset),
+        defaultSampleDuration: 0,
+        defaultSampleSize: 0,
+        defaultSampleFlags: null,
+      };
+      break;
+    }
+    if (!selected?.trackId || !selected.timescale) return null;
+    const mvex = childBox(bytes, moov, 'mvex');
+    const trex = mvex && childBoxes(bytes, mvex, 'trex').find((box) => (
+      box.dataStart + 24 <= box.end && view.getUint32(box.dataStart + 4) === selected.trackId
+    ));
+    if (trex) {
+      selected.defaultSampleDuration = view.getUint32(trex.dataStart + 12);
+      selected.defaultSampleSize = view.getUint32(trex.dataStart + 16);
+      selected.defaultSampleFlags = view.getUint32(trex.dataStart + 20);
+    }
+    return selected;
+  }
+
+  function makeIsoBox(type, parts) {
+    const payloadSize = parts.reduce((sum, part) => sum + part.byteLength, 0);
+    const output = new Uint8Array(payloadSize + 8);
+    const view = new DataView(output.buffer);
+    view.setUint32(0, output.byteLength);
+    for (let index = 0; index < 4; index += 1) output[4 + index] = type.charCodeAt(index);
+    let offset = 8;
+    for (const part of parts) {
+      output.set(part, offset);
+      offset += part.byteLength;
+    }
+    return output;
+  }
+
+  function copyIsoBox(bytes, box) {
+    return new Uint8Array(bytes.subarray(box.start, box.end));
+  }
+
+  function trackIdFromTrak(bytes, trak) {
+    const tkhd = childBox(bytes, trak, 'tkhd');
+    if (!tkhd) return null;
+    const offset = tkhd.dataStart + (bytes[tkhd.dataStart] === 1 ? 20 : 12);
+    if (offset + 4 > tkhd.end) return null;
+    return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(offset);
+  }
+
+  function filterLiveInitToTrack(bytes, trackId) {
+    const topLevel = readIsoBoxes(bytes);
+    const moov = topLevel.find((box) => box.type === 'moov');
+    if (!moov) return new Uint8Array(bytes);
+    const moovChildren = childBoxes(bytes, moov);
+    const trackBoxes = moovChildren.filter((box) => box.type === 'trak');
+    if (trackBoxes.length <= 1) return new Uint8Array(bytes);
+    const filteredChildren = [];
+    for (const child of moovChildren) {
+      if (child.type === 'trak') {
+        if (trackIdFromTrak(bytes, child) === trackId) filteredChildren.push(copyIsoBox(bytes, child));
+        continue;
+      }
+      if (child.type === 'mvex') {
+        const mvexChildren = childBoxes(bytes, child).filter((box) => {
+          if (box.type !== 'trex') return true;
+          if (box.dataStart + 8 > box.end) return false;
+          return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(box.dataStart + 4) === trackId;
+        });
+        filteredChildren.push(makeIsoBox('mvex', mvexChildren.map((box) => copyIsoBox(bytes, box))));
+        continue;
+      }
+      filteredChildren.push(copyIsoBox(bytes, child));
+    }
+    const filteredMoov = makeIsoBox('moov', filteredChildren);
+    return concatByteParts(topLevel.map((box) => (
+      box === moov ? filteredMoov : copyIsoBox(bytes, box)
+    )));
+  }
+
+  function concatByteParts(parts) {
+    const total = parts.reduce((sum, part) => sum + part.byteLength, 0);
+    const output = new Uint8Array(total);
+    let offset = 0;
+    for (const part of parts) {
+      output.set(part, offset);
+      offset += part.byteLength;
+    }
+    return output;
+  }
+
+  function parseTrunDataLayout(bytes, moof, traf, tfhd) {
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const runs = [];
+    let continuationOffset = null;
+    for (const trun of childBoxes(bytes, traf, 'trun')) {
+      if (trun.dataStart + 8 > trun.end) return null;
+      const flags = (bytes[trun.dataStart + 1] << 16) | (bytes[trun.dataStart + 2] << 8) | bytes[trun.dataStart + 3];
+      const sampleCount = view.getUint32(trun.dataStart + 4);
+      let offset = trun.dataStart + 8;
+      let dataOffsetPosition = null;
+      let dataStart = continuationOffset;
+      if (flags & 0x000001) {
+        if (offset + 4 > trun.end) return null;
+        dataOffsetPosition = offset;
+        dataStart = moof.start + view.getInt32(offset);
+        offset += 4;
+      }
+      if (flags & 0x000004) offset += 4;
+      if (!Number.isFinite(dataStart)) return null;
+      let dataSize = 0;
+      for (let sampleIndex = 0; sampleIndex < sampleCount; sampleIndex += 1) {
+        if (flags & 0x000100) offset += 4;
+        let sampleSize = tfhd.defaultSampleSize;
+        if (flags & 0x000200) {
+          if (offset + 4 > trun.end) return null;
+          sampleSize = view.getUint32(offset);
+          offset += 4;
+        }
+        if (flags & 0x000400) offset += 4;
+        if (flags & 0x000800) offset += 4;
+        if (offset > trun.end || !sampleSize) return null;
+        dataSize += sampleSize;
+      }
+      runs.push({
+        dataStart,
+        dataEnd: dataStart + dataSize,
+        dataOffsetPosition: dataOffsetPosition === null ? null : dataOffsetPosition - traf.start,
+      });
+      continuationOffset = dataStart + dataSize;
+    }
+    return runs;
+  }
+
+  function filterLiveMediaToTrack(bytes, trackId) {
+    const topLevel = readIsoBoxes(bytes);
+    const output = [];
+    for (let index = 0; index < topLevel.length; index += 1) {
+      const box = topLevel[index];
+      if (box.type !== 'moof') {
+        output.push(copyIsoBox(bytes, box));
+        continue;
+      }
+      const children = childBoxes(bytes, box);
+      const trafs = children.filter((child) => child.type === 'traf');
+      if (trafs.length <= 1) {
+        output.push(copyIsoBox(bytes, box));
+        continue;
+      }
+      const selectedTraf = trafs.find((traf) => {
+        const tfhdBox = childBox(bytes, traf, 'tfhd');
+        return tfhdBox
+          && tfhdBox.dataStart + 8 <= tfhdBox.end
+          && new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(tfhdBox.dataStart + 4) === trackId;
+      });
+      const followingMdat = topLevel[index + 1]?.type === 'mdat' ? topLevel[index + 1] : null;
+      const tfhdBox = selectedTraf && childBox(bytes, selectedTraf, 'tfhd');
+      if (!selectedTraf || !followingMdat || !tfhdBox) return new Uint8Array(bytes);
+      const tfhd = parseTfhd(bytes, tfhdBox, {
+        defaultSampleDuration: 0,
+        defaultSampleSize: 0,
+        defaultSampleFlags: null,
+      });
+      const runs = tfhd && parseTrunDataLayout(bytes, box, selectedTraf, tfhd);
+      if (!runs?.length || runs.some((run) => run.dataStart < followingMdat.dataStart || run.dataEnd > followingMdat.end)) {
+        return new Uint8Array(bytes);
+      }
+
+      const trafCopy = copyIsoBox(bytes, selectedTraf);
+      const otherChildren = children
+        .filter((child) => child.type !== 'traf')
+        .map((child) => copyIsoBox(bytes, child));
+      const newMoofSize = 8 + otherChildren.reduce((sum, child) => sum + child.byteLength, 0) + trafCopy.byteLength;
+      const trafView = new DataView(trafCopy.buffer, trafCopy.byteOffset, trafCopy.byteLength);
+      let payloadOffset = 0;
+      const videoPayload = [];
+      for (const run of runs) {
+        if (run.dataOffsetPosition !== null) {
+          trafView.setInt32(run.dataOffsetPosition, newMoofSize + 8 + payloadOffset);
+        }
+        const sampleBytes = new Uint8Array(bytes.subarray(run.dataStart, run.dataEnd));
+        videoPayload.push(sampleBytes);
+        payloadOffset += sampleBytes.byteLength;
+      }
+      output.push(makeIsoBox('moof', [...otherChildren, trafCopy]));
+      output.push(makeIsoBox('mdat', videoPayload));
+      index += 1;
+    }
+    return concatByteParts(output);
+  }
+
+  function parseTfhd(bytes, box, defaults) {
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const flags = (bytes[box.dataStart + 1] << 16) | (bytes[box.dataStart + 2] << 8) | bytes[box.dataStart + 3];
+    let offset = box.dataStart + 8;
+    if (offset > box.end) return null;
+    const result = {
+      trackId: view.getUint32(box.dataStart + 4),
+      defaultSampleDuration: defaults.defaultSampleDuration || 0,
+      defaultSampleSize: defaults.defaultSampleSize || 0,
+      defaultSampleFlags: defaults.defaultSampleFlags,
+    };
+    if (flags & 0x000001) offset += 8;
+    if (flags & 0x000002) offset += 4;
+    if (flags & 0x000008) {
+      if (offset + 4 > box.end) return null;
+      result.defaultSampleDuration = view.getUint32(offset);
+      offset += 4;
+    }
+    if (flags & 0x000010) {
+      if (offset + 4 > box.end) return null;
+      result.defaultSampleSize = view.getUint32(offset);
+      offset += 4;
+    }
+    if (flags & 0x000020) {
+      if (offset + 4 > box.end) return null;
+      result.defaultSampleFlags = view.getUint32(offset);
+    }
+    return result;
+  }
+
+  function isSyncSample(sampleFlags) {
+    if (!Number.isFinite(sampleFlags)) return false;
+    if (sampleFlags & 0x00010000) return false;
+    const dependsOn = (sampleFlags >>> 24) & 0x03;
+    return dependsOn !== 1;
+  }
+
+  function parseLiveMedia(bytes, init, timestampOffset = 0) {
+    if (!init?.timescale) return null;
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const moofs = readIsoBoxes(bytes).filter((box) => box.type === 'moof');
+    let startTicks = null;
+    let endTicks = null;
+    const keyframeTicks = [];
+    for (const moof of moofs) {
+      for (const traf of childBoxes(bytes, moof, 'traf')) {
+        const tfhdBox = childBox(bytes, traf, 'tfhd');
+        const tfdtBox = childBox(bytes, traf, 'tfdt');
+        if (!tfhdBox || !tfdtBox || tfdtBox.dataStart + 8 > tfdtBox.end) continue;
+        const tfhd = parseTfhd(bytes, tfhdBox, init);
+        if (!tfhd || tfhd.trackId !== init.trackId) continue;
+        const version = bytes[tfdtBox.dataStart];
+        let decodeTime = version === 1
+          ? readUint64(view, tfdtBox.dataStart + 4)
+          : BigInt(view.getUint32(tfdtBox.dataStart + 4));
+        if (startTicks === null || decodeTime < startTicks) startTicks = decodeTime;
+        for (const trun of childBoxes(bytes, traf, 'trun')) {
+          if (trun.dataStart + 8 > trun.end) continue;
+          const flags = (bytes[trun.dataStart + 1] << 16) | (bytes[trun.dataStart + 2] << 8) | bytes[trun.dataStart + 3];
+          const sampleCount = view.getUint32(trun.dataStart + 4);
+          let offset = trun.dataStart + 8;
+          if (flags & 0x000001) offset += 4;
+          let firstSampleFlags = null;
+          if (flags & 0x000004) {
+            if (offset + 4 > trun.end) break;
+            firstSampleFlags = view.getUint32(offset);
+            offset += 4;
+          }
+          for (let sampleIndex = 0; sampleIndex < sampleCount; sampleIndex += 1) {
+            let duration = tfhd.defaultSampleDuration;
+            let sampleFlags = sampleIndex === 0 && firstSampleFlags !== null
+              ? firstSampleFlags
+              : tfhd.defaultSampleFlags;
+            if (flags & 0x000100) {
+              if (offset + 4 > trun.end) break;
+              duration = view.getUint32(offset);
+              offset += 4;
+            }
+            if (flags & 0x000200) offset += 4;
+            if (flags & 0x000400) {
+              if (offset + 4 > trun.end) break;
+              sampleFlags = view.getUint32(offset);
+              offset += 4;
+            }
+            if (flags & 0x000800) offset += 4;
+            if (offset > trun.end || !duration) break;
+            if (isSyncSample(sampleFlags)) keyframeTicks.push(decodeTime);
+            decodeTime += BigInt(duration);
+          }
+        }
+        if (endTicks === null || decodeTime > endTicks) endTicks = decodeTime;
+      }
+    }
+    if (startTicks === null || endTicks === null || endTicks <= startTicks) return null;
+    const timescale = init.timescale;
+    return {
+      start: Number(startTicks) / timescale + timestampOffset,
+      end: Number(endTicks) / timescale + timestampOffset,
+      startTicks,
+      endTicks,
+      keyframes: keyframeTicks.map((ticks) => Number(ticks) / timescale + timestampOffset),
+    };
+  }
+
+  function rebaseLiveFragment(bytes, baseTicks) {
+    const copy = new Uint8Array(bytes);
+    const view = new DataView(copy.buffer, copy.byteOffset, copy.byteLength);
+    for (const moof of readIsoBoxes(copy).filter((box) => box.type === 'moof')) {
+      for (const traf of childBoxes(copy, moof, 'traf')) {
+        const tfdt = childBox(copy, traf, 'tfdt');
+        if (!tfdt || tfdt.dataStart + 8 > tfdt.end) continue;
+        const version = copy[tfdt.dataStart];
+        if (version === 1) {
+          writeUint64(view, tfdt.dataStart + 4, readUint64(view, tfdt.dataStart + 4) - baseTicks);
+        } else {
+          const current = BigInt(view.getUint32(tfdt.dataStart + 4));
+          view.setUint32(tfdt.dataStart + 4, Number(current > baseTicks ? current - baseTicks : 0n));
+        }
+      }
+    }
+    return copy;
+  }
+
+  class LiveRewindTrack {
+    constructor({ maxBufferSeconds = LIVE_REWIND_BUFFER_SECONDS, targetSeconds = LIVE_REWIND_TARGET_SECONDS } = {}) {
+      this.maxBufferSeconds = maxBufferSeconds;
+      this.targetSeconds = targetSeconds;
+      this.enabled = true;
+      this.mimeType = '';
+      this.playbackMimeType = '';
+      this.initBytes = null;
+      this.init = null;
+      this.initSignature = '';
+      this.segments = [];
+      this.pendingBytes = new Uint8Array(0);
+      this.timestampOffset = null;
+      this.generation = 0;
+    }
+
+    setEnabled(enabled) {
+      this.enabled = Boolean(enabled);
+      if (!this.enabled) this.clearMedia();
+    }
+
+    clearMedia() {
+      this.segments = [];
+      this.pendingBytes = new Uint8Array(0);
+      this.timestampOffset = null;
+      this.generation += 1;
+    }
+
+    clearAll() {
+      this.clearMedia();
+      this.initBytes = null;
+      this.init = null;
+      this.initSignature = '';
+      this.playbackMimeType = '';
+    }
+
+    setMimeType(mimeType) {
+      const next = String(mimeType || '');
+      if (this.mimeType && next && this.mimeType !== next) this.clearAll();
+      this.mimeType = next || this.mimeType;
+    }
+
+    setInit(bytes) {
+      const parsed = parseLiveInit(bytes);
+      if (!parsed) return false;
+      const signature = `${this.mimeType}:${hashBytes(bytes)}`;
+      if (this.initSignature && signature !== this.initSignature) this.clearMedia();
+      this.initBytes = filterLiveInitToTrack(bytes, parsed.trackId);
+      this.init = parsed;
+      this.initSignature = signature;
+      this.playbackMimeType = toVideoOnlyMimeType(this.mimeType);
+      return true;
+    }
+
+    ingest(value, { mimeType = this.mimeType, timestampOffset = 0 } = {}) {
+      const incoming = asBytes(value, false);
+      if (!incoming?.byteLength) return false;
+      this.setMimeType(mimeType);
+      let pending = this.pendingBytes.byteLength
+        ? concatByteParts([this.pendingBytes, incoming])
+        : new Uint8Array(incoming);
+      let accepted = false;
+      const offset = Number(timestampOffset) || 0;
+
+      while (pending.byteLength) {
+        const boxes = readIsoBoxes(pending);
+        if (!boxes.length) break;
+        const moov = boxes.find((box) => box.type === 'moov');
+        const moof = boxes.find((box) => box.type === 'moof');
+
+        if (moov && (!moof || moov.start < moof.start)) {
+          const initBytes = pending.subarray(0, moov.end);
+          accepted = this.setInit(initBytes) || accepted;
+          pending = new Uint8Array(pending.subarray(moov.end));
+          continue;
+        }
+
+        if (moof) {
+          const mdat = boxes.find((box) => box.type === 'mdat' && box.start > moof.start);
+          if (!mdat) break;
+          const unit = pending.subarray(0, mdat.end);
+          if (this.enabled && this.init) {
+            const mediaBytes = filterLiveMediaToTrack(unit, this.init.trackId);
+            const parsed = parseLiveMedia(mediaBytes, this.init, offset);
+            if (parsed) {
+              this.appendSegment({ ...parsed, data: mediaBytes, timestampOffset: offset });
+              accepted = true;
+            }
+          }
+          pending = new Uint8Array(pending.subarray(mdat.end));
+          continue;
+        }
+
+        const orphanMdat = boxes.find((box) => box.type === 'mdat');
+        if (orphanMdat) {
+          pending = new Uint8Array(pending.subarray(orphanMdat.end));
+          continue;
+        }
+        break;
+      }
+
+      this.pendingBytes = pending;
+      return accepted;
+    }
+
+    appendSegment(segment) {
+      if (!this.enabled || !segment || !(segment.end > segment.start)) return;
+      const offset = Number(segment.timestampOffset) || 0;
+      if (this.timestampOffset !== null && Math.abs(offset - this.timestampOffset) > 0.0001) this.clearMedia();
+      this.timestampOffset = offset;
+      const previous = this.segments[this.segments.length - 1];
+      if (previous) {
+        const duration = Math.max(0.1, segment.end - segment.start);
+        const tolerance = Math.max(3, duration * 4);
+        if (segment.start < previous.end - 0.25 || segment.start > previous.end + tolerance) this.clearMedia();
+      }
+      this.segments.push({
+        ...segment,
+        data: segment.data ? new Uint8Array(segment.data) : new Uint8Array([0]),
+        keyframes: [...(segment.keyframes || [])].filter(Number.isFinite).sort((a, b) => a - b),
+      });
+      const latestEnd = this.segments[this.segments.length - 1].end;
+      const cutoff = latestEnd - this.maxBufferSeconds;
+      while (this.segments.length > 1 && this.segments[0].end <= cutoff) this.segments.shift();
+    }
+
+    snapshot() {
+      if (!this.enabled || !this.initBytes || !this.init || !this.segments.length) return null;
+      const latestEnd = this.segments[this.segments.length - 1].end;
+      const earliestStart = this.segments[0].start;
+      let desiredStart = Math.max(earliestStart, latestEnd - this.targetSeconds);
+      let selectedIndex = -1;
+      let firstUsableKeyframe = null;
+      for (let index = 0; index < this.segments.length; index += 1) {
+        for (const keyframe of this.segments[index].keyframes) {
+          if (firstUsableKeyframe === null) firstUsableKeyframe = { index, time: keyframe };
+          if (keyframe <= desiredStart + 0.0001) selectedIndex = index;
+        }
+      }
+      if (selectedIndex < 0 && firstUsableKeyframe) {
+        selectedIndex = firstUsableKeyframe.index;
+        desiredStart = Math.max(desiredStart, firstUsableKeyframe.time);
+      }
+      if (selectedIndex < 0) return null;
+      const selected = this.segments.slice(selectedIndex);
+      const mediaStart = selected[0].start;
+      const baseTicks = selected[0].startTicks ?? BigInt(Math.max(0, Math.round(
+        (mediaStart - (selected[0].timestampOffset || 0)) * this.init.timescale,
+      )));
+      return {
+        mimeType: this.playbackMimeType || toVideoOnlyMimeType(this.mimeType) || 'video/mp4',
+        parts: [new Uint8Array(this.initBytes), ...selected.map((segment) => rebaseLiveFragment(segment.data, baseTicks))],
+        duration: Math.max(0, latestEnd - mediaStart),
+        trimStart: Math.max(0, desiredStart - mediaStart),
+        trimEnd: Math.max(0, latestEnd - mediaStart),
+        sourceStart: desiredStart,
+        sourceEnd: latestEnd,
+        bufferedStart: earliestStart,
+        generation: this.generation,
+      };
+    }
+
+    getStatus() {
+      if (!this.enabled) return { state: 'disabled', duration: 0, bytes: 0 };
+      const first = this.segments[0];
+      const last = this.segments[this.segments.length - 1];
+      return {
+        state: this.init && first ? 'buffering' : 'warming',
+        duration: first && last ? Math.max(0, last.end - first.start) : 0,
+        bytes: this.segments.reduce((sum, segment) => sum + segment.data.byteLength, 0),
+      };
+    }
+  }
+
+  function installLiveMediaCollector(pageWindow, enabled) {
+    const MediaSourceClass = pageWindow?.MediaSource;
+    const URLClass = pageWindow?.URL;
+    if (!MediaSourceClass?.prototype?.addSourceBuffer || !URLClass?.createObjectURL) return null;
+    const sourceTracks = new WeakMap();
+    const bufferTracks = new WeakMap();
+    const bufferSources = new WeakMap();
+    const urlSources = new Map();
+    const originalAddSourceBuffer = MediaSourceClass.prototype.addSourceBuffer;
+    const SourceBufferClass = pageWindow.SourceBuffer;
+    const originalAppendBuffer = SourceBufferClass?.prototype?.appendBuffer;
+    const originalChangeType = SourceBufferClass?.prototype?.changeType;
+    const originalCreateObjectURL = URLClass.createObjectURL;
+    const originalRevokeObjectURL = URLClass.revokeObjectURL;
+    let captureEnabled = Boolean(enabled);
+    let activeSource = null;
+
+    MediaSourceClass.prototype.addSourceBuffer = function addSourceBuffer(mimeType) {
+      const sourceBuffer = originalAddSourceBuffer.call(this, mimeType);
+      if (/^video\//i.test(String(mimeType || ''))) {
+        const track = new LiveRewindTrack();
+        track.setMimeType(mimeType);
+        track.setEnabled(captureEnabled && (!activeSource || activeSource === this));
+        sourceTracks.set(this, track);
+        bufferTracks.set(sourceBuffer, track);
+        bufferSources.set(sourceBuffer, this);
+      }
+      return sourceBuffer;
+    };
+
+    if (originalAppendBuffer) {
+      SourceBufferClass.prototype.appendBuffer = function appendBuffer(data) {
+        const track = bufferTracks.get(this);
+        const isActive = !activeSource || bufferSources.get(this) === activeSource;
+        if (track && (isActive || !track.init)) {
+          try {
+            track.ingest(data, {
+              mimeType: track.mimeType,
+              timestampOffset: Number(this.timestampOffset) || 0,
+            });
+          } catch (_) { }
+        }
+        return originalAppendBuffer.call(this, data);
+      };
+    }
+
+    if (originalChangeType) {
+      SourceBufferClass.prototype.changeType = function changeType(mimeType) {
+        const track = bufferTracks.get(this);
+        if (track) track.setMimeType(mimeType);
+        return originalChangeType.call(this, mimeType);
+      };
+    }
+
+    URLClass.createObjectURL = function createObjectURL(value) {
+      const url = originalCreateObjectURL.call(this, value);
+      if (value instanceof MediaSourceClass) urlSources.set(String(url), value);
+      return url;
+    };
+
+    URLClass.revokeObjectURL = function revokeObjectURL(url) {
+      const source = urlSources.get(String(url));
+      sourceTracks.get(source)?.clearAll();
+      urlSources.delete(String(url));
+      return originalRevokeObjectURL.call(this, url);
+    };
+
+    return {
+      setEnabled(nextEnabled) {
+        captureEnabled = Boolean(nextEnabled);
+        for (const source of urlSources.values()) {
+          sourceTracks.get(source)?.setEnabled(captureEnabled && (!activeSource || source === activeSource));
+        }
+      },
+      setActiveVideo(video) {
+        const source = urlSources.get(String(video?.currentSrc || video?.src || '')) || null;
+        if (!source || source === activeSource) return;
+        activeSource = source;
+        for (const candidate of urlSources.values()) {
+          sourceTracks.get(candidate)?.setEnabled(captureEnabled && candidate === activeSource);
+        }
+      },
+      getSnapshot(video) {
+        const source = urlSources.get(String(video?.currentSrc || video?.src || ''));
+        return source ? sourceTracks.get(source)?.snapshot() || null : null;
+      },
+      getStatus(video) {
+        const source = urlSources.get(String(video?.currentSrc || video?.src || ''));
+        return source ? sourceTracks.get(source)?.getStatus() || null : null;
+      },
+      dispose() {
+        for (const source of urlSources.values()) sourceTracks.get(source)?.clearAll();
+        urlSources.clear();
+      },
+    };
+  }
+
+  const liveRewindTestApi = {
+    LiveRewindTrack,
+    parseLiveInit,
+    parseLiveMedia,
+    readIsoBoxes,
+    rebaseLiveFragment,
+    filterLiveInitToTrack,
+    filterLiveMediaToTrack,
+    toVideoOnlyMimeType,
+    installLiveMediaCollector,
+    GIF_QUALITY_PRESETS,
+    buildGifsicleCommand,
+    normalizeGifDelay,
+  };
+  if (typeof module === 'object' && module.exports && typeof document === 'undefined') {
+    module.exports = liveRewindTestApi;
+    return;
+  }
+
+  const IS_LIVE_PAGE = location.hostname === 'live.bilibili.com';
+  const pageWindow = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+  let initialLiveCaptureMode = 'rewind';
+  if (IS_LIVE_PAGE) {
+    try {
+      initialLiveCaptureMode = localStorage.getItem(LIVE_CAPTURE_MODE_KEY) === 'forward' ? 'forward' : 'rewind';
+    } catch (_) { }
+  }
+  const liveMediaCollector = IS_LIVE_PAGE
+    ? installLiveMediaCollector(pageWindow, initialLiveCaptureMode === 'rewind')
+    : null;
+
+  function startApp() {
 
   const SCRIPT_NAME = '贝报 GIF 助手';
   const RECORD_FPS = 24;
@@ -39,7 +774,6 @@
   const PREVIEW_CACHE_MIN_EDGE = 128;
   const PREVIEW_CACHE_MEMORY_BUDGET = 72 * 1024 * 1024;
   const MIN_SELECT_PX = 24;
-  const TRANSPARENT_KEY_RGB = 0xff00fe;
   const LAUNCHER_POSITION_KEY = 'biliGifMakerLauncherPositionV1';
   const PANEL_POSITION_KEY = 'biliGifMakerPanelPositionV1';
   const EXPORT_PREFERENCES_KEY = 'biliGifMakerExportPreferencesV1';
@@ -66,8 +800,7 @@
     trimStart: 0,
     trimEnd: 0,
     trimPreviewCleanup: null,
-    gif: null,
-    workerUrl: null,
+    exportEncodingSession: null,
     launcherDrag: null,
     panelDrag: null,
     suppressLauncherClick: false,
@@ -76,14 +809,16 @@
     textLayerDrag: null,
     nextTextLayerId: 1,
     toastTimer: 0,
-    sizeEstimateCalibration: 1,
+    sizeEstimateCalibration: { nai: 1, bei: 1, ran: 1 },
     sizeEstimateTimer: 0,
     sizeEstimateToken: 0,
-    sizeEstimateGif: null,
+    sizeEstimateEncodingSession: null,
+    encodingResourceTexts: null,
     lastSampleEstimate: null,
     previewSnapshot: null,
-    cancelRequested: false,
-  };
+      cancelRequested: false,
+      liveCaptureMode: initialLiveCaptureMode,
+    };
 
   const host = document.createElement('div');
   host.id = 'bili-gif-maker-host';
@@ -450,8 +1185,41 @@
       #trimStartValue { text-align: left; color: #ff9db9; }
       #trimSummary { text-align: center; color: #6fd5a7; }
       #trimEndValue { text-align: right; color: #ff9db9; }
-      .preview-controls { margin-top: 5px; }
+      .preview-controls {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin-top: 5px;
+      }
       .preview-controls .btn { min-height: 34px; padding: 0 11px; }
+      .live-mode-switch {
+        display: inline-flex;
+        flex: 0 1 auto;
+        min-width: 0;
+        padding: 2px;
+        border: 1px solid rgba(255,255,255,.12);
+        border-radius: 7px;
+        background: rgba(255,255,255,.05);
+      }
+      .live-mode-switch button {
+        min-width: 0;
+        height: 28px;
+        padding: 0 8px;
+        border: 0;
+        border-radius: 5px;
+        background: transparent;
+        color: #aeb4bf;
+        font-size: 11px;
+        white-space: nowrap;
+        cursor: pointer;
+      }
+      .live-mode-switch button.active {
+        background: rgba(251,114,153,.22);
+        color: #fff;
+        box-shadow: inset 0 0 0 1px rgba(251,114,153,.35);
+      }
+      .live-mode-switch button:disabled { cursor: default; opacity: .55; }
 
       #editorSettingsScroll {
         flex: 1 1 auto;
@@ -875,6 +1643,10 @@
               </div>
               <div class="preview-controls">
                 <button id="previewTrimBtn" class="btn secondary edit-lockable">▶ 播放</button>
+                <div id="liveModeSwitch" class="live-mode-switch hidden" role="group" aria-label="下次录制模式">
+                  <button id="liveRewindModeBtn" type="button" class="edit-lockable" aria-pressed="true">回溯 60 秒</button>
+                  <button id="liveForwardModeBtn" type="button" class="edit-lockable" aria-pressed="false">框选录制</button>
+                </div>
               </div>
             </div>
           </div>
@@ -941,6 +1713,14 @@
                   <option value="1" selected>1.0×</option>
                   <option value="1.25">1.25×</option>
                   <option value="1.5">1.5×</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="qualitySelect">画质</label>
+                <select id="qualitySelect" class="edit-lockable export-input">
+                  <option value="nai">乃 · 高画质</option>
+                  <option value="bei" selected>贝 · 均衡</option>
+                  <option value="ran">然 · 体积优先</option>
                 </select>
               </div>
               <div class="field">
@@ -1048,6 +1828,9 @@
     trimEndValue: $('#trimEndValue'),
     trimSummary: $('#trimSummary'),
     previewTrimBtn: $('#previewTrimBtn'),
+    liveModeSwitch: $('#liveModeSwitch'),
+    liveRewindModeBtn: $('#liveRewindModeBtn'),
+    liveForwardModeBtn: $('#liveForwardModeBtn'),
     textLayerTabs: $('#textLayerTabs'),
     textEditor: $('#textEditor'),
     textEditorEmpty: $('#textEditorEmpty'),
@@ -1056,6 +1839,7 @@
     fpsSelect: $('#fpsSelect'),
     estimatedSize: $('#estimatedSize'),
     speedSelect: $('#speedSelect'),
+    qualitySelect: $('#qualitySelect'),
     cornerRadiusSelect: $('#cornerRadiusSelect'),
     cornerRadiusState: $('#cornerRadiusState'),
     captionText: $('#captionText'),
@@ -1135,6 +1919,7 @@
     try {
       const saved = JSON.parse(localStorage.getItem(EXPORT_PREFERENCES_KEY) || '{}');
       if (hasSelectValue(el.fpsSelect, String(saved.fps))) el.fpsSelect.value = String(saved.fps);
+      if (hasSelectValue(el.qualitySelect, String(saved.quality))) el.qualitySelect.value = String(saved.quality);
       if (hasSelectValue(el.cornerRadiusSelect, String(saved.cornerRadius))) {
         el.cornerRadiusSelect.value = String(saved.cornerRadius);
       }
@@ -1142,10 +1927,11 @@
   }
 
   function saveExportPreference(input) {
-    if (!input || !['fpsSelect', 'cornerRadiusSelect'].includes(input.id)) return;
+    if (!input || !['fpsSelect', 'qualitySelect', 'cornerRadiusSelect'].includes(input.id)) return;
     try {
       const saved = JSON.parse(localStorage.getItem(EXPORT_PREFERENCES_KEY) || '{}');
       if (input === el.fpsSelect) saved.fps = input.value;
+      if (input === el.qualitySelect) saved.quality = input.value;
       if (input === el.cornerRadiusSelect) saved.cornerRadius = input.value;
       localStorage.setItem(EXPORT_PREFERENCES_KEY, JSON.stringify(saved));
     } catch (_) { }
@@ -1333,6 +2119,14 @@
     el.mainActions.classList.toggle('hidden', lockEditor);
     el.cancelExportWrap.classList.toggle('hidden', !lockEditor);
     el.progressWrap.classList.toggle('hidden', !lockEditor);
+    if (el.liveModeSwitch) {
+      el.liveModeSwitch.classList.toggle('hidden', !IS_LIVE_PAGE);
+      const rewindActive = state.liveCaptureMode === 'rewind';
+      el.liveRewindModeBtn.classList.toggle('active', rewindActive);
+      el.liveForwardModeBtn.classList.toggle('active', !rewindActive);
+      el.liveRewindModeBtn.setAttribute('aria-pressed', String(rewindActive));
+      el.liveForwardModeBtn.setAttribute('aria-pressed', String(!rewindActive));
+    }
   }
 
   function clampLauncherPosition(left, top) {
@@ -1559,6 +2353,87 @@
     state.previewFrameCache = null;
   }
 
+  function cleanupClipAttachment(clip, video) {
+    const attachment = clip?.attachments?.get(video);
+    if (attachment) {
+      clip.attachments.delete(video);
+      try {
+        if (attachment.sourceBuffer?.updating) attachment.sourceBuffer.abort();
+      } catch (_) { }
+    }
+    try { video.pause(); } catch (_) { }
+    video.removeAttribute('src');
+    try { video.load(); } catch (_) { }
+    if (attachment) URL.revokeObjectURL(attachment.url);
+  }
+
+  function appendMediaSourcePart(sourceBuffer, part) {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (error = null) => {
+        if (settled) return;
+        settled = true;
+        sourceBuffer.removeEventListener('updateend', onUpdateEnd);
+        sourceBuffer.removeEventListener('error', onError);
+        error ? reject(error) : resolve();
+      };
+      const onUpdateEnd = () => finish();
+      const onError = () => finish(new Error('直播片段追加失败。'));
+      sourceBuffer.addEventListener('updateend', onUpdateEnd, { once: true });
+      sourceBuffer.addEventListener('error', onError, { once: true });
+      try { sourceBuffer.appendBuffer(part); } catch (error) { finish(error); }
+    });
+  }
+
+  async function attachClipToVideo(clip, video) {
+    if (!clip || !video) throw new Error('片段播放源无效。');
+    cleanupClipAttachment(clip, video);
+    if (clip.kind !== 'media-source') {
+      video.src = clip.url;
+      video.load();
+      if (video.readyState < 1) await waitForEvent(video, 'loadedmetadata', 10_000);
+      return;
+    }
+
+    const MediaSourceClass = pageWindow.MediaSource || window.MediaSource;
+    if (!MediaSourceClass?.isTypeSupported?.(clip.mimeType)) {
+      throw new Error(`浏览器不支持当前直播编码：${clip.mimeType}`);
+    }
+    const mediaSource = new MediaSourceClass();
+    const url = URL.createObjectURL(mediaSource);
+    const attachment = { mediaSource, sourceBuffer: null, url };
+    clip.attachments.set(video, attachment);
+    video.src = url;
+    video.load();
+    try {
+      await waitForEvent(mediaSource, 'sourceopen', 10_000);
+      if (clip.attachments.get(video) !== attachment) throw new Error('片段播放源已释放。');
+      const sourceBuffer = mediaSource.addSourceBuffer(clip.mimeType);
+      attachment.sourceBuffer = sourceBuffer;
+      for (let index = 0; index < clip.parts.length; index += 1) {
+        const part = clip.parts[index];
+        try {
+          await appendMediaSourcePart(sourceBuffer, part);
+        } catch (_) {
+          const boxes = readIsoBoxes(asBytes(part, false)).map((box) => box.type).join('+') || 'unknown';
+          const label = index === 0 ? '初始化段' : `媒体段 ${index}`;
+          throw new Error(`直播${label}追加失败（${boxes}，${clip.mimeType}）。`);
+        }
+      }
+      if (mediaSource.readyState === 'open') {
+        const bufferedEnd = sourceBuffer.buffered.length
+          ? sourceBuffer.buffered.end(sourceBuffer.buffered.length - 1)
+          : clip.duration;
+        mediaSource.duration = Math.max(clip.duration, bufferedEnd);
+        mediaSource.endOfStream();
+      }
+      if (video.readyState < 1) await waitForEvent(video, 'loadedmetadata', 10_000);
+    } catch (error) {
+      cleanupClipAttachment(clip, video);
+      throw error;
+    }
+  }
+
   function choosePreviewCacheProfile(clip) {
     const sourceWidth = Math.max(1, Number(clip.width) || 1);
     const sourceHeight = Math.max(1, Number(clip.height) || 1);
@@ -1727,9 +2602,72 @@
     stopTrimPreview();
   }
 
+  function setLiveCaptureMode(mode) {
+    if (!IS_LIVE_PAGE || (mode !== 'rewind' && mode !== 'forward')) return;
+    state.liveCaptureMode = mode;
+    try { localStorage.setItem(LIVE_CAPTURE_MODE_KEY, mode); } catch (_) { }
+    liveMediaCollector?.setEnabled(mode === 'rewind');
+    updateModeUi();
+  }
+
+  function liveWarmupMessage(video) {
+    const status = liveMediaCollector?.getStatus(video);
+    const seconds = Math.max(0, Number(status?.duration) || 0);
+    if (seconds >= 0.1) return `回溯正在预热，已缓存 ${seconds.toFixed(1)} 秒，等待可解码关键帧。`;
+    return '回溯正在预热，请稍后再试。';
+  }
+
+  async function captureLiveRewind() {
+    if (!IS_LIVE_PAGE || !liveMediaCollector || state.busy || state.mode === 'recording' || state.mode === 'exporting') return;
+    const sourceVideo = getMainVideo();
+    if (!sourceVideo) {
+      showToast('未找到正在播放的直播画面。', 'error');
+      return;
+    }
+    liveMediaCollector.setActiveVideo(sourceVideo);
+    const snapshot = liveMediaCollector.getSnapshot(sourceVideo);
+    if (!snapshot) {
+      showToast(liveWarmupMessage(sourceVideo));
+      return;
+    }
+
+    state.busy = true;
+    stopTrimPreview();
+    updateModeUi();
+    try {
+      const snapshotBytes = snapshot.parts.reduce((sum, part) => sum + part.byteLength, 0);
+      if (snapshotBytes < 1024) throw new Error('回溯片段尚未准备好。');
+      await loadLiveRewindClip(snapshot, {
+        measuredDuration: snapshot.duration,
+        sourceStart: snapshot.sourceStart,
+        sourceEnd: snapshot.sourceEnd,
+        captureWidth: sourceVideo.videoWidth,
+        captureHeight: sourceVideo.videoHeight,
+        initialTrimStart: snapshot.trimStart,
+        initialTrimEnd: snapshot.trimEnd,
+        clipKind: 'live-rewind',
+      });
+      state.mode = 'edit';
+      el.panel.classList.remove('hidden');
+      el.panel.scrollTop = 0;
+      if (el.editorSettingsScroll) el.editorSettingsScroll.scrollTop = 0;
+      fitEditorLayout();
+      setStatus('');
+      requestAnimationFrame(() => { void ensureTrimPreviewPlaying(); });
+    } catch (error) {
+      disposeClip();
+      state.mode = 'capture';
+      showToast(friendlyError(error), 'error');
+    } finally {
+      state.busy = false;
+      updateModeUi();
+    }
+  }
+
   function handleLauncherAction() {
     if (state.mode === 'capture') {
-      beginPageSelection();
+      if (IS_LIVE_PAGE && state.liveCaptureMode === 'rewind') void captureLiveRewind();
+      else beginPageSelection();
       return;
     }
     if (state.mode === 'recording') {
@@ -1743,7 +2681,11 @@
   function disposeClip() {
     stopTrimPreview();
     releasePreviewFrameCache();
-    if (state.clip?.url) URL.revokeObjectURL(state.clip.url);
+    const clip = state.clip;
+    if (clip?.attachments) {
+      for (const video of [...clip.attachments.keys()]) cleanupClipAttachment(clip, video);
+    }
+    if (clip?.url) URL.revokeObjectURL(clip.url);
     state.clip = null;
     if (el.previewCanvas) {
       el.previewCanvas.style.visibility = 'hidden';
@@ -2313,30 +3255,56 @@
     return measuredDuration;
   }
 
-  async function loadRecordedClip(blob, metadata) {
-    disposeClip();
-    const url = URL.createObjectURL(blob);
-    state.clip = { ...metadata, blob, url, duration: metadata.measuredDuration };
-    el.clipVideo.src = url;
-    el.scrubVideo.src = url;
-    el.clipVideo.load();
-    el.scrubVideo.load();
-    const scrubReady = waitForEvent(el.scrubVideo, 'loadedmetadata', 10_000).catch(() => null);
-    await waitForEvent(el.clipVideo, 'loadedmetadata', 10_000);
-    await scrubReady;
-    const duration = await resolveRecordedDuration(el.clipVideo, metadata.measuredDuration);
-    state.clip.duration = Math.max(0.1, Math.min(
-      Number.isFinite(duration) && duration > 0 ? duration : metadata.measuredDuration,
-      metadata.measuredDuration + 0.5,
-    ));
+  async function finishLoadingClip(metadata) {
+    await Promise.all([
+      seekVideo(el.clipVideo, 0, state.clip.duration),
+      seekVideo(el.scrubVideo, 0, state.clip.duration),
+    ]);
     state.clip.width = el.clipVideo.videoWidth || metadata.captureWidth;
     state.clip.height = el.clipVideo.videoHeight || metadata.captureHeight;
     state.editorCrop = { x: 0, y: 0, w: 1, h: 1 };
     state.aspectSquare = true;
     makeCurrentCropSquare();
-    state.trimStart = 0;
-    state.trimEnd = state.clip.duration;
+    state.trimStart = clamp(Number(metadata.initialTrimStart) || 0, 0, Math.max(0, state.clip.duration - 0.05));
+    state.trimEnd = clamp(
+      Number.isFinite(metadata.initialTrimEnd) ? metadata.initialTrimEnd : state.clip.duration,
+      Math.min(state.clip.duration, state.trimStart + 0.05),
+      state.clip.duration,
+    );
     setupEditorForClip();
+  }
+
+  async function loadRecordedClip(blob, metadata) {
+    disposeClip();
+    const url = URL.createObjectURL(blob);
+    state.clip = { ...metadata, kind: 'blob', blob, url, duration: metadata.measuredDuration };
+    await Promise.all([
+      attachClipToVideo(state.clip, el.clipVideo),
+      attachClipToVideo(state.clip, el.scrubVideo),
+    ]);
+    const duration = await resolveRecordedDuration(el.clipVideo, metadata.measuredDuration);
+    state.clip.duration = Math.max(0.1, Math.min(
+      Number.isFinite(duration) && duration > 0 ? duration : metadata.measuredDuration,
+      metadata.measuredDuration + 0.5,
+    ));
+    await finishLoadingClip(metadata);
+  }
+
+  async function loadLiveRewindClip(snapshot, metadata) {
+    disposeClip();
+    state.clip = {
+      ...metadata,
+      kind: 'media-source',
+      mimeType: snapshot.mimeType,
+      parts: snapshot.parts.map((part) => new Uint8Array(part)),
+      attachments: new Map(),
+      duration: snapshot.duration,
+    };
+    await Promise.all([
+      attachClipToVideo(state.clip, el.clipVideo),
+      attachClipToVideo(state.clip, el.scrubVideo),
+    ]);
+    await finishLoadingClip(metadata);
   }
 
   async function finalizeRecording(recording) {
@@ -2405,7 +3373,7 @@
     fitEditorLayout();
     updateResolutionOptions();
     updateEstimatedFileSize();
-    void buildPreviewFrameCache(state.clip);
+    if (state.clip.kind === 'blob') void buildPreviewFrameCache(state.clip);
   }
 
   function getEditorMapping() {
@@ -3257,12 +4225,13 @@
       const alpha = pixels[i + 3];
       // GIF transparency is binary; keep no partially covered edge pixel visible.
       if (alpha < 255) {
-        pixels[i] = (TRANSPARENT_KEY_RGB >> 16) & 0xff;
-        pixels[i + 1] = (TRANSPARENT_KEY_RGB >> 8) & 0xff;
-        pixels[i + 2] = TRANSPARENT_KEY_RGB & 0xff;
+        pixels[i] = 0;
+        pixels[i + 1] = 0;
+        pixels[i + 2] = 0;
+        pixels[i + 3] = 0;
+      } else {
+        pixels[i + 3] = 255;
       }
-      // GIF.js keys transparency by RGB, so every sampled pixel must stay opaque here.
-      pixels[i + 3] = 255;
     }
     ctx.putImageData(image, x, y);
   }
@@ -3345,64 +4314,244 @@
     const nextSettings = updatePreviewCanvasLayout(settings);
     const sourceVideo = el.scrubVideo?.classList.contains('active') ? el.scrubVideo : el.clipVideo;
     if (!nextSettings || !sourceVideo || sourceVideo.readyState < 2) return;
-    const ctx = el.previewCanvas.getContext('2d', { alpha: true });
+    const ctx = el.previewCanvas.getContext('2d', { alpha: true, colorSpace: 'srgb' });
     if (!ctx) return;
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
     drawExportCanvasFrame(ctx, nextSettings, sourceVideo, 'preview');
   }
 
-  async function getWorkerBlobUrl() {
-    let workerText = '';
-    if (typeof GM_getResourceText === 'function') {
-      workerText = await GM_getResourceText('GIF_WORKER');
-    } else if (globalThis.GM && typeof globalThis.GM.getResourceText === 'function') {
-      workerText = await globalThis.GM.getResourceText('GIF_WORKER');
+  async function readUserscriptResource(name) {
+    if (typeof GM_getResourceText === 'function') return GM_getResourceText(name);
+    if (globalThis.GM && typeof globalThis.GM.getResourceText === 'function') {
+      return globalThis.GM.getResourceText(name);
     }
-    if (!workerText) throw new Error('编码组件加载失败，请刷新页面重试。');
-    return URL.createObjectURL(new Blob([workerText], { type: 'application/javascript' }));
+    return '';
   }
 
-  function cleanupGifWorkers(gif) {
-    if (!gif) return;
-    const workers = [
-      ...(Array.isArray(gif.activeWorkers) ? gif.activeWorkers : []),
-      ...(Array.isArray(gif.freeWorkers) ? gif.freeWorkers : []),
-    ];
-    [...new Set(workers)].forEach((worker) => {
-      try { worker.terminate(); } catch (_) { }
-    });
-    if (Array.isArray(gif.activeWorkers)) gif.activeWorkers.length = 0;
-    if (Array.isArray(gif.freeWorkers)) gif.freeWorkers.length = 0;
+  async function loadEncodingResourceTexts() {
+    if (state.encodingResourceTexts) return state.encodingResourceTexts;
+    const [modernGif, gifsicle] = await Promise.all([
+      readUserscriptResource('MODERN_GIF_MODULE'),
+      readUserscriptResource('GIFSICLE_MODULE'),
+    ]);
+    if (!modernGif || !gifsicle) throw new Error('编码组件加载失败，请刷新页面重试。');
+    state.encodingResourceTexts = { modernGif, gifsicle };
+    return state.encodingResourceTexts;
   }
 
-  function renderGif(gif) {
-    return new Promise((resolve, reject) => {
-      let settled = false;
-      const finish = (fn, value) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timeout);
-        fn(value);
-      };
-      const timeout = setTimeout(() => {
-        finish(reject, new Error('导出超时，请缩短片段或降低尺寸。'));
-        try { gif.abort(); } catch (_) { }
-      }, ENCODE_TIMEOUT_MS);
+  // Keep encoding and post-compression in separate workers so either stage can be cancelled immediately.
+  function makeEncodingWorkerSource(modernGifUrl, gifsicleUrl) {
+    return `
+      const modernGifUrl = ${JSON.stringify(modernGifUrl)};
+      const gifsicleUrl = ${JSON.stringify(gifsicleUrl)};
+      let Encoder = null;
+      let encoder = null;
+      let preset = null;
+      let queue = Promise.resolve();
 
-      gif.on('progress', (progress) => {
-        setProgress(60 + progress * 40);
-        setStatus(`正在编码 GIF：${Math.round(progress * 100)}%`);
-      });
-      gif.on('finished', (blob) => finish(resolve, blob));
-      gif.on('abort', () => finish(reject, new CancelledError()));
-
-      try {
-        gif.render();
-      } catch (error) {
-        finish(reject, error);
+      function reportError(error) {
+        const message = String(error && (error.message || error) || '编码失败');
+        self.postMessage({ type: 'error', message });
+        self.close();
       }
+
+      async function handleMessage(message) {
+        if (message.type === 'init') {
+          const modules = await Promise.all([import(modernGifUrl), import(gifsicleUrl)]);
+          Encoder = globalThis.modernGif?.Encoder;
+          const compressorSource = modules[1].default?.tool?.workerLocalUrl;
+          if (typeof Encoder !== 'function' || !compressorSource) {
+            throw new Error('编码组件接口不完整。');
+          }
+          preset = message.preset;
+          encoder = new Encoder({
+            width: message.width,
+            height: message.height,
+            colorTableSize: 256,
+            backgroundColorIndex: 255,
+            maxColors: preset.maxColors,
+            premultipliedAlpha: true,
+            dither: preset.dither || undefined,
+          });
+          self.postMessage({ type: 'ready', compressorSource });
+          return;
+        }
+
+        if (!encoder) throw new Error('编码器尚未初始化。');
+        if (message.type === 'frame') {
+          await encoder.encode({
+            width: message.width,
+            height: message.height,
+            delay: message.delay,
+            data: new Uint8ClampedArray(message.buffer),
+          });
+          return;
+        }
+        if (message.type !== 'finish') return;
+
+        self.postMessage({ type: 'phase', phase: 'encoding' });
+        const encoded = await encoder.flush('arrayBuffer');
+        encoder = null;
+        self.postMessage({ type: 'encoded', buffer: encoded }, [encoded]);
+        self.close();
+      }
+
+      self.onmessage = (event) => {
+        queue = queue.then(() => handleMessage(event.data)).catch(reportError);
+      };
+    `;
+  }
+
+  async function createGifEncodingSession(settings, timeoutMs = ENCODE_TIMEOUT_MS) {
+    const resources = await loadEncodingResourceTexts();
+    const urls = [];
+    const makeModuleUrl = (source) => {
+      const url = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
+      urls.push(url);
+      return url;
+    };
+    const modernGifUrl = makeModuleUrl(resources.modernGif);
+    const gifsicleUrl = makeModuleUrl(resources.gifsicle);
+    const workerUrl = makeModuleUrl(makeEncodingWorkerSource(modernGifUrl, gifsicleUrl));
+    const worker = new Worker(workerUrl, { type: 'module', name: 'bella-gif-encoder' });
+    let compressionWorker = null;
+    let compressionWorkerUrl = null;
+    let compressorSource = '';
+    let settled = false;
+    let readyResolve;
+    let readyReject;
+    let resultResolve;
+    let resultReject;
+    const ready = new Promise((resolve, reject) => {
+      readyResolve = resolve;
+      readyReject = reject;
     });
+    const result = new Promise((resolve, reject) => {
+      resultResolve = resolve;
+      resultReject = reject;
+    });
+    result.catch(() => { });
+    const stopCompressionWorker = () => {
+      compressionWorker?.terminate();
+      compressionWorker = null;
+      if (compressionWorkerUrl) URL.revokeObjectURL(compressionWorkerUrl);
+      compressionWorkerUrl = null;
+    };
+
+    const settleError = (error) => {
+      if (settled) return;
+      settled = true;
+      const normalized = error instanceof Error ? error : new Error(String(error));
+      readyReject(normalized);
+      resultReject(normalized);
+      stopCompressionWorker();
+    };
+    const compressGif = async (encoded) => {
+      try {
+        settings.onPhase?.('compressing');
+        if (settled) return;
+        if (!compressorSource) throw new Error('GIF 压缩组件接口不完整。');
+        compressionWorkerUrl = URL.createObjectURL(new Blob([compressorSource], { type: 'text/javascript' }));
+        compressionWorker = new Worker(compressionWorkerUrl, { name: 'bella-gif-compressor' });
+        compressionWorker.addEventListener('message', async (event) => {
+          if (settled) return;
+          const output = event.data;
+          if (!output || typeof output === 'string' || !Array.isArray(output) || !output[0]?.file) {
+            settleError(new Error(typeof output === 'string' ? output : 'GIF 压缩组件未返回结果。'));
+            return;
+          }
+          const buffer = await new Blob([output[0].file], { type: 'image/gif' }).arrayBuffer();
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeout);
+          resultResolve(new Blob([buffer], { type: 'image/gif' }));
+          stopCompressionWorker();
+        });
+        compressionWorker.addEventListener('error', (event) => {
+          settleError(new Error(event.message || 'GIF 压缩 Worker 运行失败。'));
+        });
+        compressionWorker.postMessage({
+          data: [{ file: encoded, name: 'input.gif' }],
+          command: [buildGifsicleCommand(settings.qualityPreset)],
+          folder: [],
+          isStrict: true,
+        }, [encoded]);
+      } catch (error) {
+        settleError(error);
+      }
+    };
+    const timeout = window.setTimeout(() => {
+      settleError(new Error('导出超时，请缩短片段或稍后重试。'));
+      worker.terminate();
+      stopCompressionWorker();
+    }, timeoutMs);
+
+    worker.addEventListener('message', (event) => {
+      const message = event.data || {};
+      if (message.type === 'ready') {
+        compressorSource = message.compressorSource || '';
+        readyResolve();
+        return;
+      }
+      if (message.type === 'phase') {
+        settings.onPhase?.(message.phase);
+        return;
+      }
+      if (message.type === 'error') {
+        settleError(new Error(message.message || '编码失败。'));
+        return;
+      }
+      if (message.type === 'encoded' && !settled) void compressGif(message.buffer);
+    });
+    worker.addEventListener('error', (event) => {
+      settleError(new Error(event.message || '编码 Worker 运行失败。'));
+    });
+    worker.postMessage({
+      type: 'init',
+      width: settings.outputWidth,
+      height: settings.outputHeight,
+      preset: settings.qualityPreset,
+    });
+    try {
+      await ready;
+    } catch (error) {
+      clearTimeout(timeout);
+      worker.terminate();
+      stopCompressionWorker();
+      urls.forEach((url) => URL.revokeObjectURL(url));
+      throw error;
+    }
+
+    return {
+      addFrame(imageData, delay) {
+        if (settled) throw new Error('编码会话已结束。');
+        const buffer = imageData.data.buffer;
+        worker.postMessage({
+          type: 'frame',
+          width: imageData.width,
+          height: imageData.height,
+          delay,
+          buffer,
+        }, [buffer]);
+      },
+      finish() {
+        if (!settled) worker.postMessage({ type: 'finish' });
+        return result;
+      },
+      cancel(error = new CancelledError()) {
+        settleError(error);
+        clearTimeout(timeout);
+        worker.terminate();
+        stopCompressionWorker();
+      },
+      destroy() {
+        clearTimeout(timeout);
+        worker.terminate();
+        stopCompressionWorker();
+        urls.forEach((url) => URL.revokeObjectURL(url));
+      },
+    };
   }
 
   function getCurrentCropSourceSize() {
@@ -3470,6 +4619,10 @@
 
     const fps = Number(el.fpsSelect.value);
     const speed = Number(el.speedSelect.value);
+    const quality = Object.hasOwn(GIF_QUALITY_PRESETS, el.qualitySelect.value)
+      ? el.qualitySelect.value
+      : 'bei';
+    const qualityPreset = GIF_QUALITY_PRESETS[quality];
     const cornerRadiusRatio = getCornerRadiusRatio();
     const baseFrames = Math.max(1, Math.ceil((end - start) * fps));
     const finalFrames = baseFrames;
@@ -3499,10 +4652,12 @@
       end,
       fps,
       speed,
+      quality,
+      qualityPreset,
       cornerRadiusRatio,
       outputRadius,
       transparentCorners: outputRadius > 0,
-      delay: Math.max(20, Math.round((1000 / fps) / speed)),
+      delay: normalizeGifDelay(fps, speed),
       baseFrames,
       finalFrames,
       outputWidth,
@@ -3515,27 +4670,13 @@
     };
   }
 
-  function createGifOptions(settings, workerScript, workers) {
-    return {
-      workers,
-      quality: 10,
-      width: settings.outputWidth,
-      height: settings.outputHeight,
-      repeat: 0,
-      background: '#000000',
-      transparent: hasTransparentCorners(settings) ? TRANSPARENT_KEY_RGB : null,
-      globalPalette: hasTransparentCorners(settings),
-      dither: false,
-      workerScript,
-    };
-  }
-
   function estimateGifBytes(settings) {
     const pixelsPerFrame = Math.max(1, settings.outputWidth * settings.outputHeight);
     const framePayload = pixelsPerFrame * settings.finalFrames;
     const textFactor = 1 + (settings.textLayers?.length || 0) * 0.04;
-    const calibration = clamp(Number(state.sizeEstimateCalibration) || 1, 0.35, 3.2);
-    const base = (framePayload * 0.30 * textFactor) + 2508;
+    const preset = settings.qualityPreset || GIF_QUALITY_PRESETS.bei;
+    const calibration = clamp(Number(state.sizeEstimateCalibration[settings.quality]) || 1, 0.35, 3.2);
+    const base = (framePayload * preset.estimateFactor * textFactor) + 2508;
     return Math.max(1024, base * calibration);
   }
 
@@ -3553,7 +4694,7 @@
       Number(layer.fontScale || 0).toFixed(3),
     ]);
     return JSON.stringify([
-      settings.outputWidth, settings.outputHeight, settings.fps, settings.speed,
+      settings.outputWidth, settings.outputHeight, settings.fps, settings.speed, settings.quality,
       Number(settings.cornerRadiusRatio || 0).toFixed(4),
       Number(settings.start).toFixed(3), Number(settings.end).toFixed(3),
       Number(crop.x || 0).toFixed(4), Number(crop.y || 0).toFixed(4),
@@ -3561,49 +4702,27 @@
     ]);
   }
 
-  function renderGifQuiet(gif, timeoutMs = 120_000) {
-    return new Promise((resolve, reject) => {
-      let settled = false;
-      const finish = (fn, value) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timeout);
-        fn(value);
-      };
-      const timeout = setTimeout(() => {
-        try { gif.abort(); } catch (_) { }
-        finish(reject, new Error('大小估算超时'));
-      }, timeoutMs);
-      gif.on('finished', (blob) => finish(resolve, blob));
-      gif.on('abort', () => finish(reject, new Error('大小估算已取消')));
-      try { gif.render(); } catch (error) { finish(reject, error); }
-    });
-  }
-
   async function estimateGifBytesBySampling(settings, token) {
-    const GIFClass = typeof GIF === 'function' ? GIF : globalThis.GIF;
-    if (typeof GIFClass !== 'function' || !state.clip?.url) return estimateGifBytes(settings);
+    if (!state.clip) return estimateGifBytes(settings);
+    const clip = state.clip;
 
     const sampleCount = Math.min(5, Math.max(2, settings.baseFrames));
     const sampleVideo = document.createElement('video');
     sampleVideo.muted = true;
     sampleVideo.playsInline = true;
     sampleVideo.preload = 'auto';
-    sampleVideo.src = state.clip.url;
-    sampleVideo.load();
     try {
-      if (sampleVideo.readyState < 1) await waitForEvent(sampleVideo, 'loadedmetadata', 10_000);
+      await attachClipToVideo(clip, sampleVideo);
       if (token !== state.sizeEstimateToken) throw new Error('stale');
 
-      const workerScript = await getWorkerBlobUrl();
-      let gif = null;
+      let session = null;
       try {
-        gif = new GIFClass(createGifOptions(settings, workerScript, 1));
-        state.sizeEstimateGif = gif;
+        session = await createGifEncodingSession(settings, 120_000);
+        state.sizeEstimateEncodingSession = session;
         const canvas = document.createElement('canvas');
         canvas.width = settings.outputWidth;
         canvas.height = settings.outputHeight;
-        const ctx = canvas.getContext('2d', { alpha: true });
+        const ctx = canvas.getContext('2d', { alpha: true, colorSpace: 'srgb' });
         if (!ctx) throw new Error('无法创建估算画布。');
         ctx.imageSmoothingEnabled = true;
         ctx.imageSmoothingQuality = 'high';
@@ -3615,29 +4734,28 @@
           const target = Math.min(settings.end - 0.001, settings.start + (settings.end - settings.start) * ratio);
           await seekVideo(sampleVideo, target, state.clip.duration);
           drawExportCanvasFrame(ctx, settings, sampleVideo, 'estimate');
-          gif.addFrame(ctx, { copy: true, delay });
+          session.addFrame(ctx.getImageData(0, 0, settings.outputWidth, settings.outputHeight), delay);
         }
 
-        const blob = await renderGifQuiet(gif);
+        const blob = await session.finish();
         if (token !== state.sizeEstimateToken) throw new Error('stale');
         const containerOverhead = Math.min(1400, blob.size * 0.18);
         const perFrame = Math.max(1, (blob.size - containerOverhead) / sampleCount);
-        const calibration = clamp(Number(state.sizeEstimateCalibration) || 1, 0.35, 3.2);
+        const calibration = clamp(Number(state.sizeEstimateCalibration[settings.quality]) || 1, 0.35, 3.2);
         return Math.max(1024, (containerOverhead + perFrame * settings.finalFrames) * calibration);
       } finally {
-        cleanupGifWorkers(gif);
-        if (state.sizeEstimateGif === gif) state.sizeEstimateGif = null;
-        URL.revokeObjectURL(workerScript);
+        session?.destroy();
+        if (state.sizeEstimateEncodingSession === session) state.sizeEstimateEncodingSession = null;
       }
     } finally {
       try { sampleVideo.pause(); } catch (_) { }
-      sampleVideo.removeAttribute('src');
-      try { sampleVideo.load(); } catch (_) { }
+      cleanupClipAttachment(clip, sampleVideo);
     }
   }
 
   function scheduleSampledSizeEstimate(settings) {
     clearTimeout(state.sizeEstimateTimer);
+    state.sizeEstimateEncodingSession?.cancel(new Error('stale'));
     const token = ++state.sizeEstimateToken;
     const signature = estimateSettingsSignature(settings);
     state.sizeEstimateTimer = window.setTimeout(async () => {
@@ -3659,12 +4777,14 @@
     if (actualBytes > 0) {
       clearTimeout(state.sizeEstimateTimer);
       state.sizeEstimateToken += 1;
+      state.sizeEstimateEncodingSession?.cancel(new Error('stale'));
       el.estimatedSize.textContent = `实际 ${formatFileSize(actualBytes)}`;
       return;
     }
     if (!state.clip || state.mode === 'capture' || state.mode === 'recording') {
       clearTimeout(state.sizeEstimateTimer);
       state.sizeEstimateToken += 1;
+      state.sizeEstimateEncodingSession?.cancel(new Error('stale'));
       el.estimatedSize.textContent = '预计 --';
       return;
     }
@@ -3704,18 +4824,15 @@
     if (state.mode !== 'edit' || state.busy) return;
     let settings;
     let snapshot;
+    let encodingSession = null;
     try {
       settings = readExportSettings();
-      const GIFClass = typeof GIF === 'function' ? GIF : globalThis.GIF;
-      if (typeof GIFClass !== 'function') throw new Error('GIF 编码组件加载失败。');
 
       stopTrimPreview();
       clearTimeout(state.sizeEstimateTimer);
       state.sizeEstimateToken += 1;
-      if (state.sizeEstimateGif && typeof state.sizeEstimateGif.abort === 'function') {
-        try { state.sizeEstimateGif.abort(); } catch (_) { }
-      }
-      state.sizeEstimateGif = null;
+      state.sizeEstimateEncodingSession?.cancel(new Error('stale'));
+      state.sizeEstimateEncodingSession = null;
       state.busy = true;
       state.mode = 'exporting';
       state.cancelRequested = false;
@@ -3726,16 +4843,25 @@
       snapshot = { currentTime: video.currentTime, paused: video.paused, playbackRate: video.playbackRate };
       video.pause();
 
-      state.workerUrl = await getWorkerBlobUrl();
-      const logicalCores = Math.max(1, navigator.hardwareConcurrency || 4);
-      const workerCount = logicalCores >= 8 ? 4 : logicalCores >= 4 ? 2 : 1;
-      const gif = new GIFClass(createGifOptions(settings, state.workerUrl, workerCount));
-      state.gif = gif;
+      encodingSession = await createGifEncodingSession({
+        ...settings,
+        onPhase: (phase) => {
+          if (phase === 'encoding') {
+            setProgress(68);
+            setStatus('正在编码 GIF……');
+          } else if (phase === 'compressing') {
+            setProgress(88);
+            setStatus('正在压缩体积……');
+          }
+        },
+      });
+      state.exportEncodingSession = encodingSession;
+      if (state.cancelRequested) throw new CancelledError();
 
       const canvas = document.createElement('canvas');
       canvas.width = settings.outputWidth;
       canvas.height = settings.outputHeight;
-      const ctx = canvas.getContext('2d', { alpha: true });
+      const ctx = canvas.getContext('2d', { alpha: true, colorSpace: 'srgb' });
       if (!ctx) throw new Error('无法创建 GIF 画布。');
       ctx.imageSmoothingEnabled = true;
       ctx.imageSmoothingQuality = 'high';
@@ -3743,7 +4869,10 @@
 
       const drawExportFrame = () => {
         drawExportCanvasFrame(ctx, settings, video, 'export');
-        gif.addFrame(ctx, { copy: true, delay });
+        encodingSession.addFrame(
+          ctx.getImageData(0, 0, settings.outputWidth, settings.outputHeight),
+          delay,
+        );
       };
 
       const updateExtractionProgress = (count) => {
@@ -3869,16 +4998,20 @@
       }
 
       if (state.cancelRequested) throw new CancelledError();
-      setStatus('正在编码 GIF……');
-      const blob = await renderGif(gif);
+      setProgress(60);
+      const blob = await encodingSession.finish();
       if (state.cancelRequested) throw new CancelledError();
 
       const signature = estimateSettingsSignature(settings);
       const sampled = state.lastSampleEstimate?.signature === signature ? Number(state.lastSampleEstimate.bytes) : 0;
       const preCalibrationEstimate = Math.max(1, sampled || estimateGifBytes({ ...settings }));
-      const previousCalibration = Number(state.sizeEstimateCalibration) || 1;
+      const previousCalibration = Number(state.sizeEstimateCalibration[settings.quality]) || 1;
       const correction = clamp(blob.size / preCalibrationEstimate, 0.55, 1.8);
-      state.sizeEstimateCalibration = clamp(previousCalibration * (0.7 + correction * 0.3), 0.5, 2.2);
+      state.sizeEstimateCalibration[settings.quality] = clamp(
+        previousCalibration * (0.7 + correction * 0.3),
+        0.5,
+        2.2,
+      );
       updateEstimatedFileSize({ actualBytes: blob.size });
       setProgress(100);
       const fileName = makeFileName(settings);
@@ -3896,10 +5029,8 @@
           else await el.clipVideo.play();
         } catch (_) { }
       }
-      cleanupGifWorkers(state.gif);
-      state.gif = null;
-      if (state.workerUrl) URL.revokeObjectURL(state.workerUrl);
-      state.workerUrl = null;
+      encodingSession?.destroy();
+      if (state.exportEncodingSession === encodingSession) state.exportEncodingSession = null;
       state.busy = false;
       state.cancelRequested = false;
       state.mode = state.clip ? 'edit' : 'capture';
@@ -3912,9 +5043,7 @@
     if (state.mode !== 'exporting' || !state.busy) return;
     state.cancelRequested = true;
     setStatus('正在取消导出…');
-    if (state.gif && typeof state.gif.abort === 'function') {
-      try { state.gif.abort(); } catch (_) { }
-    }
+    state.exportEncodingSession?.cancel(new CancelledError());
   }
 
   function friendlyError(error) {
@@ -3942,6 +5071,15 @@
     setStatus('');
   }
 
+  function handleNewRecording() {
+    if (state.mode !== 'edit' || state.busy) return;
+    if (IS_LIVE_PAGE && state.liveCaptureMode === 'rewind') {
+      void captureLiveRewind();
+      return;
+    }
+    returnToCaptureStage();
+  }
+
   function updateVideoStatus() {
     const key = currentPageKey();
     if (!state.pageKey) state.pageKey = key;
@@ -3956,6 +5094,15 @@
 
     if (state.pageSelection && !state.pageSelectionSession) updatePageSelectionUi();
     if (state.clip && Number.isFinite(el.clipVideo.currentTime)) updateTimelinePlayhead();
+    if (IS_LIVE_PAGE && el.liveRewindModeBtn) {
+      const video = getMainVideo();
+      liveMediaCollector?.setActiveVideo(video);
+      const status = liveMediaCollector?.getStatus(video);
+      const seconds = Math.max(0, Number(status?.duration) || 0);
+      el.liveRewindModeBtn.title = state.liveCaptureMode === 'rewind'
+        ? `已缓存 ${seconds.toFixed(1)} 秒`
+        : '切换后开始缓存直播画面';
+    }
   }
 
   function handleExportInputChange(event) {
@@ -4026,6 +5173,8 @@
   el.timelineTrack.addEventListener('pointercancel', finishTimelineDrag);
 
   el.previewTrimBtn.addEventListener('click', previewTrimmedClip);
+  el.liveRewindModeBtn.addEventListener('click', () => setLiveCaptureMode('rewind'));
+  el.liveForwardModeBtn.addEventListener('click', () => setLiveCaptureMode('forward'));
   el.aspectSquareBtn.addEventListener('click', toggleAspectSquare);
   el.addTextBtn.addEventListener('click', addTextLayer);
   el.textLayerTabs.addEventListener('click', (event) => {
@@ -4072,7 +5221,7 @@
     renderExportPreviewFrame();
   });
 
-  el.newRecordingBtn.addEventListener('click', returnToCaptureStage);
+  el.newRecordingBtn.addEventListener('click', handleNewRecording);
   el.generateBtn.addEventListener('click', generateGif);
   el.cancelExportBtn.addEventListener('click', cancelExport);
   $$('.export-input').forEach((input) => input.addEventListener('input', handleExportInputChange));
@@ -4110,16 +5259,25 @@
     stopTrimPreview();
     releasePreviewFrameCache();
     cleanupRecordingResources(state.recording);
-    cleanupGifWorkers(state.gif);
-    if (state.workerUrl) URL.revokeObjectURL(state.workerUrl);
+    state.exportEncodingSession?.destroy();
+    state.sizeEstimateEncodingSession?.destroy();
+    if (state.clip?.attachments) {
+      for (const video of [...state.clip.attachments.keys()]) cleanupClipAttachment(state.clip, video);
+    }
     if (state.clip?.url) URL.revokeObjectURL(state.clip.url);
+    liveMediaCollector?.dispose();
   });
 
   restoreExportPreferences();
+  liveMediaCollector?.setEnabled(state.liveCaptureMode === 'rewind');
   restoreLauncherPosition();
   renderTextLayerTabs();
   renderTextLayers();
   setInterval(updateVideoStatus, 300);
   updateModeUi();
   updateVideoStatus();
+  }
+
+  if (document.documentElement && document.body) startApp();
+  else document.addEventListener('DOMContentLoaded', startApp, { once: true });
 })();
