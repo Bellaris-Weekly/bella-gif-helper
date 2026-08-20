@@ -73,7 +73,7 @@ test('crop-aware preview centers an off-axis crop instead of the whole video', (
 
 test('userscript uses pinned parallel encoder resources and sRGB canvases', () => {
   const source = fs.readFileSync(userscriptPath, 'utf8');
-  assert.match(source, /@version\s+1\.3\.2/);
+  assert.match(source, /@version\s+1\.3\.3/);
   assert.match(source, /modern-palette@2\.0\.0\/dist\/index\.mjs/);
   assert.match(source, /gifenc@1\.0\.3\/dist\/gifenc\.esm\.js/);
   assert.match(source, /gifsicle-wasm-browser@1\.5\.19\/dist\/gifsicle\.min\.js/);

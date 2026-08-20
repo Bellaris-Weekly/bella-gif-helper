@@ -27,6 +27,11 @@
         return response.text();
       },
     };
+    window.GM_getValue = (key, fallback) => {
+      const stored = sessionStorage.getItem(`userscript:${key}`);
+      return stored === null ? fallback : JSON.parse(stored);
+    };
+    window.GM_setValue = (key, value) => sessionStorage.setItem(`userscript:${key}`, JSON.stringify(value));
     function inspectGif(bytes) {
       const view = new Uint8Array(bytes);
       const width = view[6] | view[7] << 8;

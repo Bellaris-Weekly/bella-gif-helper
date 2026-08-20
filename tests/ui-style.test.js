@@ -43,6 +43,25 @@ test('compact editor keeps visual feedback inside the existing workspace', () =>
   assert.match(css, /\.grid-2\.export-options\s*\{[\s\S]*?repeat\(3, minmax\(0, 1fr\)\)/);
 });
 
+test('floating editor exposes desktop resize handles and keeps narrow screens fixed', () => {
+  assert.equal((source.match(/class="panel-resize-handle"/g) || []).length, 8);
+  assert.match(css, /\.panel-resize-handle\s*\{[\s\S]*?touch-action:\s*none/);
+  assert.match(css, /\[data-panel-resize="n"\][\s\S]*?height:\s*24px/);
+  assert.match(css, /\[data-panel-resize="e"\][\s\S]*?width:\s*24px/);
+  assert.match(css, /@media \(max-width: 540px\)[\s\S]*?\.panel-resize-handle\s*\{\s*display:\s*none/);
+  assert.match(css, /--editor-preview-size/);
+  assert.match(css, /max-width:\s*520px/);
+});
+
+test('panel geometry uses stable userscript storage shared across matched origins', () => {
+  assert.match(source, /@grant\s+GM_getValue/);
+  assert.match(source, /@grant\s+GM_setValue/);
+  assert.match(source, /PANEL_GEOMETRY_KEY\s*=\s*'biliGifMakerPanelGeometry'/);
+  assert.match(source, /GM_getValue\(PANEL_GEOMETRY_KEY/);
+  assert.match(source, /GM_setValue\(PANEL_GEOMETRY_KEY/);
+  assert.doesNotMatch(source, /biliGifMakerPanelGeometryV\d/);
+});
+
 test('crop viewport adaptation uses interruptible transform-only motion', () => {
   assert.match(source, /id="editorMotionLayer"/);
   assert.match(source, /EDITOR_VIEWPORT_MOTION_MS\s*=\s*260/);

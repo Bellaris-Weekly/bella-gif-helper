@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         贝报 GIF 助手
 // @namespace    https://www.bk0717.com/
-// @version      1.3.2
+// @version      1.3.3
 // @description  B站直播回溯、视频框选录制与 GIF 编辑
 // @author       贝极星周报
 // @homepageURL  https://github.com/Bellaris-Weekly/bella-gif-helper
@@ -21,6 +21,8 @@
 // @resource     GIFENC_MODULE https://cdn.jsdelivr.net/npm/gifenc@1.0.3/dist/gifenc.esm.js
 // @resource     GIFSICLE_MODULE https://cdn.jsdelivr.net/npm/gifsicle-wasm-browser@1.5.19/dist/gifsicle.min.js
 // @grant        GM_getResourceText
+// @grant        GM_getValue
+// @grant        GM_setValue
 // @grant        unsafeWindow
 // @run-at       document-start
 // @noframes
@@ -41,6 +43,9 @@
   const PREVIEW_CACHE_FPS = 2;
   const PREVIEW_CACHE_MAX_EDGE = 260;
   const PREVIEW_CACHE_MIN_EDGE = 256;
+  const PANEL_MIN_WIDTH = 360;
+  const PANEL_MAX_WIDTH = 720;
+  const PANEL_MIN_HEIGHT = 560;
   const EXPORT_PHASE_RANGES = Object.freeze({
     palette: Object.freeze([0, 12]),
     extracting: Object.freeze([12, 68]),
@@ -150,6 +155,61 @@
       scaleX,
       scaleY,
     };
+  }
+
+  function constrainPanelGeometry(geometry, viewportWidth, viewportHeight, margin = 14) {
+    const boundary = {
+      left: margin,
+      top: margin,
+      right: Math.max(margin, viewportWidth - margin),
+      bottom: Math.max(margin, viewportHeight - margin),
+    };
+    const availableWidth = Math.max(1, boundary.right - boundary.left);
+    const availableHeight = Math.max(1, boundary.bottom - boundary.top);
+    const minWidth = Math.min(PANEL_MIN_WIDTH, availableWidth);
+    const maxWidth = Math.min(PANEL_MAX_WIDTH, availableWidth);
+    const minHeight = Math.min(PANEL_MIN_HEIGHT, availableHeight);
+    const width = Math.min(maxWidth, Math.max(minWidth, Number(geometry?.width) || minWidth));
+    const height = Math.min(availableHeight, Math.max(minHeight, Number(geometry?.height) || minHeight));
+    const left = Math.min(
+      boundary.right - width,
+      Math.max(boundary.left, Number(geometry?.left) || boundary.left),
+    );
+    const top = Math.min(
+      boundary.bottom - height,
+      Math.max(boundary.top, Number(geometry?.top) || boundary.top),
+    );
+    return { left, top, width, height };
+  }
+
+  function calculatePanelResize(startRect, handle, dx, dy, viewportWidth, viewportHeight, margin = 14) {
+    const boundary = {
+      left: margin,
+      top: margin,
+      right: Math.max(margin, viewportWidth - margin),
+      bottom: Math.max(margin, viewportHeight - margin),
+    };
+    const maxWidth = Math.min(PANEL_MAX_WIDTH, boundary.right - boundary.left);
+    const maxHeight = boundary.bottom - boundary.top;
+    const minWidth = Math.min(PANEL_MIN_WIDTH, maxWidth);
+    const minHeight = Math.min(PANEL_MIN_HEIGHT, maxHeight);
+    let left = startRect.left;
+    let right = startRect.left + startRect.width;
+    let top = startRect.top;
+    let bottom = startRect.top + startRect.height;
+
+    if (handle.includes('w')) {
+      left = Math.min(right - minWidth, Math.max(right - maxWidth, startRect.left + dx, boundary.left));
+    } else if (handle.includes('e')) {
+      right = Math.max(left + minWidth, Math.min(left + maxWidth, startRect.left + startRect.width + dx, boundary.right));
+    }
+    if (handle.includes('n')) {
+      top = Math.min(bottom - minHeight, Math.max(bottom - maxHeight, startRect.top + dy, boundary.top));
+    } else if (handle.includes('s')) {
+      bottom = Math.max(top + minHeight, Math.min(top + maxHeight, startRect.top + startRect.height + dy, boundary.bottom));
+    }
+
+    return { left, top, width: right - left, height: bottom - top };
   }
 
   function mergeEditorBackgroundIntent(current = null, next = null) {
@@ -909,6 +969,8 @@
     GIF_TRANSPARENT_INDEX,
     calculateCropViewport,
     calculateViewportTransitionTransform,
+    constrainPanelGeometry,
+    calculatePanelResize,
     calculateLiveFirstFrameTime,
     formatGifFileName,
     mergeEditorBackgroundIntent,
@@ -945,7 +1007,7 @@
   const EDITOR_VIEWPORT_EASING = 'cubic-bezier(0.33, 1, 0.68, 1)';
   const EDITOR_BACKGROUND_RESUME_DELAY_MS = 320;
   const LAUNCHER_POSITION_KEY = 'biliGifMakerLauncherPositionV1';
-  const PANEL_POSITION_KEY = 'biliGifMakerPanelPositionV1';
+  const PANEL_GEOMETRY_KEY = 'biliGifMakerPanelGeometry';
   const EXPORT_PREFERENCES_KEY = 'biliGifMakerExportPreferencesV1';
   const UI_SAFE_MARGIN = 14;
     const state = {
@@ -979,6 +1041,9 @@
     cancelExportPreparation: null,
     launcherDrag: null,
     panelDrag: null,
+    panelResize: null,
+    panelLayoutRaf: 0,
+    preferredPanelGeometry: null,
     suppressLauncherClick: false,
     textLayers: [],
     activeTextId: null,
@@ -1104,13 +1169,81 @@
         width: min(420px, calc(100vw - 20px));
         height: calc(100vh - 28px);
         max-height: calc(100vh - 28px);
-        overflow: hidden;
+        overflow: visible;
         border: 1px solid var(--color-border-strong);
         border-radius: var(--radius-panel);
         background: var(--color-bg);
         color: var(--color-text);
         box-shadow: var(--shadow-panel);
       }
+      .panel-resize-handle {
+        position: absolute;
+        z-index: 20;
+        display: block;
+        outline: none;
+        touch-action: none;
+      }
+      .panel-resize-handle::after {
+        content: "";
+        position: absolute;
+        opacity: 0;
+        background: var(--color-brand-hover);
+        transition: opacity var(--motion-fast);
+      }
+      .panel-resize-handle:hover::after,
+      .panel-resize-handle:focus-visible::after { opacity: .9; }
+      .panel-resize-handle:focus-visible { outline: none; }
+      [data-panel-resize="n"], [data-panel-resize="s"] {
+        left: 28px;
+        right: 28px;
+        height: 24px;
+        cursor: ns-resize;
+      }
+      [data-panel-resize="n"] { top: -12px; }
+      [data-panel-resize="s"] { bottom: -12px; }
+      [data-panel-resize="n"]::after, [data-panel-resize="s"]::after {
+        left: 50%;
+        width: 40px;
+        height: 2px;
+        transform: translateX(-50%);
+      }
+      [data-panel-resize="n"]::after { top: 2px; }
+      [data-panel-resize="s"]::after { bottom: 2px; }
+      [data-panel-resize="e"], [data-panel-resize="w"] {
+        top: 28px;
+        bottom: 28px;
+        width: 24px;
+        cursor: ew-resize;
+      }
+      [data-panel-resize="e"] { right: -12px; }
+      [data-panel-resize="w"] { left: -12px; }
+      [data-panel-resize="e"]::after, [data-panel-resize="w"]::after {
+        top: 50%;
+        width: 2px;
+        height: 40px;
+        transform: translateY(-50%);
+      }
+      [data-panel-resize="e"]::after { right: 2px; }
+      [data-panel-resize="w"]::after { left: 2px; }
+      [data-panel-resize="nw"], [data-panel-resize="ne"],
+      [data-panel-resize="sw"], [data-panel-resize="se"] {
+        width: 28px;
+        height: 28px;
+      }
+      [data-panel-resize="nw"] { left: -12px; top: -12px; cursor: nwse-resize; }
+      [data-panel-resize="ne"] { right: -12px; top: -12px; cursor: nesw-resize; }
+      [data-panel-resize="sw"] { left: -12px; bottom: -12px; cursor: nesw-resize; }
+      [data-panel-resize="se"] { right: -12px; bottom: -12px; cursor: nwse-resize; }
+      [data-panel-resize="nw"]::after, [data-panel-resize="ne"]::after,
+      [data-panel-resize="sw"]::after, [data-panel-resize="se"]::after {
+        inset: 4px;
+        border: 2px solid var(--color-brand-hover);
+        background: transparent;
+      }
+      [data-panel-resize="nw"]::after { border-right: 0; border-bottom: 0; }
+      [data-panel-resize="ne"]::after { border-left: 0; border-bottom: 0; }
+      [data-panel-resize="sw"]::after { border-right: 0; border-top: 0; }
+      [data-panel-resize="se"]::after { border-left: 0; border-top: 0; }
       .header {
         position: relative;
         z-index: 10;
@@ -1123,6 +1256,7 @@
         padding: 8px 10px 8px 14px;
         border-bottom: 1px solid var(--color-border);
         background: var(--color-surface);
+        border-radius: calc(var(--radius-panel) - 1px) calc(var(--radius-panel) - 1px) 0 0;
         user-select: none;
         touch-action: none;
       }
@@ -1156,6 +1290,7 @@
         flex: 1 1 auto;
         min-height: 0;
         overflow: hidden;
+        border-radius: 0 0 calc(var(--radius-panel) - 1px) calc(var(--radius-panel) - 1px);
         padding: 0;
       }
       #captureStage { display: none !important; }
@@ -1178,7 +1313,8 @@
         position: relative;
         display: grid;
         place-items: center;
-        width: min(100%, 360px);
+        width: min(100%, var(--editor-preview-size, 360px));
+        max-width: 520px;
         justify-self: center;
         aspect-ratio: 1 / 1;
         height: auto;
@@ -1907,6 +2043,7 @@
           height: calc(100dvh - 20px);
           max-height: calc(100dvh - 20px);
         }
+        .panel-resize-handle { display: none; }
         .header { min-height: 54px; }
         .icon-btn { width: 40px; height: 40px; }
         .action-dock { padding-bottom: max(10px, env(safe-area-inset-bottom)); }
@@ -2088,6 +2225,14 @@
           </div>
         </div>
       </div>
+      <span class="panel-resize-handle" data-panel-resize="n" role="button" aria-label="调整窗口上边缘" tabindex="0"></span>
+      <span class="panel-resize-handle" data-panel-resize="s" role="button" aria-label="调整窗口下边缘" tabindex="0"></span>
+      <span class="panel-resize-handle" data-panel-resize="e" role="button" aria-label="调整窗口右边缘" tabindex="0"></span>
+      <span class="panel-resize-handle" data-panel-resize="w" role="button" aria-label="调整窗口左边缘" tabindex="0"></span>
+      <span class="panel-resize-handle" data-panel-resize="nw" role="button" aria-label="调整窗口左上角" tabindex="0"></span>
+      <span class="panel-resize-handle" data-panel-resize="ne" role="button" aria-label="调整窗口右上角" tabindex="0"></span>
+      <span class="panel-resize-handle" data-panel-resize="sw" role="button" aria-label="调整窗口左下角" tabindex="0"></span>
+      <span class="panel-resize-handle" data-panel-resize="se" role="button" aria-label="调整窗口右下角" tabindex="0"></span>
     </section>
 
     <div id="pageSelectionMarker" class="hidden">
@@ -2125,6 +2270,7 @@
   const el = {
     launcher: $('#launcher'),
     panel: $('#panel'),
+    panelResizeHandles: $$('.panel-resize-handle'),
     header: $('.header'),
     closeBtn: $('#closeBtn'),
     stageBadge: $('#stageBadge'),
@@ -2849,46 +2995,102 @@
     motionAnimation.onfinish = () => finishEditorViewportAnimation(session);
   }
 
-  function readSavedPanelPosition() {
+  function isNarrowPanelViewport() {
+    return window.innerWidth <= 540;
+  }
+
+  function readSavedPanelGeometry() {
     try {
-      const saved = JSON.parse(localStorage.getItem(PANEL_POSITION_KEY) || 'null');
-      if (saved && Number.isFinite(saved.left) && Number.isFinite(saved.top)) return saved;
+      const saved = GM_getValue(PANEL_GEOMETRY_KEY, null);
+      if (saved && ['left', 'top', 'width', 'height'].every((key) => Number.isFinite(saved[key]))) {
+        return saved;
+      }
     } catch (_) { }
     return null;
   }
 
-  function savePanelPosition(left, top) {
-    try { localStorage.setItem(PANEL_POSITION_KEY, JSON.stringify({ left, top })); } catch (_) { }
+  function savePanelGeometry(geometry) {
+    const saved = {
+      left: Math.round(geometry.left),
+      top: Math.round(geometry.top),
+      width: Math.round(geometry.width),
+      height: Math.round(geometry.height),
+    };
+    state.preferredPanelGeometry = saved;
+    try { GM_setValue(PANEL_GEOMETRY_KEY, saved); } catch (_) { }
   }
 
-  function clampPanelPosition(left, top) {
-    const rect = el.panel.getBoundingClientRect();
-    const width = Math.max(1, rect.width || parseFloat(el.panel.style.width) || 420);
-    const height = Math.max(1, rect.height || parseFloat(el.panel.style.height) || 700);
-    const minLeft = UI_SAFE_MARGIN;
-    const maxLeft = Math.max(minLeft, window.innerWidth - width - UI_SAFE_MARGIN);
-    const minTop = UI_SAFE_MARGIN;
-    const maxTop = Math.max(minTop, window.innerHeight - height - UI_SAFE_MARGIN);
+  function panelGeometryFromRect(rect = el.panel.getBoundingClientRect()) {
+    return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
+  }
+
+  function getDefaultPanelGeometry() {
+    const availableWidth = Math.max(1, window.innerWidth - UI_SAFE_MARGIN * 2);
+    const availableHeight = Math.max(1, window.innerHeight - UI_SAFE_MARGIN * 2);
+    const maxWidth = Math.min(420, availableWidth);
+    const idealWidth = Math.round(window.innerHeight * 0.39 + 28);
+    const width = clamp(idealWidth, Math.min(PANEL_MIN_WIDTH, maxWidth), maxWidth);
+    const height = Math.min(availableHeight, 820);
     return {
-      left: clamp(left, minLeft, maxLeft),
-      top: clamp(top, minTop, maxTop),
+      left: Math.max(UI_SAFE_MARGIN, window.innerWidth - width - UI_SAFE_MARGIN),
+      top: UI_SAFE_MARGIN,
+      width,
+      height,
     };
   }
 
-  function applyPanelPosition({ preferSaved = true } = {}) {
-    const rect = el.panel.getBoundingClientRect();
-    const width = Math.max(1, rect.width || 420);
-    const saved = preferSaved ? readSavedPanelPosition() : null;
-    const desiredLeft = saved?.left ?? Math.max(UI_SAFE_MARGIN, window.innerWidth - width - UI_SAFE_MARGIN);
-    const desiredTop = saved?.top ?? UI_SAFE_MARGIN;
-    const pos = clampPanelPosition(desiredLeft, desiredTop);
+  function applyPanelGeometry(geometry) {
     el.panel.style.right = 'auto';
-    el.panel.style.left = `${pos.left}px`;
-    el.panel.style.top = `${pos.top}px`;
+    el.panel.style.left = `${geometry.left}px`;
+    el.panel.style.top = `${geometry.top}px`;
+    el.panel.style.width = `${geometry.width}px`;
+    el.panel.style.height = `${geometry.height}px`;
+    el.panel.style.maxHeight = `${Math.max(1, window.innerHeight - UI_SAFE_MARGIN * 2)}px`;
+  }
+
+  function clearDesktopPanelGeometry() {
+    ['right', 'left', 'top', 'width', 'height', 'max-height'].forEach((property) => {
+      el.panel.style.removeProperty(property);
+    });
+  }
+
+  function updatePanelContentLayout() {
+    if (el.panel.classList.contains('hidden')) return;
+    const rect = el.panel.getBoundingClientRect();
+    const previewSize = Math.min(520, Math.max(1, rect.width - 20), Math.max(100, rect.height - 300));
+    el.panel.style.setProperty('--editor-preview-size', `${previewSize}px`);
+    fitCropIntoPreview();
+    updateEditorCropBox();
+    updateTimelinePlayhead();
+  }
+
+  function schedulePanelContentLayout() {
+    if (state.panelLayoutRaf) return;
+    state.panelLayoutRaf = requestAnimationFrame(() => {
+      state.panelLayoutRaf = 0;
+      updatePanelContentLayout();
+    });
+  }
+
+  function fitEditorLayout() {
+    if (isNarrowPanelViewport()) {
+      clearDesktopPanelGeometry();
+      schedulePanelContentLayout();
+      return;
+    }
+    const preferred = state.preferredPanelGeometry || getDefaultPanelGeometry();
+    const visible = constrainPanelGeometry(
+      preferred,
+      window.innerWidth,
+      window.innerHeight,
+      UI_SAFE_MARGIN,
+    );
+    applyPanelGeometry(visible);
+    schedulePanelContentLayout();
   }
 
   function handlePanelHeaderPointerDown(event) {
-    if (event.button !== 0 || state.busy) return;
+    if (event.button !== 0 || state.busy || isNarrowPanelViewport()) return;
     if (event.target.closest?.('button, input, select, textarea, a')) return;
     const rect = el.panel.getBoundingClientRect();
     state.panelDrag = {
@@ -2905,13 +3107,19 @@
   function handlePanelHeaderPointerMove(event) {
     const drag = state.panelDrag;
     if (!drag || drag.pointerId !== event.pointerId) return;
-    const pos = clampPanelPosition(
-      drag.startLeft + event.clientX - drag.startX,
-      drag.startTop + event.clientY - drag.startY,
+    const rect = el.panel.getBoundingClientRect();
+    const geometry = constrainPanelGeometry(
+      {
+        left: drag.startLeft + event.clientX - drag.startX,
+        top: drag.startTop + event.clientY - drag.startY,
+        width: rect.width,
+        height: rect.height,
+      },
+      window.innerWidth,
+      window.innerHeight,
+      UI_SAFE_MARGIN,
     );
-    el.panel.style.right = 'auto';
-    el.panel.style.left = `${pos.left}px`;
-    el.panel.style.top = `${pos.top}px`;
+    applyPanelGeometry(geometry);
     event.preventDefault();
   }
 
@@ -2920,34 +3128,80 @@
     if (!drag || (event && drag.pointerId !== event.pointerId)) return;
     state.panelDrag = null;
     try { el.header.releasePointerCapture?.(drag.pointerId); } catch (_) { }
-    const rect = el.panel.getBoundingClientRect();
-    const pos = clampPanelPosition(rect.left, rect.top);
-    el.panel.style.left = `${pos.left}px`;
-    el.panel.style.top = `${pos.top}px`;
-    savePanelPosition(pos.left, pos.top);
+    const geometry = constrainPanelGeometry(
+      panelGeometryFromRect(),
+      window.innerWidth,
+      window.innerHeight,
+      UI_SAFE_MARGIN,
+    );
+    applyPanelGeometry(geometry);
+    savePanelGeometry(geometry);
   }
 
-  function fitEditorLayout() {
-    const availableWidth = Math.max(1, window.innerWidth - UI_SAFE_MARGIN * 2);
-    const availableHeight = Math.max(260, window.innerHeight - UI_SAFE_MARGIN * 2);
-    const maxWidth = Math.min(420, availableWidth);
-    const preferredMin = window.innerHeight < 760 ? 330 : 360;
-    const minWidth = Math.min(preferredMin, maxWidth);
-    const idealWidth = Math.round(window.innerHeight * 0.39 + 28);
-    const panelWidth = window.innerWidth <= 500 ? maxWidth : clamp(idealWidth, minWidth, maxWidth);
-    const panelHeight = Math.min(availableHeight, 820);
+  function handlePanelResizePointerDown(event) {
+    if (event.button !== 0 || state.busy || isNarrowPanelViewport()) return;
+    const handle = event.currentTarget.dataset.panelResize;
+    const rect = panelGeometryFromRect();
+    state.panelResize = {
+      pointerId: event.pointerId,
+      handle,
+      startX: event.clientX,
+      startY: event.clientY,
+      startRect: rect,
+    };
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    event.preventDefault();
+    event.stopPropagation();
+  }
 
-    el.panel.style.width = `${panelWidth}px`;
-    el.panel.style.height = `${panelHeight}px`;
-    el.panel.style.maxHeight = `${availableHeight}px`;
-    el.editorPreviewWrap.style.height = 'auto';
-    applyPanelPosition({ preferSaved: !state.panelDrag });
+  function handlePanelResizePointerMove(event) {
+    const resize = state.panelResize;
+    if (!resize || resize.pointerId !== event.pointerId) return;
+    const geometry = calculatePanelResize(
+      resize.startRect,
+      resize.handle,
+      event.clientX - resize.startX,
+      event.clientY - resize.startY,
+      window.innerWidth,
+      window.innerHeight,
+      UI_SAFE_MARGIN,
+    );
+    applyPanelGeometry(geometry);
+    schedulePanelContentLayout();
+    event.preventDefault();
+  }
 
-    requestAnimationFrame(() => {
-      fitCropIntoPreview();
-      updateEditorCropBox();
-      updateTimelinePlayhead();
-    });
+  function finishPanelResize(event, cancelled = false) {
+    const resize = state.panelResize;
+    if (!resize || resize.pointerId !== event.pointerId) return;
+    state.panelResize = null;
+    try { event.currentTarget.releasePointerCapture?.(resize.pointerId); } catch (_) { }
+    const geometry = cancelled ? resize.startRect : panelGeometryFromRect();
+    applyPanelGeometry(geometry);
+    schedulePanelContentLayout();
+    if (!cancelled) savePanelGeometry(geometry);
+  }
+
+  function handlePanelResizeKeyDown(event) {
+    if (state.busy || isNarrowPanelViewport()) return;
+    const handle = event.currentTarget.dataset.panelResize;
+    const step = event.shiftKey ? 40 : 10;
+    const dx = event.key === 'ArrowLeft' ? -step : event.key === 'ArrowRight' ? step : 0;
+    const dy = event.key === 'ArrowUp' ? -step : event.key === 'ArrowDown' ? step : 0;
+    if ((!dx && !dy) || (dx && !/[ew]/.test(handle)) || (dy && !/[ns]/.test(handle))) return;
+    const geometry = calculatePanelResize(
+      panelGeometryFromRect(),
+      handle,
+      dx,
+      dy,
+      window.innerWidth,
+      window.innerHeight,
+      UI_SAFE_MARGIN,
+    );
+    applyPanelGeometry(geometry);
+    savePanelGeometry(geometry);
+    schedulePanelContentLayout();
+    event.preventDefault();
   }
 
   function keepFloatingUiInViewport() {
@@ -6094,7 +6348,6 @@
       updatePageSelectionBoundary();
       updatePageSelectionUi();
       if (!shouldFit) updateEditorCropBox();
-      else if (!el.panel.classList.contains('hidden')) fitEditorLayout();
     });
   }
 
@@ -6140,6 +6393,13 @@
   el.header.addEventListener('pointermove', handlePanelHeaderPointerMove);
   el.header.addEventListener('pointerup', finishPanelHeaderDrag);
   el.header.addEventListener('pointercancel', finishPanelHeaderDrag);
+  el.panelResizeHandles.forEach((handle) => {
+    handle.addEventListener('pointerdown', handlePanelResizePointerDown);
+    handle.addEventListener('pointermove', handlePanelResizePointerMove);
+    handle.addEventListener('pointerup', (event) => finishPanelResize(event, false));
+    handle.addEventListener('pointercancel', (event) => finishPanelResize(event, true));
+    handle.addEventListener('keydown', handlePanelResizeKeyDown);
+  });
 
   el.closeBtn.addEventListener('click', closePanel);
   el.selectAreaBtn.addEventListener('click', beginPageSelection);
@@ -6258,6 +6518,7 @@
     discardEditorBackgroundIntent();
     clearEditorViewportAnimation();
     if (state.viewportSyncRaf) cancelAnimationFrame(state.viewportSyncRaf);
+    if (state.panelLayoutRaf) cancelAnimationFrame(state.panelLayoutRaf);
     cancelEditorPreviewRender();
     stopTrimPreview();
     releasePreviewFrameCache();
@@ -6276,6 +6537,7 @@
   });
 
   restoreExportPreferences();
+  state.preferredPanelGeometry = readSavedPanelGeometry();
   liveMediaCollector?.setEnabled(state.liveCaptureMode === 'rewind');
   liveMediaCollector?.setStatusListener((status) => updateLiveRewindTitle(status));
   restoreLauncherPosition();
