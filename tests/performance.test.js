@@ -61,6 +61,14 @@ test('timeline scrubbing replaces the responsive cache frame with a full-resolut
   assert.match(userscriptSource, /el\.scrubVideo\.addEventListener\('seeked'[\s\S]*?if \(state\.timelineDrag\) renderTimelinePreviewIfCurrent/);
 });
 
+test('steady editor preview has one visible picture and all visual settings share its compositor', () => {
+  assert.match(userscriptSource, /function setOutputPreviewVisible[\s\S]*?classList\.toggle\('output-previewing', visible\)/);
+  assert.match(userscriptSource, /output-previewing #clipVideo[\s\S]*?visibility: hidden/);
+  assert.match(userscriptSource, /function renderCachedPreviewFrame[\s\S]*?drawExportCanvasFrame\(ctx, settings, frame\)/);
+  assert.match(userscriptSource, /function drawExportCanvasFrame[\s\S]*?drawTextLayers\(ctx, width, height, settings\.textLayers\)[\s\S]*?normalizeTransparentCorners/);
+  assert.doesNotMatch(userscriptSource, /const includeText = mode !== 'preview'/);
+});
+
 test('export progress uses stable phase ranges', () => {
   assert.equal(calculateExportProgress('palette', 1, 2), 6);
   assert.equal(calculateExportProgress('extracting', 1, 2), 40);

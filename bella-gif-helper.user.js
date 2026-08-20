@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         贝报 GIF 助手
 // @namespace    https://www.bk0717.com/
-// @version      1.3.3
+// @version      1.4.0
 // @description  B站直播回溯、视频框选录制与 GIF 编辑
 // @author       贝极星周报
 // @homepageURL  https://github.com/Bellaris-Weekly/bella-gif-helper
@@ -1333,6 +1333,10 @@
         transform-origin: 0 0;
         pointer-events: none;
       }
+      #editorMotionLayer.output-previewing #clipVideo,
+      #editorMotionLayer.output-previewing #scrubVideo {
+        visibility: hidden;
+      }
       #clipVideo, #scrubVideo {
         position: absolute;
         display: block;
@@ -1518,6 +1522,10 @@
         border-radius: 3px;
       }
       .caption-item.dragging { cursor: grabbing; }
+      #editorMotionLayer.output-previewing .caption-item {
+        color: transparent !important;
+        -webkit-text-stroke-color: transparent !important;
+      }
 
       .trim-block {
         padding: 8px 10px;
@@ -2644,10 +2652,15 @@
     else el.stageBadge.textContent = '编辑';
 
     const recording = state.mode === 'recording';
+    const pageSelectionVisible = state.mode === 'capture' || recording;
     el.launcher.classList.toggle('recording', recording);
     el.launcher.textContent = '';
     el.recordHud.classList.add('hidden');
     el.pageSelectionMarker.classList.toggle('recording', recording);
+    if (!pageSelectionVisible) {
+      el.pageSelectionMarker.classList.add('hidden');
+      el.selectionToolbar.classList.add('hidden');
+    }
 
     const recordDisabled = !state.pageSelection || state.busy || Boolean(state.recording?.stopping);
     el.recordBtn.disabled = recordDisabled;
@@ -2814,6 +2827,12 @@
     };
   }
 
+  function setOutputPreviewVisible(visible) {
+    if (!el.editorMotionLayer || !el.previewCanvas) return;
+    el.editorMotionLayer.classList.toggle('output-previewing', visible);
+    el.previewCanvas.style.visibility = visible ? 'visible' : 'hidden';
+  }
+
   function applyEditorCropGeometry(layout) {
     if (!layout) return null;
     const crop = calculateEditorCropGeometry(layout);
@@ -2842,10 +2861,10 @@
       width: `${Math.max(1, crop.width)}px`,
       height: `${Math.max(1, crop.height)}px`,
       borderRadius: '0px',
-      visibility: state.editorCropSession || state.editorViewportAnimation || state.editorBackgroundIntent
-        ? 'hidden'
-        : 'visible',
     });
+    if (state.editorCropSession || state.editorViewportAnimation || state.editorBackgroundIntent) {
+      setOutputPreviewVisible(false);
+    }
     if (el.cropSizeBadge) {
       const sourceWidth = Math.max(1, Number(state.clip?.width) || 1);
       const sourceHeight = Math.max(1, Number(state.clip?.height) || 1);
@@ -2929,7 +2948,7 @@
     });
     pausePreviewFrameCache();
     cancelEditorPreviewRender();
-    el.previewCanvas.style.visibility = 'hidden';
+    setOutputPreviewVisible(false);
   }
 
   function resumeEditorBackgroundWork() {
@@ -3542,18 +3561,13 @@
     const cache = state.previewFrameCache;
     const frame = getCachedPreviewFrame(time);
     if (!cache || !frame || !el.previewCanvas) return false;
-    const ctx = el.previewCanvas.getContext('2d', { alpha: true });
+    updatePreviewCanvasLayout(settings);
+    const ctx = el.previewCanvas.getContext('2d', { alpha: true, colorSpace: 'srgb' });
     if (!ctx) return false;
-    ctx.clearRect(0, 0, settings.outputWidth, settings.outputHeight);
-    ctx.fillStyle = '#000';
-    ctx.fillRect(0, 0, settings.outputWidth, settings.outputHeight);
-    const sx = settings.crop.x * cache.width;
-    const sy = settings.crop.y * cache.height;
-    const sw = settings.crop.w * cache.width;
-    const sh = settings.crop.h * cache.height;
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(frame, sx, sy, sw, sh, 0, 0, settings.outputWidth, settings.outputHeight);
+    drawExportCanvasFrame(ctx, settings, frame);
+    setOutputPreviewVisible(true);
     return true;
   }
 
@@ -3668,7 +3682,7 @@
     if (clip?.url) URL.revokeObjectURL(clip.url);
     state.clip = null;
     if (el.previewCanvas) {
-      el.previewCanvas.style.visibility = 'hidden';
+      setOutputPreviewVisible(false);
       el.previewCanvas.width = 1;
       el.previewCanvas.height = 1;
     }
@@ -4937,6 +4951,7 @@
       strokeScale: 0.14,
     });
     selectTextLayer(id, { focus: true });
+    scheduleEditorPreviewRender();
     updateEstimatedFileSize();
   }
 
@@ -4950,6 +4965,7 @@
     }
     renderTextLayerTabs();
     renderTextLayers();
+    scheduleEditorPreviewRender();
     updateEstimatedFileSize();
   }
 
@@ -4969,6 +4985,7 @@
     syncTextColorSwatches();
     renderTextLayerTabs(false);
     renderTextLayers();
+    scheduleEditorPreviewRender();
     updateEstimatedFileSize();
   }
 
@@ -5016,6 +5033,7 @@
     );
     drag.item.style.left = `${layer.x * 100}%`;
     drag.item.style.top = `${layer.y * 100}%`;
+    scheduleEditorPreviewRender();
     event.preventDefault();
   }
 
@@ -5025,6 +5043,7 @@
     state.textLayerDrag = null;
     drag.item.classList.remove('dragging');
     try { drag.item.releasePointerCapture?.(drag.pointerId); } catch (_) { }
+    scheduleEditorPreviewRender();
   }
 
   function waitForFreshFrame(video) {
@@ -5228,26 +5247,26 @@
     normalizeTransparentCorner(ctx, width - size, height - size, size);
   }
 
-  function drawExportCanvasFrame(ctx, settings, video, mode = 'export') {
+  function drawExportCanvasFrame(ctx, settings, source) {
     const width = settings.outputWidth;
     const height = settings.outputHeight;
-    const radius = mode === 'preview'
-      ? 0
-      : Number(settings.outputRadius) || getCornerRadiusPixels(width, height, settings.cornerRadiusRatio);
-    const transparentCorners = mode === 'export' || mode === 'estimate';
-    const includeText = mode !== 'preview';
-    const sx = settings.crop.x * state.clip.width;
-    const sy = settings.crop.y * state.clip.height;
-    const sw = settings.crop.w * state.clip.width;
-    const sh = settings.crop.h * state.clip.height;
+    const radius = Number(settings.outputRadius)
+      || getCornerRadiusPixels(width, height, settings.cornerRadiusRatio);
+    const transparentCorners = hasTransparentCorners(settings);
+    const sourceWidth = Number(source.videoWidth || source.displayWidth || source.width || state.clip.width);
+    const sourceHeight = Number(source.videoHeight || source.displayHeight || source.height || state.clip.height);
+    const sx = settings.crop.x * sourceWidth;
+    const sy = settings.crop.y * sourceHeight;
+    const sw = settings.crop.w * sourceWidth;
+    const sh = settings.crop.h * sourceHeight;
 
     ctx.clearRect(0, 0, width, height);
     if (!transparentCorners || radius <= 0) {
       ctx.fillStyle = '#000';
       ctx.fillRect(0, 0, width, height);
     }
-    ctx.drawImage(video, sx, sy, sw, sh, 0, 0, width, height);
-    if (includeText) drawTextLayers(ctx, width, height, settings.textLayers);
+    ctx.drawImage(source, sx, sy, sw, sh, 0, 0, width, height);
+    drawTextLayers(ctx, width, height, settings.textLayers);
     if (transparentCorners && radius > 0) {
       ctx.save();
       ctx.globalCompositeOperation = 'destination-in';
@@ -5282,7 +5301,6 @@
       width: `${displayWidth}px`,
       height: `${displayHeight}px`,
       borderRadius: '0px',
-      visibility: 'visible',
     });
     updateRoundedCropGuide(displayWidth, displayHeight, nextSettings);
     return nextSettings;
@@ -5312,7 +5330,8 @@
     if (!ctx) return;
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
-    drawExportCanvasFrame(ctx, nextSettings, sourceVideo, 'preview');
+    drawExportCanvasFrame(ctx, nextSettings, sourceVideo);
+    setOutputPreviewVisible(true);
   }
 
   async function readUserscriptResource(name) {

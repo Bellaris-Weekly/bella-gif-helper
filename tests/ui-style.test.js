@@ -43,6 +43,11 @@ test('compact editor keeps visual feedback inside the existing workspace', () =>
   assert.match(css, /\.grid-2\.export-options\s*\{[\s\S]*?repeat\(3, minmax\(0, 1fr\)\)/);
 });
 
+test('page capture chrome is removed for every editor and export state', () => {
+  assert.match(source, /const pageSelectionVisible = state\.mode === 'capture' \|\| recording/);
+  assert.match(source, /if \(!pageSelectionVisible\) \{\s*el\.pageSelectionMarker\.classList\.add\('hidden'\);\s*el\.selectionToolbar\.classList\.add\('hidden'\);/);
+});
+
 test('floating editor exposes desktop resize handles and keeps narrow screens fixed', () => {
   assert.equal((source.match(/class="panel-resize-handle"/g) || []).length, 8);
   assert.match(css, /\.panel-resize-handle\s*\{[\s\S]*?touch-action:\s*none/);
