@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         贝报 GIF 助手
 // @namespace    https://www.bk0717.com/
-// @version      1.3.1
+// @version      1.3.2
 // @description  B站直播回溯、视频框选录制与 GIF 编辑
 // @author       贝极星周报
 // @homepageURL  https://github.com/Bellaris-Weekly/bella-gif-helper
@@ -36,11 +36,11 @@
   const LIVE_REWIND_TARGET_SECONDS = 60;
   const LIVE_CAPTURE_MODE_KEY = 'biliGifMakerLiveCaptureModeV1';
   const GIF_TRANSPARENT_INDEX = 255;
-  const PREVIEW_CACHE_MEMORY_BUDGET = 16 * 1024 * 1024;
-  const PREVIEW_CACHE_MAX_FRAMES = 240;
-  const PREVIEW_CACHE_FPS = 4;
-  const PREVIEW_CACHE_MAX_EDGE = 160;
-  const PREVIEW_CACHE_MIN_EDGE = 128;
+  const PREVIEW_CACHE_MEMORY_BUDGET = 32 * 1024 * 1024;
+  const PREVIEW_CACHE_MAX_FRAMES = 121;
+  const PREVIEW_CACHE_FPS = 2;
+  const PREVIEW_CACHE_MAX_EDGE = 260;
+  const PREVIEW_CACHE_MIN_EDGE = 256;
   const EXPORT_PHASE_RANGES = Object.freeze({
     palette: Object.freeze([0, 12]),
     extracting: Object.freeze([12, 68]),
@@ -3259,7 +3259,7 @@
     const sw = settings.crop.w * cache.width;
     const sh = settings.crop.h * cache.height;
     ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = 'medium';
+    ctx.imageSmoothingQuality = 'high';
     ctx.drawImage(frame, sx, sy, sw, sh, 0, 0, settings.outputWidth, settings.outputHeight);
     return true;
   }
@@ -4314,31 +4314,22 @@
       const target = state.timelinePreviewTarget;
       let settings;
       try { settings = readExportSettings(); } catch (_) { return; }
+      el.scrubVideo.classList.add('active');
       if (hasPreviewCacheFrames()) {
-        if (state.timelinePreviewType === 'handle') el.scrubVideo.classList.add('active');
-        else el.scrubVideo.classList.remove('active');
         renderCachedPreviewFrame(settings, target);
-        return;
       }
-      const video = state.timelinePreviewType === 'handle' ? el.scrubVideo : el.clipVideo;
-      if (!video) return;
-      if (state.timelinePreviewType === 'handle') el.scrubVideo.classList.add('active');
-      else el.scrubVideo.classList.remove('active');
-      if (Math.abs((Number(video.currentTime) || 0) - target) < 0.008 && video.readyState >= 2) {
+      if (Math.abs((Number(el.scrubVideo.currentTime) || 0) - target) < 0.008
+        && el.scrubVideo.readyState >= 2) {
         renderExportPreviewFrame();
         return;
       }
-      try { video.currentTime = target; } catch (_) { }
+      try { el.scrubVideo.currentTime = target; } catch (_) { }
     });
   }
 
   function renderTimelinePreviewIfCurrent(video) {
     if (!state.timelineDrag || !video || state.timelinePreviewTarget === null) return;
     const target = state.timelinePreviewTarget;
-    if (hasPreviewCacheFrames()) {
-      try { renderCachedPreviewFrame(readExportSettings(), target); } catch (_) { }
-      return;
-    }
     if (Math.abs((Number(video.currentTime) || 0) - target) > 0.035) return;
     renderExportPreviewFrame();
   }
@@ -4358,6 +4349,7 @@
     if (type === 'handle') el.scrubVideo.classList.add('active');
     seekVideo(video, target, state.clip.duration).then(() => {
       if (token !== state.timelineSettleToken || state.timelineDrag) return;
+      if (type === 'playhead') el.scrubVideo.classList.remove('active');
       renderExportPreviewFrame();
       if (type === 'handle') el.scrubVideo.classList.remove('active');
       if (resumePlayback) void ensureTrimPreviewPlaying();
@@ -4416,7 +4408,7 @@
     state.timelineResumePlayback = false;
     state.timelineDrag = null;
     try { el.timelineTrack.releasePointerCapture?.(drag.pointerId); } catch (_) { }
-    if (hasPreviewCacheFrames() && Number.isFinite(target)) {
+    if (Number.isFinite(target)) {
       cancelTimelinePreview();
       settleTimelinePreview(
         drag.type === 'start' || drag.type === 'end' ? 'handle' : 'playhead',
@@ -4429,9 +4421,6 @@
     }
     updateTrimUi();
     updateEstimatedFileSize();
-    if (shouldResumePlayback && !hasPreviewCacheFrames()) {
-      void ensureTrimPreviewPlaying();
-    }
   }
 
   function stopTrimPreview({ keepPosition = true } = {}) {
@@ -6237,11 +6226,7 @@
   });
   el.scrubVideo.addEventListener('loadeddata', () => renderExportPreviewFrame());
   el.scrubVideo.addEventListener('seeked', () => {
-    if (state.timelineDrag?.type === 'start' || state.timelineDrag?.type === 'end') {
-      renderTimelinePreviewIfCurrent(el.scrubVideo);
-      return;
-    }
-    renderExportPreviewFrame();
+    if (state.timelineDrag) renderTimelinePreviewIfCurrent(el.scrubVideo);
   });
 
   el.newRecordingBtn.addEventListener('click', handleNewRecording);

@@ -44,13 +44,21 @@ test('preview cache stays inside the fixed memory budget for landscape and squar
   const landscape = calculatePreviewCacheProfile(1920, 1080, 60);
   const square = calculatePreviewCacheProfile(1080, 1080, 60);
   const portrait = calculatePreviewCacheProfile(720, 1280, 37);
-  assert.ok(landscape.frameCount <= 240);
-  assert.ok(square.frameCount <= 240);
-  assert.ok(landscape.bytes <= 16 * 1024 * 1024);
-  assert.ok(square.bytes <= 16 * 1024 * 1024);
-  assert.ok(portrait.bytes <= 16 * 1024 * 1024);
-  assert.ok(Math.max(landscape.width, landscape.height) <= 160);
-  assert.ok(Math.max(square.width, square.height) >= 128);
+  assert.ok(landscape.frameCount <= 121);
+  assert.ok(square.frameCount <= 121);
+  assert.ok(landscape.bytes <= 32 * 1024 * 1024);
+  assert.ok(square.bytes <= 32 * 1024 * 1024);
+  assert.ok(portrait.bytes <= 32 * 1024 * 1024);
+  assert.ok(Math.max(landscape.width, landscape.height) <= 260);
+  assert.equal(Math.max(square.width, square.height), 260);
+});
+
+test('timeline scrubbing replaces the responsive cache frame with a full-resolution seek', () => {
+  assert.match(userscriptSource, /function renderCachedPreviewFrame[\s\S]*?imageSmoothingQuality = 'high'/);
+  assert.match(userscriptSource, /renderCachedPreviewFrame\(settings, target\);[\s\S]*?el\.scrubVideo\.currentTime = target/);
+  assert.match(userscriptSource, /function renderTimelinePreviewIfCurrent[\s\S]*?renderExportPreviewFrame\(\)/);
+  assert.doesNotMatch(userscriptSource, /function renderTimelinePreviewIfCurrent[\s\S]*?hasPreviewCacheFrames\(\)[\s\S]*?return;/);
+  assert.match(userscriptSource, /el\.scrubVideo\.addEventListener\('seeked'[\s\S]*?if \(state\.timelineDrag\) renderTimelinePreviewIfCurrent/);
 });
 
 test('export progress uses stable phase ranges', () => {
