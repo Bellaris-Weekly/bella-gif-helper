@@ -1719,6 +1719,39 @@
         border-radius: var(--radius-control);
         background: var(--color-surface-raised);
       }
+      .text-color-control {
+        display: grid;
+        grid-template-columns: minmax(40px, 1fr) repeat(3, 40px);
+        gap: 4px;
+        align-items: center;
+      }
+      .text-color-control input[type="color"] { min-width: 0; }
+      .color-swatch {
+        position: relative;
+        width: 40px;
+        height: 40px;
+        padding: 0;
+        border: 0;
+        border-radius: 50%;
+        outline-offset: 0;
+        background: transparent;
+        cursor: pointer;
+      }
+      .color-swatch::before {
+        content: '';
+        position: absolute;
+        inset: 8px;
+        border: 1px solid rgba(255, 255, 255, .42);
+        border-radius: 50%;
+        background: var(--swatch-color);
+        box-shadow: 0 1px 4px rgba(0, 0, 0, .34);
+        transition: transform var(--motion-fast), box-shadow var(--motion-fast);
+      }
+      .color-swatch:hover::before { transform: scale(1.1); }
+      .color-swatch[aria-pressed="true"]::before {
+        box-shadow: 0 0 0 2px var(--color-surface), 0 0 0 4px var(--color-text), 0 1px 4px rgba(0, 0, 0, .34);
+      }
+      .color-swatch:disabled { cursor: default; opacity: .5; }
       input[type="checkbox"] { accent-color: var(--color-brand); }
       input[type="range"] {
         width: 100%;
@@ -2151,11 +2184,16 @@
                 </div>
                 <div class="field">
                   <label for="textColor">文字颜色</label>
-                  <input id="textColor" class="edit-lockable export-input" type="color" value="#ffffff">
+                  <div class="text-color-control">
+                    <input id="textColor" class="edit-lockable export-input" type="color" value="#ffffff" title="自定义文字颜色" aria-label="自定义文字颜色">
+                    <button type="button" class="color-swatch edit-lockable" data-text-color="#db7d74" style="--swatch-color: #db7d74" aria-label="文字颜色 #db7d74" aria-pressed="false" title="#db7d74"></button>
+                    <button type="button" class="color-swatch edit-lockable" data-text-color="#576690" style="--swatch-color: #576690" aria-label="文字颜色 #576690" aria-pressed="false" title="#576690"></button>
+                    <button type="button" class="color-swatch edit-lockable" data-text-color="#e799b0" style="--swatch-color: #e799b0" aria-label="文字颜色 #e799b0" aria-pressed="false" title="#e799b0"></button>
+                  </div>
                 </div>
                 <div class="field">
                   <label for="strokeColor">描边颜色</label>
-                  <input id="strokeColor" class="edit-lockable export-input" type="color" value="#000000">
+                  <input id="strokeColor" class="edit-lockable export-input" type="color" value="#ffffff">
                 </div>
               </div>
             </div>
@@ -2334,6 +2372,7 @@
     fontScale: $('#fontScale'),
     fontScaleValue: $('#fontScaleValue'),
     textColor: $('#textColor'),
+    textColorSwatches: $$('.color-swatch'),
     strokeColor: $('#strokeColor'),
     strokeScale: $('#strokeScale'),
     newRecordingBtn: $('#newRecordingBtn'),
@@ -4816,7 +4855,15 @@
       el.textColor.value = active.textColor;
       el.strokeColor.value = active.strokeColor;
       el.strokeScale.value = String(active.strokeScale);
+      syncTextColorSwatches();
     }
+  }
+
+  function syncTextColorSwatches() {
+    const selectedColor = String(el.textColor.value || '').toLowerCase();
+    el.textColorSwatches.forEach((button) => {
+      button.setAttribute('aria-pressed', String(button.dataset.textColor === selectedColor));
+    });
   }
 
   function applyTextLayerMetrics(item, layer, previewWidth) {
@@ -4886,7 +4933,7 @@
       y: clamp(0.82 - offset, 0.12, 0.88),
       fontScale: 0.09,
       textColor: '#ffffff',
-      strokeColor: '#000000',
+      strokeColor: '#ffffff',
       strokeScale: 0.14,
     });
     selectTextLayer(id, { focus: true });
@@ -4917,8 +4964,9 @@
     layer.fontScale = Number(el.fontScale.value) || 0.09;
     if (el.fontScaleValue) el.fontScaleValue.textContent = `${Math.round(layer.fontScale * 100)}%`;
     layer.textColor = el.textColor.value || '#ffffff';
-    layer.strokeColor = el.strokeColor.value || '#000000';
+    layer.strokeColor = el.strokeColor.value || '#ffffff';
     layer.strokeScale = Number(el.strokeScale.value) || 0;
+    syncTextColorSwatches();
     renderTextLayerTabs(false);
     renderTextLayers();
     updateEstimatedFileSize();
@@ -6460,6 +6508,12 @@
   [el.captionText, el.fontScale, el.textColor, el.strokeColor, el.strokeScale].forEach((input) => {
     input.addEventListener('input', updateActiveTextLayerFromControls);
     input.addEventListener('change', updateActiveTextLayerFromControls);
+  });
+  el.textColorSwatches.forEach((button) => {
+    button.addEventListener('click', () => {
+      el.textColor.value = button.dataset.textColor;
+      updateActiveTextLayerFromControls();
+    });
   });
   el.captionLayer.addEventListener('pointerdown', handleTextLayerPointerDown);
   el.captionLayer.addEventListener('pointermove', handleTextLayerPointerMove);

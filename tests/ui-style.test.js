@@ -99,3 +99,19 @@ test('filled actions and muted text retain readable contrast', () => {
   assert.ok(contrast(readHexToken('color-text-muted'), readHexToken('color-surface-raised')) >= 4.5);
   assert.ok(contrast('#ffffff', readHexToken('color-danger')) >= 4.5);
 });
+
+test('text colors offer accessible presets while keeping custom selection', () => {
+  const presets = [...source.matchAll(/data-text-color="(#[0-9a-f]{6})"/gi)].map((match) => match[1].toLowerCase());
+  assert.deepEqual(presets, ['#db7d74', '#576690', '#e799b0']);
+  assert.match(source, /class="color-swatch edit-lockable"[^>]+aria-label="[^"]+"[^>]+aria-pressed="false"/);
+  assert.match(source, /button\.setAttribute\('aria-pressed', String\(button\.dataset\.textColor === selectedColor\)\)/);
+  assert.match(source, /el\.textColor\.value = button\.dataset\.textColor;\s*updateActiveTextLayerFromControls\(\);/);
+  assert.match(css, /\.color-swatch\s*\{[\s\S]*?width:\s*40px;[\s\S]*?height:\s*40px/);
+});
+
+test('new text layers use a white stroke by default', () => {
+  assert.match(source, /id="strokeColor"[^>]+value="#ffffff"/);
+  const addTextLayerBlock = source.match(/function addTextLayer\(\)\s*\{[\s\S]*?\n  \}/)?.[0] || '';
+  assert.match(addTextLayerBlock, /strokeColor:\s*'#ffffff'/);
+  assert.match(source, /layer\.strokeColor = el\.strokeColor\.value \|\| '#ffffff'/);
+});
