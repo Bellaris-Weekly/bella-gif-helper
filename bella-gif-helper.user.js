@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         贝报 GIF 助手
 // @namespace    https://www.bk0717.com/
-// @version      1.4.0
+// @version      1.4.1
 // @description  B站直播回溯、视频框选录制与 GIF 编辑
 // @author       贝极星周报
 // @homepageURL  https://github.com/Bellaris-Weekly/bella-gif-helper
@@ -53,9 +53,9 @@
     compressing: Object.freeze([88, 99]),
   });
   const GIF_QUALITY_PRESETS = Object.freeze({
-    nai: Object.freeze({ maxColors: 255, dither: 'floyd-steinberg', lossy: 0, estimateFactor: 0.30 }),
-    bei: Object.freeze({ maxColors: 255, dither: null, lossy: 25, estimateFactor: 0.22 }),
-    ran: Object.freeze({ maxColors: 192, dither: null, lossy: 50, estimateFactor: 0.16 }),
+    nai: Object.freeze({ maxColors: 255, dither: 'floyd-steinberg', lossy: 0 }),
+    bei: Object.freeze({ maxColors: 255, dither: null, lossy: 25 }),
+    ran: Object.freeze({ maxColors: 192, dither: null, lossy: 50 }),
   });
 
   function buildGifsicleCommand(preset) {
@@ -84,12 +84,114 @@
     return Math.min(6, Math.max(2, 48 / Math.max(1, Number(fps) || 1)));
   }
 
+  function requiresPreciseFrameSeek(currentTime, targetTime, endTime, tolerance) {
+    return Number(currentTime) >= Number(endTime)
+      || Number(currentTime) > Number(targetTime) + Math.max(0, Number(tolerance) || 0);
+  }
+
   function calculateExportFrameCount(duration, fps) {
     return Math.max(1, Math.ceil(Math.max(0, Number(duration) || 0) * Math.max(1, Number(fps) || 1)));
   }
 
   function calculateExportFrameTime(start, end, index, fps) {
     return Math.min(Number(end) - 0.001, Number(start) + Number(index) / Math.max(1, Number(fps) || 1));
+  }
+
+  function createExportFrameTimes(start, end, fps) {
+    const frameCount = calculateExportFrameCount(Number(end) - Number(start), fps);
+    return Object.freeze(Array.from(
+      { length: frameCount },
+      (_, index) => calculateExportFrameTime(start, end, index, fps),
+    ));
+  }
+
+  function createExportPlan(settings) {
+    const frameTimes = createExportFrameTimes(settings.start, settings.end, settings.fps);
+    return Object.freeze({
+      ...settings,
+      crop: Object.freeze({ ...settings.crop }),
+      textLayers: Object.freeze((settings.textLayers || []).map((layer) => Object.freeze({ ...layer }))),
+      qualityPreset: Object.freeze({ ...settings.qualityPreset }),
+      frameTimes,
+      baseFrames: frameTimes.length,
+      finalFrames: frameTimes.length,
+    });
+  }
+
+  function createEstimateSampleWindows(frameTimes, windowSize = 8) {
+    const times = Array.from(frameTimes || []);
+    if (!times.length) return Object.freeze([]);
+    if (times.length <= windowSize * 3) return Object.freeze([Object.freeze(times)]);
+    const size = Math.min(windowSize, times.length);
+    const windows = [0.1, 0.5, 0.9].map((ratio) => {
+      const anchor = Math.round((times.length - 1) * ratio);
+      const start = Math.min(times.length - size, Math.max(0, anchor - Math.floor(size / 2)));
+      return Object.freeze(times.slice(start, start + size));
+    });
+    return Object.freeze(windows);
+  }
+
+  function inspectGifFrameBytes(input) {
+    const bytes = input instanceof Uint8Array ? input : new Uint8Array(input || 0);
+    if (bytes.length < 14 || String.fromCharCode(...bytes.subarray(0, 3)) !== 'GIF') return null;
+    let offset = 13;
+    if (bytes[10] & 0x80) offset += 3 * (1 << ((bytes[10] & 7) + 1));
+    const frameBytes = [];
+    let pendingGraphicControl = -1;
+    const skipSubBlocks = () => {
+      while (offset < bytes.length) {
+        const size = bytes[offset++];
+        if (!size) break;
+        offset += size;
+      }
+    };
+    while (offset < bytes.length) {
+      const blockStart = offset;
+      const marker = bytes[offset++];
+      if (marker === 0x3b) break;
+      if (marker === 0x21) {
+        const label = bytes[offset++];
+        if (label === 0xf9) pendingGraphicControl = blockStart;
+        skipSubBlocks();
+        continue;
+      }
+      if (marker !== 0x2c || offset + 9 > bytes.length) return null;
+      const packed = bytes[offset + 8];
+      offset += 9;
+      if (packed & 0x80) offset += 3 * (1 << ((packed & 7) + 1));
+      offset += 1;
+      skipSubBlocks();
+      const frameStart = pendingGraphicControl >= 0 ? pendingGraphicControl : blockStart;
+      frameBytes.push(offset - frameStart);
+      pendingGraphicControl = -1;
+    }
+    if (!frameBytes.length) return null;
+    const frameTotal = frameBytes.reduce((sum, size) => sum + size, 0);
+    return Object.freeze({
+      totalBytes: bytes.length,
+      containerBytes: Math.max(0, bytes.length - frameTotal),
+      frameBytes: Object.freeze(frameBytes),
+    });
+  }
+
+  function calculateEstimatedSizeRange(reports, totalFrames, complete = false) {
+    const valid = (reports || []).filter((report) => report?.frameBytes?.length);
+    if (!valid.length || totalFrames < 1) return null;
+    if (complete && valid.length === 1 && valid[0].frameBytes.length === totalFrames) {
+      return Object.freeze({ min: valid[0].totalBytes, max: valid[0].totalBytes });
+    }
+    const containers = valid.map((report) => report.containerBytes).sort((a, b) => a - b);
+    const firstFrames = valid.map((report) => report.frameBytes[0]).sort((a, b) => a - b);
+    const following = valid.flatMap((report) => report.frameBytes.slice(1));
+    if (!following.length) following.push(...firstFrames);
+    const container = containers[Math.floor(containers.length / 2)];
+    const first = firstFrames[Math.floor(firstFrames.length / 2)];
+    const low = container + first + Math.min(...following) * Math.max(0, totalFrames - 1);
+    const high = container + first + Math.max(...following) * Math.max(0, totalFrames - 1);
+    return Object.freeze({
+      min: Math.max(1024, Math.floor(low * 0.9)),
+      max: Math.max(1024, Math.ceil(high * 1.1)),
+    });
   }
 
   function calculateExportProgress(phase, completed = 0, total = 1) {
@@ -961,8 +1063,14 @@
     calculateEncoderWorkerCount,
     selectEncoderWorker,
     calculateExtractionPlaybackRate,
+    requiresPreciseFrameSeek,
     calculateExportFrameCount,
     calculateExportFrameTime,
+    createExportFrameTimes,
+    createExportPlan,
+    createEstimateSampleWindows,
+    inspectGifFrameBytes,
+    calculateEstimatedSizeRange,
     calculateExportProgress,
     calculatePreviewCacheProfile,
     orderFrameChunks,
@@ -1038,6 +1146,7 @@
     trimEnd: 0,
     trimPreviewCleanup: null,
     exportEncodingSession: null,
+    exportVideo: null,
     cancelExportPreparation: null,
     launcherDrag: null,
     panelDrag: null,
@@ -1050,7 +1159,11 @@
     textLayerDrag: null,
     nextTextLayerId: 1,
     toastTimer: 0,
-    sizeEstimateCalibration: { nai: 1, bei: 1, ran: 1 },
+    sizeEstimateTimer: 0,
+    sizeEstimateToken: 0,
+    sizeEstimateJob: null,
+    sizeEstimateCache: null,
+    clipRevision: 0,
     encodingResourceTexts: null,
     previewSnapshot: null,
       cancelRequested: false,
@@ -3392,6 +3505,58 @@
     }
   }
 
+  async function createDetachedClipVideo(clip) {
+    const video = document.createElement('video');
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = 'auto';
+    await attachClipToVideo(clip, video);
+    return video;
+  }
+
+  function releaseDetachedClipVideo(clip, video) {
+    if (!video) return;
+    cleanupClipAttachment(clip, video);
+  }
+
+  function flattenSampleTimes(windows) {
+    const seen = new Set();
+    const times = [];
+    for (const windowTimes of windows || []) {
+      for (const time of windowTimes) {
+        const key = Number(time).toFixed(6);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        times.push(Number(time));
+      }
+    }
+    return times;
+  }
+
+  async function captureImageBitmapsAtTimes(video, times, clip, isCancelled = () => false) {
+    const frames = new Map();
+    try {
+      for (const time of times) {
+        if (isCancelled()) throw new CancelledError();
+        await seekVideo(video, time, clip.duration);
+        if (isCancelled()) throw new CancelledError();
+        frames.set(Number(time).toFixed(6), await createImageBitmap(video));
+      }
+      return frames;
+    } catch (error) {
+      for (const frame of frames.values()) {
+        try { frame.close(); } catch (_) { }
+      }
+      throw error;
+    }
+  }
+
+  function closeImageBitmapMap(frames) {
+    for (const frame of frames?.values?.() || []) {
+      try { frame.close(); } catch (_) { }
+    }
+  }
+
   function choosePreviewCacheProfile(clip) {
     return calculatePreviewCacheProfile(clip.width, clip.height, clip.duration);
   }
@@ -3410,9 +3575,9 @@
     try { cache.video.pause(); } catch (_) { }
   }
 
-  async function resumePreviewFrameCache(cache = state.previewFrameCache, { allowExport = false } = {}) {
+  async function resumePreviewFrameCache(cache = state.previewFrameCache) {
     if (!cache || cache.cancelled || cache.status === 'ready' || cache.running
-      || (state.mode === 'exporting' && !allowExport)) return;
+      || state.mode === 'exporting') return;
     const video = cache.video;
     const token = ++cache.runToken;
     cache.running = true;
@@ -3446,7 +3611,7 @@
           error ? reject(error) : resolve();
         };
         const capture = async (now, metadata = {}) => {
-          if (settled || cache.cancelled || token !== cache.runToken || (allowExport && state.cancelRequested)) {
+          if (settled || cache.cancelled || token !== cache.runToken) {
             return finish();
           }
           const currentTime = Number(metadata.mediaTime) || Number(video.currentTime) || 0;
@@ -3464,16 +3629,7 @@
             }
             cache.frames[bucket] = frame;
             cache.captured += 1;
-            if (cache.captured === 1 || cache.captured % 12 === 0) {
-              const pixels = ctx.getImageData(0, 0, cache.width, cache.height).data;
-              const colors = new Set();
-              for (let offset = 0; offset < pixels.length; offset += 256) {
-                colors.add((pixels[offset] >> 4) << 8 | (pixels[offset + 1] >> 4) << 4 | (pixels[offset + 2] >> 4));
-              }
-              cache.complexityTotal += colors.size / Math.max(1, pixels.length / 256);
-              cache.complexitySamples += 1;
-              renderTimelineFilmstrip(cache);
-            }
+            if (cache.captured === 1 || cache.captured % 12 === 0) renderTimelineFilmstrip(cache);
           }
           cache.resumeTime = Math.max(cache.resumeTime, currentTime);
           cache.progress = clamp(currentTime / Math.max(0.001, cache.clip.duration), 0, 1);
@@ -3522,8 +3678,6 @@
       resumeTime: 0,
       progress: 0,
       captured: 0,
-      complexityTotal: 0,
-      complexitySamples: 0,
       stopRun: null,
       clip,
       ...profile,
@@ -3532,13 +3686,6 @@
     };
     state.previewFrameCache = cache;
     void resumePreviewFrameCache(cache);
-  }
-
-  async function completePreviewFrameCacheForExport() {
-    const cache = state.previewFrameCache;
-    if (!cache || cache.cancelled || cache.status === 'ready') return;
-    await resumePreviewFrameCache(cache, { allowExport: true });
-    if (state.cancelRequested) throw new CancelledError();
   }
 
   function getCachedPreviewFrame(time) {
@@ -3652,6 +3799,7 @@
     } finally {
       state.busy = false;
       updateModeUi();
+      if (state.mode === 'edit') updateEstimatedFileSize();
     }
   }
 
@@ -3670,6 +3818,11 @@
   }
 
   function disposeClip() {
+    cancelSizeEstimate({ clearCache: true });
+    if (state.exportVideo) {
+      releaseDetachedClipVideo(state.clip, state.exportVideo);
+      state.exportVideo = null;
+    }
     discardEditorBackgroundIntent();
     clearEditorViewportAnimation();
     cancelEditorPreviewRender();
@@ -4273,6 +4426,7 @@
 
   async function loadRecordedClip(blob, metadata) {
     disposeClip();
+    state.clipRevision += 1;
     const url = URL.createObjectURL(blob);
     state.clip = { ...metadata, kind: 'blob', blob, url, duration: metadata.measuredDuration };
     await Promise.all([
@@ -4289,6 +4443,7 @@
 
   async function loadLiveRewindClip(snapshot, metadata) {
     disposeClip();
+    state.clipRevision += 1;
     state.clip = {
       ...metadata,
       kind: 'media-source',
@@ -5671,25 +5826,7 @@
     };
   }
 
-  async function createGlobalPalette(settings, resources, urls) {
-    const cacheFrames = (state.previewFrameCache?.frames || []).filter(Boolean);
-    const selected = [];
-    const sampleCount = Math.min(64, cacheFrames.length);
-    for (let index = 0; index < sampleCount; index += 1) {
-      const sourceIndex = sampleCount === 1
-        ? 0
-        : Math.round((index / (sampleCount - 1)) * (cacheFrames.length - 1));
-      selected.push(await createImageBitmap(cacheFrames[sourceIndex]));
-    }
-    if (!selected.length) selected.push(await createImageBitmap(settings.video));
-
-    const longest = Math.max(settings.outputWidth, settings.outputHeight);
-    const sampleScale = Math.min(1, PREVIEW_CACHE_MAX_EDGE / longest);
-    const paletteSettings = makeWorkerFrameSettings(settings, {
-      outputWidth: Math.max(2, Math.round(settings.outputWidth * sampleScale)),
-      outputHeight: Math.max(2, Math.round(settings.outputHeight * sampleScale)),
-      outputRadius: Math.max(0, Math.round(settings.outputRadius * sampleScale)),
-    });
+  function createEncodingModuleUrls(resources, urls) {
     const modernPaletteUrl = makeResourceModuleUrl(resources.modernPalette, urls);
     const gifencUrl = makeResourceModuleUrl(resources.gifenc, urls);
     const gifsicleUrl = makeResourceModuleUrl(resources.gifsicle, urls);
@@ -5697,6 +5834,20 @@
       makeEncodingWorkerSource(modernPaletteUrl, gifencUrl, gifsicleUrl),
       urls,
     );
+    return { modernPaletteUrl, gifencUrl, gifsicleUrl, workerUrl };
+  }
+
+  async function createGlobalPalette(settings, frames, moduleUrls) {
+    const selected = Array.from(frames || []);
+    if (!selected.length) throw new Error('没有可用于调色板的选区画面。');
+    const longest = Math.max(settings.outputWidth, settings.outputHeight);
+    const sampleScale = Math.min(1, PREVIEW_CACHE_MAX_EDGE / longest);
+    const paletteSettings = makeWorkerFrameSettings(settings, {
+      outputWidth: Math.max(2, Math.round(settings.outputWidth * sampleScale)),
+      outputHeight: Math.max(2, Math.round(settings.outputHeight * sampleScale)),
+      outputRadius: Math.max(0, Math.round(settings.outputRadius * sampleScale)),
+    });
+    const { workerUrl } = moduleUrls;
     const worker = new Worker(workerUrl, { type: 'module', name: 'bella-gif-palette' });
     return new Promise((resolve, reject) => {
       let finished = false;
@@ -5705,7 +5856,7 @@
         finished = true;
         worker.terminate();
         if (state.cancelExportPreparation === cancel) state.cancelExportPreparation = null;
-        error ? reject(error) : resolve({ ...value, moduleUrls: { modernPaletteUrl, gifencUrl, gifsicleUrl, workerUrl } });
+        error ? reject(error) : resolve(value);
       };
       const cancel = () => finish(new CancelledError());
       state.cancelExportPreparation = cancel;
@@ -5724,18 +5875,23 @@
     });
   }
 
-  async function createGifEncodingSession(settings, timeoutMs = ENCODE_TIMEOUT_MS) {
+  async function createGifEncodingSession(settings, {
+    sampleFrames = [],
+    preparedPalette = null,
+    timeoutMs = ENCODE_TIMEOUT_MS,
+  } = {}) {
     const resources = await loadEncodingResourceTexts();
     const urls = [];
+    const moduleUrls = createEncodingModuleUrls(resources, urls);
     settings.onPhase?.('palette');
     let paletteResult;
     try {
-      paletteResult = await createGlobalPalette(settings, resources, urls);
+      paletteResult = preparedPalette || await createGlobalPalette(settings, sampleFrames, moduleUrls);
     } catch (error) {
       urls.forEach((url) => URL.revokeObjectURL(url));
       throw error;
     }
-    const { gifencUrl, gifsicleUrl, workerUrl } = paletteResult.moduleUrls;
+    const { gifencUrl, gifsicleUrl, workerUrl } = moduleUrls;
     const workerCount = calculateEncoderWorkerCount(navigator.hardwareConcurrency);
     const workers = [];
     const activeTasks = new Map();
@@ -5748,6 +5904,7 @@
     let compressionWorkerUrl = null;
     let compressorSource = '';
     let settled = false;
+    let backpressured = false;
     let resultResolve;
     let resultReject;
     const result = new Promise((resolve, reject) => {
@@ -5765,6 +5922,8 @@
     const settleError = (error) => {
       if (settled) return;
       settled = true;
+      if (backpressured) settings.onBackpressure?.(false);
+      backpressured = false;
       const normalized = error instanceof Error ? error : new Error(String(error));
       resultReject(normalized);
       activeTasks.forEach((task) => task.reject(normalized));
@@ -5868,6 +6027,8 @@
           while (!settled) {
             const workerIndex = selectEncoderWorker(workers.map((item) => item.inFlight));
             if (workerIndex >= 0) {
+              if (backpressured) settings.onBackpressure?.(false);
+              backpressured = false;
               const available = workers[workerIndex];
               const id = nextTaskId++;
               let resolveTask;
@@ -5885,6 +6046,8 @@
               posted = true;
               return;
             }
+            if (!backpressured) settings.onBackpressure?.(true);
+            backpressured = true;
             await Promise.race(activePromises);
           }
           throw new CancelledError();
@@ -5915,6 +6078,10 @@
         stopCompressionWorker();
         urls.forEach((url) => URL.revokeObjectURL(url));
       },
+      palette: Object.freeze({
+        mappingPalette: paletteResult.mappingPalette.map((color) => [...color]),
+        globalPalette: paletteResult.globalPalette.map((color) => [...color]),
+      }),
     };
   }
 
@@ -6010,8 +6177,7 @@
 
     const outputRadius = getCornerRadiusPixels(outputWidth, outputHeight, cornerRadiusRatio);
 
-    return {
-      video: el.clipVideo,
+    return createExportPlan({
       start,
       end,
       fps,
@@ -6031,22 +6197,22 @@
       textLayers: state.textLayers
         .filter((layer) => String(layer.text || '').trim())
         .map((layer) => ({ ...layer })),
-    };
+    });
   }
 
-  function estimateGifBytes(settings) {
-    const pixelsPerFrame = Math.max(1, settings.outputWidth * settings.outputHeight);
-    const framePayload = pixelsPerFrame * settings.finalFrames;
-    const textFactor = 1 + (settings.textLayers?.length || 0) * 0.04;
-    const preset = settings.qualityPreset || GIF_QUALITY_PRESETS.bei;
-    const calibration = clamp(Number(state.sizeEstimateCalibration[settings.quality]) || 1, 0.35, 3.2);
-    const cache = state.previewFrameCache;
-    const complexity = cache?.complexitySamples
-      ? clamp(cache.complexityTotal / cache.complexitySamples, 0.2, 1)
-      : 0.55;
-    const complexityFactor = 0.8 + complexity * 0.4;
-    const base = (framePayload * preset.estimateFactor * textFactor * complexityFactor) + 2508;
-    return Math.max(1024, base * calibration);
+  function makeEstimateSignature(plan) {
+    return JSON.stringify([
+      state.clipRevision,
+      plan.start.toFixed(6), plan.end.toFixed(6), plan.fps,
+      plan.outputWidth, plan.outputHeight, plan.quality,
+      plan.outputRadius, plan.transparentCorners,
+      plan.crop.x.toFixed(6), plan.crop.y.toFixed(6),
+      plan.crop.w.toFixed(6), plan.crop.h.toFixed(6),
+      plan.textLayers.map((layer) => [
+        layer.text, layer.x, layer.y, layer.fontScale,
+        layer.textColor, layer.strokeColor, layer.strokeScale,
+      ]),
+    ]);
   }
 
   function formatFileSize(bytes) {
@@ -6055,12 +6221,107 @@
     return `${(bytes / 1024 / 1024).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0)} MB`;
   }
 
-  function setEstimatedSizeText(text, title = '') {
+  function formatEstimatedSizeRange(range) {
+    if (!range) return '--';
+    const minText = formatFileSize(range.min);
+    const maxText = formatFileSize(range.max);
+    return minText === maxText ? minText : `${minText}～${maxText}`;
+  }
+
+  function setEstimatedSizeText(text, title = '', busy = false) {
     if (el.estimatedSize) {
       el.estimatedSize.textContent = text;
       el.estimatedSize.title = title;
+      el.estimatedSize.setAttribute('aria-busy', String(busy));
     }
-    if (el.actionEstimate) el.actionEstimate.textContent = text;
+    if (el.actionEstimate) {
+      el.actionEstimate.textContent = text;
+      el.actionEstimate.setAttribute('aria-busy', String(busy));
+    }
+  }
+
+  function cancelSizeEstimate({ clearCache = false } = {}) {
+    clearTimeout(state.sizeEstimateTimer);
+    state.sizeEstimateTimer = 0;
+    state.sizeEstimateToken += 1;
+    const job = state.sizeEstimateJob;
+    if (job) {
+      job.cancelled = true;
+      job.session?.cancel(new CancelledError());
+      if (state.cancelExportPreparation) state.cancelExportPreparation();
+    }
+    state.sizeEstimateJob = null;
+    if (clearCache) state.sizeEstimateCache = null;
+  }
+
+  async function estimateExportSize(plan, signature, token) {
+    const clip = state.clip;
+    if (!clip) throw new CancelledError();
+    const windows = createEstimateSampleWindows(plan.frameTimes);
+    const sampleTimes = flattenSampleTimes(windows);
+    const job = { cancelled: false, session: null, video: null };
+    state.sizeEstimateJob = job;
+    let frames = null;
+    let paletteFrames = [];
+    try {
+      job.video = await createDetachedClipVideo(clip);
+      frames = await captureImageBitmapsAtTimes(
+        job.video,
+        sampleTimes,
+        clip,
+        () => job.cancelled || token !== state.sizeEstimateToken,
+      );
+      paletteFrames = await Promise.all([...frames.values()].map((frame) => createImageBitmap(frame)));
+      const reports = [];
+      let preparedPalette = null;
+      for (let windowIndex = 0; windowIndex < windows.length; windowIndex += 1) {
+        if (job.cancelled || token !== state.sizeEstimateToken) throw new CancelledError();
+        const windowTimes = windows[windowIndex];
+        const samplePlan = {
+          ...plan,
+          frameTimes: windowTimes,
+          baseFrames: windowTimes.length,
+          finalFrames: windowTimes.length,
+        };
+        job.session = await createGifEncodingSession(samplePlan, {
+          sampleFrames: windowIndex === 0 ? paletteFrames : [],
+          preparedPalette,
+          timeoutMs: 120_000,
+        });
+        paletteFrames = [];
+        if (job.cancelled || token !== state.sizeEstimateToken) {
+          job.session.cancel(new CancelledError());
+          throw new CancelledError();
+        }
+        if (!preparedPalette) preparedPalette = job.session.palette;
+        for (let index = 0; index < windowTimes.length; index += 1) {
+          const time = windowTimes[index];
+          const source = frames.get(Number(time).toFixed(6));
+          const frame = new VideoFrame(source, { timestamp: Math.round(time * 1_000_000) });
+          await job.session.addFrame(frame, index, plan.delay);
+        }
+        const blob = await job.session.finish();
+        reports.push(inspectGifFrameBytes(await blob.arrayBuffer()));
+        job.session.destroy();
+        job.session = null;
+      }
+      const complete = windows.length === 1 && windows[0].length === plan.finalFrames;
+      const range = calculateEstimatedSizeRange(reports, plan.finalFrames, complete);
+      if (!range || job.cancelled || token !== state.sizeEstimateToken) throw new CancelledError();
+      state.sizeEstimateCache = { signature, range, palette: preparedPalette };
+      setEstimatedSizeText(
+        `预计 ${formatEstimatedSizeRange(range)}`,
+        complete ? '根据全部导出帧计算。' : '根据选区内连续画面采样计算。',
+      );
+    } finally {
+      job.session?.destroy();
+      for (const frame of paletteFrames) {
+        try { frame.close(); } catch (_) { }
+      }
+      closeImageBitmapMap(frames);
+      releaseDetachedClipVideo(clip, job.video);
+      if (state.sizeEstimateJob === job) state.sizeEstimateJob = null;
+    }
   }
 
   function updateEstimatedFileSize({ actualBytes = 0 } = {}) {
@@ -6069,17 +6330,36 @@
       setEstimatedSizeText(`实际 ${formatFileSize(actualBytes)}`);
       return;
     }
-    if (!state.clip || state.mode === 'capture' || state.mode === 'recording') {
+    if (!state.clip || state.mode !== 'edit' || state.busy) {
+      cancelSizeEstimate();
       setEstimatedSizeText('预计 --');
       return;
     }
+    let plan;
     try {
-      const settings = readExportSettings();
-      const bytes = estimateGifBytes(settings);
-      setEstimatedSizeText(`预计 ${formatFileSize(bytes)}`, '根据当前片段复杂度估算。');
+      plan = readExportSettings();
     } catch (_) {
       setEstimatedSizeText('预计 --');
+      return;
     }
+    const signature = makeEstimateSignature(plan);
+    if (state.sizeEstimateCache?.signature === signature) {
+      setEstimatedSizeText(
+        `预计 ${formatEstimatedSizeRange(state.sizeEstimateCache.range)}`,
+        '根据选区内连续画面采样计算。',
+      );
+      return;
+    }
+    cancelSizeEstimate();
+    const token = state.sizeEstimateToken;
+    setEstimatedSizeText('预计计算中…', '正在分析选区画面。', true);
+    state.sizeEstimateTimer = window.setTimeout(() => {
+      state.sizeEstimateTimer = 0;
+      estimateExportSize(plan, signature, token).catch((error) => {
+        if (token !== state.sizeEstimateToken || error instanceof CancelledError) return;
+        setEstimatedSizeText('预计 --', friendlyError(error));
+      });
+    }, 300);
   }
 
   function makeFileName(settings) {
@@ -6110,12 +6390,15 @@
     if (state.mode !== 'edit' || state.busy) return;
     let settings;
     let fileName;
-    let snapshot;
     let encodingSession = null;
+    let exportVideo = null;
+    let exportClip = null;
+    let pendingPaletteFrames = [];
     try {
       settings = readExportSettings();
       fileName = makeFileName(settings);
 
+      cancelSizeEstimate();
       stopTrimPreview();
       pausePreviewFrameCache();
       state.busy = true;
@@ -6123,22 +6406,37 @@
       state.cancelRequested = false;
       updateModeUi();
       setProgress(0);
-      setStatus('正在准备全片色彩……');
+      setStatus('正在准备选区色彩……');
 
-      await completePreviewFrameCacheForExport();
-      if (state.cancelRequested) throw new CancelledError();
-
-      const video = settings.video;
-      snapshot = { currentTime: video.currentTime, paused: video.paused, playbackRate: video.playbackRate };
-      video.pause();
+      const clip = state.clip;
+      exportClip = clip;
+      exportVideo = await createDetachedClipVideo(clip);
+      state.exportVideo = exportVideo;
+      const estimateSignature = makeEstimateSignature(settings);
+      let preparedPalette = state.sizeEstimateCache?.signature === estimateSignature
+        ? state.sizeEstimateCache.palette
+        : null;
+      let paletteFrames = [];
+      if (!preparedPalette) {
+        const paletteTimes = flattenSampleTimes(createEstimateSampleWindows(settings.frameTimes));
+        const paletteBitmaps = await captureImageBitmapsAtTimes(
+          exportVideo,
+          paletteTimes,
+          clip,
+          () => state.cancelRequested,
+        );
+        try {
+          paletteFrames = await Promise.all([...paletteBitmaps.values()].map((frame) => createImageBitmap(frame)));
+        } finally {
+          closeImageBitmapMap(paletteBitmaps);
+        }
+        pendingPaletteFrames = paletteFrames;
+      }
 
       encodingSession = await createGifEncodingSession({
         ...settings,
         onPhase: (phase) => {
-          if (phase === 'palette') {
-            setProgress(calculateExportProgress('palette', 0, 1));
-            setStatus('正在准备全片色彩……');
-          } else if (phase === 'compressing') {
+          if (phase === 'compressing') {
             setProgress(88);
             setStatus('正在压缩体积……');
           }
@@ -6148,16 +6446,25 @@
           setProgress(calculateExportProgress('encoding', completed, total));
           setStatus(`正在并行编码：${completed}/${total}`);
         },
+        onBackpressure: (full) => {
+          if (full) exportVideo.pause();
+        },
+      }, {
+        sampleFrames: paletteFrames,
+        preparedPalette,
       });
+      paletteFrames = [];
+      pendingPaletteFrames = [];
       state.exportEncodingSession = encodingSession;
       if (state.cancelRequested) throw new CancelledError();
 
       const delay = settings.delay;
+      const frameTimes = settings.frameTimes;
 
       const queueExportFrame = async (index) => {
         if (state.cancelRequested) throw new CancelledError();
-        const frame = new VideoFrame(video, {
-          timestamp: Math.max(0, Math.round((Number(video.currentTime) || 0) * 1_000_000)),
+        const frame = new VideoFrame(exportVideo, {
+          timestamp: Math.round(frameTimes[index] * 1_000_000),
         });
         await encodingSession.addFrame(frame, index, delay);
       };
@@ -6167,10 +6474,20 @@
         setStatus(`正在提取画面：${count}/${settings.baseFrames}`);
       };
 
-      if (typeof video.requestVideoFrameCallback === 'function') {
+      const extractRemainingPrecisely = async (startIndex) => {
+        exportVideo.pause();
+        for (let index = startIndex; index < frameTimes.length; index += 1) {
+          if (state.cancelRequested) throw new CancelledError();
+          await seekVideo(exportVideo, frameTimes[index], clip.duration);
+          await queueExportFrame(index);
+          updateExtractionProgress(index + 1);
+        }
+      };
+
+      if (typeof exportVideo.requestVideoFrameCallback === 'function') {
         const extractionPlaybackRate = calculateExtractionPlaybackRate(settings.fps);
         const frameTolerance = 0.5 / settings.fps;
-        await seekVideo(video, settings.start, state.clip.duration);
+        await seekVideo(exportVideo, frameTimes[0], clip.duration);
         if (state.cancelRequested) throw new CancelledError();
 
         let extractedFrames = 0;
@@ -6179,7 +6496,7 @@
         updateExtractionProgress(extractedFrames);
 
         if (extractedFrames < settings.baseFrames) {
-          video.playbackRate = extractionPlaybackRate;
+          exportVideo.playbackRate = extractionPlaybackRate;
           await new Promise((resolve, reject) => {
             let settled = false;
             let callbackId = 0;
@@ -6187,12 +6504,12 @@
 
             const cleanup = () => {
               clearTimeout(timeoutId);
-              if (callbackId && typeof video.cancelVideoFrameCallback === 'function') {
-                try { video.cancelVideoFrameCallback(callbackId); } catch (_) { }
+              if (callbackId && typeof exportVideo.cancelVideoFrameCallback === 'function') {
+                try { exportVideo.cancelVideoFrameCallback(callbackId); } catch (_) { }
               }
-              video.removeEventListener('error', onError);
-              video.removeEventListener('ended', onEnded);
-              try { video.pause(); } catch (_) { }
+              exportVideo.removeEventListener('error', onError);
+              exportVideo.removeEventListener('ended', onEnded);
+              try { exportVideo.pause(); } catch (_) { }
             };
 
             const finish = () => {
@@ -6209,14 +6526,6 @@
               reject(error instanceof Error ? error : new Error(String(error)));
             };
 
-            const fillRemainingWithCurrentFrame = async () => {
-              while (extractedFrames < settings.baseFrames) {
-                await queueExportFrame(extractedFrames);
-                extractedFrames += 1;
-                updateExtractionProgress(extractedFrames);
-              }
-            };
-
             const onError = () => fail(new Error('视频解码失败。'));
             const onEnded = async () => {
               if (state.cancelRequested) {
@@ -6224,7 +6533,9 @@
                 return;
               }
               try {
-                await fillRemainingWithCurrentFrame();
+                clearTimeout(timeoutId);
+                timeoutId = 0;
+                await extractRemainingPrecisely(extractedFrames);
                 finish();
               } catch (error) {
                 fail(error);
@@ -6239,34 +6550,35 @@
               }
 
               const mediaTime = Number(metadata?.mediaTime);
-              const currentTime = Number.isFinite(mediaTime) ? mediaTime : Number(video.currentTime) || 0;
+              const currentTime = Number.isFinite(mediaTime) ? mediaTime : Number(exportVideo.currentTime) || 0;
 
               try {
-                while (extractedFrames < settings.baseFrames) {
-                  const target = calculateExportFrameTime(
-                    settings.start,
-                    settings.end,
-                    extractedFrames,
-                    settings.fps,
-                  );
-                  if (target > currentTime + frameTolerance) break;
-                  await queueExportFrame(extractedFrames);
-                  extractedFrames += 1;
-                  updateExtractionProgress(extractedFrames);
-                }
-
-                if (extractedFrames >= settings.baseFrames) {
+                if (extractedFrames >= frameTimes.length) {
                   finish();
                   return;
                 }
-
-                if (currentTime >= settings.end - 0.001) {
-                  await fillRemainingWithCurrentFrame();
+                const target = frameTimes[extractedFrames];
+                if (requiresPreciseFrameSeek(currentTime, target, settings.end, frameTolerance)) {
+                  clearTimeout(timeoutId);
+                  timeoutId = 0;
+                  await extractRemainingPrecisely(extractedFrames);
                   finish();
                   return;
                 }
+                if (currentTime + frameTolerance < target) {
+                  callbackId = exportVideo.requestVideoFrameCallback(onFrame);
+                  return;
+                }
+                await queueExportFrame(extractedFrames);
+                extractedFrames += 1;
+                updateExtractionProgress(extractedFrames);
+                if (extractedFrames >= frameTimes.length) {
+                  finish();
+                  return;
+                }
+                if (exportVideo.paused) await exportVideo.play();
 
-                callbackId = video.requestVideoFrameCallback(onFrame);
+                callbackId = exportVideo.requestVideoFrameCallback(onFrame);
               } catch (error) {
                 fail(error);
               }
@@ -6278,20 +6590,14 @@
               Math.max(15_000, expectedMs + 12_000),
             );
 
-            video.addEventListener('error', onError, { once: true });
-            video.addEventListener('ended', onEnded, { once: true });
-            callbackId = video.requestVideoFrameCallback(onFrame);
-            video.play().catch((error) => fail(new Error(`无法启动取帧：${error.message || error}`)));
+            exportVideo.addEventListener('error', onError, { once: true });
+            exportVideo.addEventListener('ended', onEnded, { once: true });
+            callbackId = exportVideo.requestVideoFrameCallback(onFrame);
+            exportVideo.play().catch((error) => fail(new Error(`无法启动取帧：${error.message || error}`)));
           });
         }
       } else {
-        for (let index = 0; index < settings.baseFrames; index += 1) {
-          if (state.cancelRequested) throw new CancelledError();
-          const target = calculateExportFrameTime(settings.start, settings.end, index, settings.fps);
-          await seekVideo(video, target, state.clip.duration);
-          await queueExportFrame(index);
-          updateExtractionProgress(index + 1);
-        }
+        await extractRemainingPrecisely(0);
       }
 
       if (state.cancelRequested) throw new CancelledError();
@@ -6300,14 +6606,6 @@
       const blob = await encodingSession.finish();
       if (state.cancelRequested) throw new CancelledError();
 
-      const preCalibrationEstimate = Math.max(1, estimateGifBytes(settings));
-      const previousCalibration = Number(state.sizeEstimateCalibration[settings.quality]) || 1;
-      const correction = clamp(blob.size / preCalibrationEstimate, 0.55, 1.8);
-      state.sizeEstimateCalibration[settings.quality] = clamp(
-        previousCalibration * (0.7 + correction * 0.3),
-        0.5,
-        2.2,
-      );
       updateEstimatedFileSize({ actualBytes: blob.size });
       setProgress(100);
       downloadBlob(blob, fileName);
@@ -6317,21 +6615,20 @@
       setStatus(friendlyError(error), error instanceof CancelledError ? '' : 'error');
     } finally {
       encodingSession?.destroy();
+      for (const frame of pendingPaletteFrames) {
+        try { frame.close(); } catch (_) { }
+      }
       if (state.exportEncodingSession === encodingSession) state.exportEncodingSession = null;
+      if (exportVideo) {
+        releaseDetachedClipVideo(exportClip, exportVideo);
+        if (state.exportVideo === exportVideo) state.exportVideo = null;
+      }
       state.busy = false;
       state.cancelRequested = false;
       state.mode = state.clip ? 'edit' : 'capture';
       updateModeUi();
       if (state.mode === 'edit') updateEditorCropBox();
 
-      if (snapshot && state.clip) {
-        try {
-          el.clipVideo.playbackRate = Number.isFinite(snapshot.playbackRate) ? snapshot.playbackRate : 1;
-          await seekVideo(el.clipVideo, snapshot.currentTime, state.clip.duration);
-          if (snapshot.paused) el.clipVideo.pause();
-          else await el.clipVideo.play();
-        } catch (_) { }
-      }
       if (state.mode === 'edit') void resumePreviewFrameCache();
     }
   }
@@ -6341,6 +6638,7 @@
     state.cancelRequested = true;
     setStatus('正在取消导出…');
     pausePreviewFrameCache();
+    try { state.exportVideo?.pause(); } catch (_) { }
     state.cancelExportPreparation?.();
     state.exportEncodingSession?.cancel(new CancelledError());
   }
@@ -6595,8 +6893,10 @@
     cancelEditorPreviewRender();
     stopTrimPreview();
     releasePreviewFrameCache();
+    cancelSizeEstimate({ clearCache: true });
     cleanupRecordingResources(state.recording);
     state.exportEncodingSession?.destroy();
+    if (state.exportVideo) releaseDetachedClipVideo(state.clip, state.exportVideo);
     state.cancelExportPreparation?.();
     if (state.clip?.attachments) {
       for (const video of [...state.clip.attachments.keys()]) cleanupClipAttachment(state.clip, video);

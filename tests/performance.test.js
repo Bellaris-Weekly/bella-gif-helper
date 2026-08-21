@@ -14,6 +14,7 @@ const {
   calculateExtractionPlaybackRate,
   calculatePreviewCacheProfile,
   orderFrameChunks,
+  requiresPreciseFrameSeek,
   selectEncoderWorker,
 } = require('../bella-gif-helper.user.js');
 
@@ -38,6 +39,13 @@ test('extraction playback rate scales with requested FPS without changing timing
     assert.equal(calculateExportFrameCount(10, fps), 10 * fps);
     assert.equal(calculateExportFrameTime(2, 12, 1, fps), 2 + 1 / fps);
   }
+});
+
+test('continuous extraction falls back for dropped frames and every endpoint crossing', () => {
+  assert.equal(requiresPreciseFrameSeek(2.04, 2, 8, 0.05), false);
+  assert.equal(requiresPreciseFrameSeek(2.051, 2, 8, 0.05), true);
+  assert.equal(requiresPreciseFrameSeek(2.999, 2.95, 3, 0.05), false);
+  assert.equal(requiresPreciseFrameSeek(3, 2.95, 3, 0.05), true);
 });
 
 test('preview cache stays inside the fixed memory budget for landscape and square clips', () => {
@@ -87,10 +95,19 @@ test('parallel frame chunks are assembled in source order with a reserved transp
 });
 
 test('cancellation stops cache analysis and encoder work before restoring the editor', () => {
-  assert.match(userscriptSource, /function cancelExport\(\)[\s\S]*?pausePreviewFrameCache\(\);[\s\S]*?exportEncodingSession\?\.cancel/);
+  assert.match(userscriptSource, /function cancelExport\(\)[\s\S]*?exportVideo\?\.pause\(\);[\s\S]*?exportEncodingSession\?\.cancel/);
   assert.match(userscriptSource, /cache\.stopRun\?\.\(\)/);
-  assert.match(userscriptSource, /await completePreviewFrameCacheForExport\(\)/);
+  assert.match(userscriptSource, /createDetachedClipVideo\(clip\)/);
+  assert.doesNotMatch(userscriptSource, /await completePreviewFrameCacheForExport\(\)/);
   assert.match(userscriptSource, /void resumePreviewFrameCache\(\)/);
+});
+
+test('export owns a detached source and pauses when the encoder queue is full', () => {
+  assert.match(userscriptSource, /onBackpressure: \(full\) =>/);
+  assert.match(userscriptSource, /if \(full\) exportVideo\.pause\(\)/);
+  assert.match(userscriptSource, /await extractRemainingPrecisely\(extractedFrames\)/);
+  assert.doesNotMatch(userscriptSource, /fillRemainingWithCurrentFrame/);
+  assert.doesNotMatch(userscriptSource, /settings\.video/);
 });
 
 test('route and video changes use events instead of a permanent status scan', () => {

@@ -9,6 +9,10 @@ const {
   GIF_QUALITY_PRESETS,
   buildGifsicleCommand,
   calculateCropViewport,
+  calculateEstimatedSizeRange,
+  createEstimateSampleWindows,
+  createExportFrameTimes,
+  inspectGifFrameBytes,
   normalizeGifDelay,
 } = require('../bella-gif-helper.user.js');
 
@@ -16,9 +20,9 @@ const userscriptPath = path.join(__dirname, '..', 'bella-gif-helper.user.js');
 
 test('quality presets only control palette and compression', () => {
   assert.deepEqual(GIF_QUALITY_PRESETS, {
-    nai: { maxColors: 255, dither: 'floyd-steinberg', lossy: 0, estimateFactor: 0.30 },
-    bei: { maxColors: 255, dither: null, lossy: 25, estimateFactor: 0.22 },
-    ran: { maxColors: 192, dither: null, lossy: 50, estimateFactor: 0.16 },
+    nai: { maxColors: 255, dither: 'floyd-steinberg', lossy: 0 },
+    bei: { maxColors: 255, dither: null, lossy: 25 },
+    ran: { maxColors: 192, dither: null, lossy: 50 },
   });
   for (const preset of Object.values(GIF_QUALITY_PRESETS)) {
     assert.equal('fps' in preset, false);
@@ -37,6 +41,46 @@ test('GIF delay follows the user frame rate and speed at GIF precision', () => {
   assert.equal(normalizeGifDelay(12, 1), 80);
   assert.equal(normalizeGifDelay(12, 1.5), 60);
   assert.equal(normalizeGifDelay(8, 0.75), 170);
+});
+
+test('export plans keep every frame inside the selected interval', () => {
+  for (const [start, end, fps] of [[2, 8, 12], [0.5, 3, 8]]) {
+    const times = createExportFrameTimes(start, end, fps);
+    assert.equal(times.length, Math.ceil((end - start) * fps));
+    assert.ok(times.every((time) => time >= start && time < end));
+    assert.ok(times[times.length - 1] < end);
+  }
+});
+
+test('size sampling windows cover short clips and three separated ranges', () => {
+  const short = createEstimateSampleWindows(createExportFrameTimes(0.5, 3, 8));
+  assert.equal(short.length, 1);
+  assert.equal(short[0].length, 20);
+  const long = createEstimateSampleWindows(createExportFrameTimes(2, 12, 12));
+  assert.equal(long.length, 3);
+  assert.ok(long.every((window) => window.length <= 8));
+  assert.ok(long[0][0] < long[1][0] && long[1][0] < long[2][0]);
+});
+
+test('partial size estimates use sampled frame ranges and complete samples stay exact', () => {
+  const exact = calculateEstimatedSizeRange([
+    { totalBytes: 5000, containerBytes: 1000, frameBytes: [2000, 1000, 1000] },
+  ], 3, true);
+  assert.deepEqual(exact, { min: 5000, max: 5000 });
+  const range = calculateEstimatedSizeRange([
+    { totalBytes: 3000, containerBytes: 1000, frameBytes: [1200, 400, 500] },
+    { totalBytes: 3200, containerBytes: 1000, frameBytes: [1300, 500, 600] },
+  ], 10, false);
+  assert.ok(range.min < range.max);
+  assert.ok(range.min >= 1024);
+});
+
+test('GIF byte inspection separates container and frame payload', () => {
+  const gif = Buffer.from('R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==', 'base64');
+  const report = inspectGifFrameBytes(gif);
+  assert.equal(report.totalBytes, gif.length);
+  assert.equal(report.frameBytes.length, 1);
+  assert.equal(report.containerBytes + report.frameBytes[0], gif.length);
 });
 
 test('crop-aware preview fills the viewport and zooms out as the crop expands', () => {
@@ -73,12 +117,12 @@ test('crop-aware preview centers an off-axis crop instead of the whole video', (
 
 test('userscript uses pinned parallel encoder resources and sRGB canvases', () => {
   const source = fs.readFileSync(userscriptPath, 'utf8');
-  assert.match(source, /@version\s+1\.4\.0/);
+  assert.match(source, /@version\s+1\.4\.1/);
   assert.match(source, /modern-palette@2\.0\.0\/dist\/index\.mjs/);
   assert.match(source, /gifenc@1\.0\.3\/dist\/gifenc\.esm\.js/);
   assert.match(source, /gifsicle-wasm-browser@1\.5\.19\/dist\/gifsicle\.min\.js/);
   assert.match(source, /colorSpace: 'srgb'/);
-  assert.match(source, /new VideoFrame\(video/);
+  assert.match(source, /new VideoFrame\(exportVideo/);
   assert.match(source, /source\.displayWidth \|\| source\.width/);
   assert.match(source, /selectEncoderWorker\(workers\.map/);
   assert.match(source, /calculateEncoderWorkerCount\(navigator\.hardwareConcurrency\)/);
@@ -88,5 +132,5 @@ test('userscript uses pinned parallel encoder resources and sRGB canvases', () =
   assert.match(source, /<option value="ran">\u7136<\/option>/);
   assert.doesNotMatch(source, /modern-gif@|gif\.js@|GIF_WORKER/);
   assert.doesNotMatch(source, /setInterval\(updateVideoStatus/);
-  assert.doesNotMatch(source, /estimateGifBytesBySampling|scheduleSampledSizeEstimate/);
+  assert.doesNotMatch(source, /estimateGifBytesBySampling|scheduleSampledSizeEstimate|estimateFactor|completePreviewFrameCacheForExport/);
 });
