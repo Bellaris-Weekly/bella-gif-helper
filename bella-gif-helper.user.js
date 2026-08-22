@@ -37,13 +37,12 @@
   const LIVE_CAPTURE_MODE_KEY = 'biliGifMakerLiveCaptureModeV1';
   const LIVE_FRAME_CHANNEL = 'bella-gif-helper-live-frame-v1';
   const GIF_TRANSPARENT_INDEX = 255;
-  const PREVIEW_CACHE_MEMORY_BUDGET = 32 * 1024 * 1024;
-  const PREVIEW_CACHE_MAX_FRAMES = 121;
-  const PREVIEW_CACHE_FPS = 2;
-  const PREVIEW_CACHE_MAX_EDGE = 260;
-  const PREVIEW_CACHE_MIN_EDGE = 256;
-  const ESTIMATE_WINDOW_FRAMES = 8;
-  const ESTIMATE_WINDOW_COUNT = 3;
+  const TIMELINE_THUMBNAIL_COUNT = 8;
+  const TIMELINE_THUMBNAIL_WIDTH = 160;
+  const TIMELINE_THUMBNAIL_HEIGHT = 90;
+  const PALETTE_SAMPLE_WINDOW_FRAMES = 6;
+  const PALETTE_SAMPLE_WINDOW_COUNT = 3;
+  const PALETTE_SAMPLE_MAX_EDGE = 192;
   const PANEL_MIN_WIDTH = 160;
   const PANEL_MAX_WIDTH = 720;
   const PANEL_MIN_HEIGHT = 360;
@@ -139,8 +138,12 @@
     return Math.max(20, Math.round(((1000 / fps) / speed) / 10) * 10);
   }
 
-  function calculateEncoderWorkerCount(hardwareConcurrency) {
-    return Math.min(4, Math.max(2, Math.floor((Number(hardwareConcurrency) || 4) / 2)));
+  function calculateEncoderWorkerCount(hardwareConcurrency, outputLongestEdge = 720) {
+    const cores = Math.max(1, Math.floor(Number(hardwareConcurrency) || 4));
+    const available = Math.max(2, cores - 2);
+    const edge = Math.max(1, Number(outputLongestEdge) || 720);
+    const sizeLimit = edge <= 480 ? 8 : edge <= 720 ? 6 : 4;
+    return Math.min(sizeLimit, available);
   }
 
   function selectEncoderWorker(inFlightCounts, maxInFlight = 2) {
@@ -239,10 +242,10 @@
     });
   }
 
-  function createEstimateSampleWindows(frameTimes, windowSize = ESTIMATE_WINDOW_FRAMES) {
+  function createPaletteSampleWindows(frameTimes, windowSize = PALETTE_SAMPLE_WINDOW_FRAMES) {
     const times = Array.from(frameTimes || []);
     if (!times.length) return Object.freeze([]);
-    if (times.length <= windowSize * ESTIMATE_WINDOW_COUNT) {
+    if (times.length <= windowSize * PALETTE_SAMPLE_WINDOW_COUNT) {
       return Object.freeze(Array.from(
         { length: Math.ceil(times.length / windowSize) },
         (_, index) => Object.freeze(times.slice(index * windowSize, (index + 1) * windowSize)),
@@ -258,103 +261,10 @@
     return Object.freeze(windows);
   }
 
-  function inspectGifFrameBytes(input) {
-    const bytes = input instanceof Uint8Array ? input : new Uint8Array(input || 0);
-    if (bytes.length < 14 || String.fromCharCode(...bytes.subarray(0, 3)) !== 'GIF') return null;
-    let offset = 13;
-    if (bytes[10] & 0x80) offset += 3 * (1 << ((bytes[10] & 7) + 1));
-    const frameBytes = [];
-    let pendingGraphicControl = -1;
-    const skipSubBlocks = () => {
-      while (offset < bytes.length) {
-        const size = bytes[offset++];
-        if (!size) break;
-        offset += size;
-      }
-    };
-    while (offset < bytes.length) {
-      const blockStart = offset;
-      const marker = bytes[offset++];
-      if (marker === 0x3b) break;
-      if (marker === 0x21) {
-        const label = bytes[offset++];
-        if (label === 0xf9) pendingGraphicControl = blockStart;
-        skipSubBlocks();
-        continue;
-      }
-      if (marker !== 0x2c || offset + 9 > bytes.length) return null;
-      const packed = bytes[offset + 8];
-      offset += 9;
-      if (packed & 0x80) offset += 3 * (1 << ((packed & 7) + 1));
-      offset += 1;
-      skipSubBlocks();
-      const frameStart = pendingGraphicControl >= 0 ? pendingGraphicControl : blockStart;
-      frameBytes.push(offset - frameStart);
-      pendingGraphicControl = -1;
-    }
-    if (!frameBytes.length) return null;
-    const frameTotal = frameBytes.reduce((sum, size) => sum + size, 0);
-    return Object.freeze({
-      totalBytes: bytes.length,
-      containerBytes: Math.max(0, bytes.length - frameTotal),
-      frameBytes: Object.freeze(frameBytes),
-    });
-  }
-
-  function calculateEstimatedGifBytes(report, totalFrames, windowStarts = [0]) {
-    if (!report?.frameBytes?.length || totalFrames < 1) return 0;
-    if (totalFrames <= report.frameBytes.length) return report.totalBytes;
-
-    const boundaries = new Set(Array.from(windowStarts || []).slice(1));
-    const following = report.frameBytes
-      .filter((_, index) => index > 0 && !boundaries.has(index))
-      .sort((a, b) => a - b);
-    if (!following.length) return report.totalBytes;
-
-    const trimCount = following.length >= 5
-      ? Math.max(1, Math.floor(following.length * 0.1))
-      : 0;
-    const representative = trimCount
-      ? following.slice(trimCount, following.length - trimCount)
-      : following;
-    const average = representative.reduce((sum, bytes) => sum + bytes, 0) / representative.length;
-    return Math.round(
-      report.containerBytes
-      + report.frameBytes[0]
-      + average * Math.max(0, totalFrames - 1),
-    );
-  }
-
   function calculateExportProgress(phase, completed = 0, total = 1) {
     const range = EXPORT_PHASE_RANGES[phase] || [0, 100];
     const ratio = Math.min(1, Math.max(0, Number(completed) / Math.max(1, Number(total) || 1)));
     return range[0] + (range[1] - range[0]) * ratio;
-  }
-
-  function calculatePreviewCacheProfile(videoWidth, videoHeight, duration) {
-    const sourceWidth = Math.max(1, Number(videoWidth) || 1);
-    const sourceHeight = Math.max(1, Number(videoHeight) || 1);
-    const seconds = Math.max(0.1, Number(duration) || 0.1);
-    const frameCount = Math.min(PREVIEW_CACHE_MAX_FRAMES, Math.max(2, Math.ceil(seconds * PREVIEW_CACHE_FPS) + 1));
-    const aspect = sourceWidth / sourceHeight;
-    const maxPixelsPerFrame = Math.floor(PREVIEW_CACHE_MEMORY_BUDGET / frameCount / 4);
-    const budgetWidth = aspect >= 1
-      ? Math.sqrt(maxPixelsPerFrame * aspect)
-      : Math.sqrt(maxPixelsPerFrame / aspect);
-    const longestEdge = Math.max(
-      PREVIEW_CACHE_MIN_EDGE,
-      Math.min(PREVIEW_CACHE_MAX_EDGE, Math.floor(budgetWidth)),
-    );
-    const scale = Math.min(1, longestEdge / Math.max(sourceWidth, sourceHeight));
-    const width = Math.max(2, Math.round(sourceWidth * scale));
-    const height = Math.max(2, Math.round(sourceHeight * scale));
-    return {
-      fps: PREVIEW_CACHE_FPS,
-      width,
-      height,
-      frameCount,
-      bytes: width * height * 4 * frameCount,
-    };
   }
 
   function orderFrameChunks(chunks) {
@@ -454,12 +364,6 @@
     }
 
     return { left, top, width: right - left, height: bottom - top };
-  }
-
-  function mergeEditorBackgroundIntent(current = null, next = null) {
-    return {
-      resumeCache: Boolean(current?.resumeCache || next?.resumeCache),
-    };
   }
 
   function sanitizeFileNamePart(value, fallback = '') {
@@ -937,6 +841,7 @@
       this.init = null;
       this.initSignature = '';
       this.segments = [];
+      this.totalBytes = 0;
       this.pendingBytes = new Uint8Array(0);
       this.timestampOffset = null;
       this.generation = 0;
@@ -949,6 +854,7 @@
 
     clearMedia() {
       this.segments = [];
+      this.totalBytes = 0;
       this.pendingBytes = new Uint8Array(0);
       this.timestampOffset = null;
       this.generation += 1;
@@ -1042,15 +948,19 @@
         const tolerance = Math.max(3, duration * 4);
         if (segment.start < previous.end - 0.25 || segment.start > previous.end + tolerance) this.clearMedia();
       }
-      this.segments.push({
+      const stored = {
         ...segment,
         receivedAtMs: Number.isFinite(segment.receivedAtMs) ? segment.receivedAtMs : this.now(),
         data: segment.data ? new Uint8Array(segment.data) : new Uint8Array([0]),
         keyframes: [...(segment.keyframes || [])].filter(Number.isFinite).sort((a, b) => a - b),
-      });
+      };
+      this.segments.push(stored);
+      this.totalBytes += stored.data.byteLength;
       const latestEnd = this.segments[this.segments.length - 1].end;
       const cutoff = latestEnd - this.maxBufferSeconds;
-      while (this.segments.length > 1 && this.segments[0].end <= cutoff) this.segments.shift();
+      while (this.segments.length > 1 && this.segments[0].end <= cutoff) {
+        this.totalBytes -= this.segments.shift().data.byteLength;
+      }
     }
 
     snapshot() {
@@ -1098,7 +1008,7 @@
       return {
         state: this.init && first ? 'buffering' : 'warming',
         duration: first && last ? Math.max(0, last.end - first.start) : 0,
-        bytes: this.segments.reduce((sum, segment) => sum + segment.data.byteLength, 0),
+        bytes: this.totalBytes,
       };
     }
   }
@@ -1266,6 +1176,48 @@
     };
   }
 
+  function startVideoFramePump(video, fps, onFrame, onError) {
+    const frameInterval = 1000 / Math.max(1, Number(fps) || 1);
+    const useVideoFrames = typeof video?.requestVideoFrameCallback === 'function';
+    let callbackId = 0;
+    let lastFrameAt = -Infinity;
+    let stopped = false;
+
+    const stop = () => {
+      if (stopped) return;
+      stopped = true;
+      if (!callbackId) return;
+      try {
+        if (useVideoFrames) video.cancelVideoFrameCallback?.(callbackId);
+        else cancelAnimationFrame(callbackId);
+      } catch (_) { }
+      callbackId = 0;
+    };
+    const schedule = () => {
+      if (stopped) return;
+      callbackId = useVideoFrames
+        ? video.requestVideoFrameCallback(tick)
+        : requestAnimationFrame(tick);
+    };
+    const tick = (now) => {
+      if (stopped) return;
+      if (now - lastFrameAt >= frameInterval - 1) {
+        try {
+          onFrame();
+          lastFrameAt = now;
+        } catch (error) {
+          stop();
+          onError?.(error);
+          return;
+        }
+      }
+      schedule();
+    };
+
+    schedule();
+    return stop;
+  }
+
   function installLiveFrameAgent(collector) {
     if (!collector || window.top === window) return null;
     const expectedOrigin = location.origin;
@@ -1306,16 +1258,16 @@
 
     const cleanupRecording = (session) => {
       if (!session) return;
-      if (session.rafId) cancelAnimationFrame(session.rafId);
+      session.stopFramePump?.();
       if (session.maxTimerId) clearTimeout(session.maxTimerId);
       try { session.stream?.getTracks().forEach((track) => track.stop()); } catch (_) { }
     };
 
     const stopRecordingLoop = (session) => {
       if (!session) return;
-      if (session.rafId) cancelAnimationFrame(session.rafId);
+      session.stopFramePump?.();
       if (session.maxTimerId) clearTimeout(session.maxTimerId);
-      session.rafId = 0;
+      session.stopFramePump = null;
       session.maxTimerId = 0;
     };
 
@@ -1427,8 +1379,7 @@
         captureHeight,
         liveWallClockStartMs: Date.now(),
         startedAt: performance.now(),
-        lastDrawAt: 0,
-        rafId: 0,
+        stopFramePump: null,
         maxTimerId: 0,
         stopping: false,
         completed: false,
@@ -1445,26 +1396,15 @@
       });
       recorder.addEventListener('stop', () => { void completeRecording(session); }, { once: true });
 
-      const drawLoop = (now) => {
-        if (recording !== session || session.stopping) return;
-        if (now - session.lastDrawAt >= (1000 / fps) - 1) {
-          try {
-            draw();
-            session.lastDrawAt = now;
-          } catch (error) {
-            session.error = error;
-            stopFrameRecording('error');
-            return;
-          }
-        }
-        session.rafId = requestAnimationFrame(drawLoop);
-      };
       try {
         video.pause();
         video.playbackRate = 1;
         draw();
         recorder.start(250);
-        session.rafId = requestAnimationFrame(drawLoop);
+        session.stopFramePump = startVideoFramePump(video, fps, draw, (error) => {
+          session.error = error;
+          stopFrameRecording('error');
+        });
         session.maxTimerId = setTimeout(
           () => stopFrameRecording('limit'),
           Math.max(1, Number(data.maxSeconds) || 60) * 1000,
@@ -1775,11 +1715,8 @@
     calculateTimelinePlaybackTarget,
     createTimelineSeekGate,
     createExportPlan,
-    createEstimateSampleWindows,
-    inspectGifFrameBytes,
-    calculateEstimatedGifBytes,
+    createPaletteSampleWindows,
     calculateExportProgress,
-    calculatePreviewCacheProfile,
     orderFrameChunks,
     GIF_TRANSPARENT_INDEX,
     calculateCropViewport,
@@ -1789,7 +1726,6 @@
     calculatePanelResize,
     calculateLiveFirstFrameTime,
     formatGifFileName,
-    mergeEditorBackgroundIntent,
     sanitizeFileNamePart,
     DEFAULT_SHORTCUT,
     normalizeShortcut,
@@ -1920,10 +1856,11 @@
     timelinePreviewTarget: null,
     timelinePreviewType: null,
     timelineSeekGate: createTimelineSeekGate(),
-    previewFrameCacheToken: 0,
+    timelineThumbnailToken: 0,
+    timelineThumbnailJob: null,
+    timelineThumbnails: null,
     timelineSettleToken: 0,
     timelineResumePlayback: false,
-    previewFrameCache: null,
     recording: null,
     clip: null,
     editorCrop: { x: 0, y: 0, w: 1, h: 1 },
@@ -1949,10 +1886,6 @@
     textLayerDrag: null,
     nextTextLayerId: 1,
     toastTimer: 0,
-    sizeEstimateTimer: 0,
-    sizeEstimateJob: null,
-    sizeEstimateCache: null,
-    clipRevision: 0,
     encodingResourceTexts: null,
     previewSnapshot: null,
       liveCaptureMode: initialLiveCaptureMode,
@@ -2477,7 +2410,10 @@
         width: 100%;
         height: 100%;
         border-right: 1px solid rgba(255,255,255,.08);
+        opacity: .22;
+        transition: opacity 160ms ease;
       }
+      #timelineFilmstrip canvas.ready { opacity: 1; }
       #timelineFilmstrip canvas:last-child { border-right: 0; }
       #timelineRail {
         position: absolute;
@@ -4003,11 +3939,7 @@
 
   function suspendEditorBackgroundWork() {
     cancelEditorBackgroundResume();
-    const cache = state.previewFrameCache;
-    state.editorBackgroundIntent = mergeEditorBackgroundIntent(state.editorBackgroundIntent, {
-      resumeCache: Boolean(cache && !cache.cancelled && cache.status !== 'ready'),
-    });
-    pausePreviewFrameCache();
+    state.editorBackgroundIntent = true;
     cancelEditorPreviewRender();
     setOutputPreviewVisible(false);
   }
@@ -4018,7 +3950,6 @@
     state.editorBackgroundIntent = null;
     if (!intent || !state.clip || state.mode !== 'edit') return;
     scheduleEditorPreviewRender();
-    if (intent.resumeCache) void resumePreviewFrameCache();
   }
 
   function scheduleEditorBackgroundResume() {
@@ -4329,49 +4260,68 @@
     if (!el.panel.classList.contains('hidden')) fitEditorLayout();
   }
 
-  function releasePreviewFrameCache() {
-    state.previewFrameCacheToken += 1;
-    const cache = state.previewFrameCache;
-    if (el.timelineFilmstrip) el.timelineFilmstrip.replaceChildren();
-    if (!cache) return;
-    cache.cancelled = true;
-    cache.runToken += 1;
-    cache.stopRun?.();
-    cache.stopRun = null;
-    try { cache.video?.pause(); } catch (_) { }
-    cache.frames?.forEach((frame) => {
-      try { frame.close(); } catch (_) { }
-    });
-    releaseDetachedClipVideo(cache.clip, cache.video);
-    state.previewFrameCache = null;
+  function releaseTimelineThumbnails() {
+    state.timelineThumbnailToken += 1;
+    state.timelineThumbnailJob?.controller.abort();
+    state.timelineThumbnailJob = null;
+    state.timelineThumbnails = null;
+    if (!el.timelineFilmstrip) return;
+    el.timelineFilmstrip.removeAttribute('aria-busy');
+    el.timelineFilmstrip.replaceChildren();
   }
 
-  function renderTimelineFilmstrip(cache = state.previewFrameCache) {
-    if (!el.timelineFilmstrip) return;
-    el.timelineFilmstrip.replaceChildren();
-    const availableFrames = cache?.frames?.filter(Boolean) || [];
-    if (!cache || !availableFrames.length) return;
-
-    const cellCount = Math.min(8, availableFrames.length);
+  function createTimelineThumbnailCanvases() {
     const fragment = document.createDocumentFragment();
-    for (let index = 0; index < cellCount; index += 1) {
-      const frameIndex = cellCount === 1
-        ? 0
-        : Math.round((index / (cellCount - 1)) * (availableFrames.length - 1));
-      const frame = availableFrames[frameIndex];
+    const canvases = Array.from({ length: TIMELINE_THUMBNAIL_COUNT }, () => {
       const canvas = document.createElement('canvas');
-      canvas.width = 80;
-      canvas.height = 44;
-      const ctx = canvas.getContext('2d', { alpha: false, colorSpace: 'srgb' });
-      if (ctx) {
-        const scale = Math.max(canvas.width / cache.width, canvas.height / cache.height);
-        const width = cache.width * scale;
-        const height = cache.height * scale;
-        ctx.drawImage(frame, (canvas.width - width) / 2, (canvas.height - height) / 2, width, height);
-      }
+      canvas.width = TIMELINE_THUMBNAIL_WIDTH;
+      canvas.height = TIMELINE_THUMBNAIL_HEIGHT;
       fragment.appendChild(canvas);
-    }
+      return canvas;
+    });
     el.timelineFilmstrip.appendChild(fragment);
+    return canvases;
+  }
+
+  function drawTimelineThumbnail(video, canvas) {
+    const ctx = canvas.getContext('2d', { alpha: false, colorSpace: 'srgb', willReadFrequently: true });
+    if (!ctx) return null;
+    const scale = Math.max(canvas.width / video.videoWidth, canvas.height / video.videoHeight);
+    const width = video.videoWidth * scale;
+    const height = video.videoHeight * scale;
+    ctx.drawImage(video, (canvas.width - width) / 2, (canvas.height - height) / 2, width, height);
+    canvas.classList.add('ready');
+    return ctx.getImageData(0, 0, canvas.width, canvas.height);
+  }
+
+  function calculateTimelineThumbnailAnalysis(images) {
+    const colorBuckets = new Set();
+    let previousLuma = null;
+    let motionTotal = 0;
+    let motionSamples = 0;
+    for (const image of images) {
+      const pixels = image.data;
+      const luma = new Uint8Array(Math.ceil(pixels.length / 16));
+      let sampleIndex = 0;
+      for (let offset = 0; offset < pixels.length; offset += 16) {
+        const red = pixels[offset];
+        const green = pixels[offset + 1];
+        const blue = pixels[offset + 2];
+        colorBuckets.add(((red >> 4) << 8) | ((green >> 4) << 4) | (blue >> 4));
+        const value = Math.round(red * 0.299 + green * 0.587 + blue * 0.114);
+        luma[sampleIndex] = value;
+        if (previousLuma) {
+          motionTotal += Math.abs(value - previousLuma[sampleIndex]);
+          motionSamples += 1;
+        }
+        sampleIndex += 1;
+      }
+      previousLuma = luma;
+    }
+    return Object.freeze({
+      colorComplexity: clamp(colorBuckets.size / 1200, 0.08, 1),
+      motionComplexity: clamp(motionTotal / Math.max(1, motionSamples) / 96, 0.04, 1),
+    });
   }
 
   function cleanupClipAttachment(clip, video) {
@@ -4603,8 +4553,18 @@
     }
   }
 
-  async function captureSampleFrames(video, windows, clip, { fps = 12, signal = null } = {}) {
+  async function capturePaletteFrames(video, windows, clip, settings, { fps = 12, signal = null } = {}) {
     const samples = [];
+    const sourceWidth = Math.max(2, video.videoWidth || clip.width);
+    const sourceHeight = Math.max(2, video.videoHeight || clip.height);
+    const crop = settings.crop;
+    const sx = Math.round(clamp(crop.x, 0, 1) * sourceWidth);
+    const sy = Math.round(clamp(crop.y, 0, 1) * sourceHeight);
+    const sw = Math.max(2, Math.min(sourceWidth - sx, Math.round(crop.w * sourceWidth)));
+    const sh = Math.max(2, Math.min(sourceHeight - sy, Math.round(crop.h * sourceHeight)));
+    const scale = Math.min(1, PALETTE_SAMPLE_MAX_EDGE / Math.max(sw, sh));
+    const resizeWidth = Math.max(2, Math.round(sw * scale));
+    const resizeHeight = Math.max(2, Math.round(sh * scale));
     try {
       for (let windowIndex = 0; windowIndex < windows.length; windowIndex += 1) {
         await extractFramesContinuously(video, windows[windowIndex], clip, {
@@ -4612,7 +4572,11 @@
           signal,
           onFrame: async (indexInWindow, time) => {
             samples.push({
-              bitmap: await createImageBitmap(video),
+              bitmap: await createImageBitmap(video, sx, sy, sw, sh, {
+                resizeWidth,
+                resizeHeight,
+                resizeQuality: 'high',
+              }),
               flatIndex: samples.length,
               indexInWindow,
               time,
@@ -4628,142 +4592,44 @@
     }
   }
 
-  function choosePreviewCacheProfile(clip) {
-    return calculatePreviewCacheProfile(clip.width, clip.height, clip.duration);
-  }
-
-  function pausePreviewFrameCache() {
-    const cache = state.previewFrameCache;
-    if (!cache || cache.cancelled) return;
-    cache.runToken += 1;
-    cache.running = false;
-    cache.stopRun?.();
-    cache.stopRun = null;
-    try { cache.video.pause(); } catch (_) { }
-  }
-
-  async function resumePreviewFrameCache(cache = state.previewFrameCache) {
-    if (!cache || cache.cancelled || cache.status === 'ready' || cache.running
-      || state.mode === 'exporting') return;
-    const video = cache.video;
-    const token = ++cache.runToken;
-    cache.running = true;
-    const canvas = document.createElement('canvas');
-    canvas.width = cache.width;
-    canvas.height = cache.height;
-    const ctx = canvas.getContext('2d', { alpha: false, colorSpace: 'srgb' });
-    if (!ctx) {
-      cache.running = false;
-      return;
-    }
-
-    try {
-      await seekVideo(video, cache.resumeTime, cache.clip.duration);
-      if (cache.cancelled || state.previewFrameCache !== cache || token !== cache.runToken) return;
-      video.playbackRate = 12;
-      await new Promise((resolve, reject) => {
-        let settled = false;
-        let callbackId = 0;
-        let timerId = 0;
-        const stop = () => finish();
-        const finish = (error = null) => {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timerId);
-          if (callbackId && typeof video.cancelVideoFrameCallback === 'function') {
-            try { video.cancelVideoFrameCallback(callbackId); } catch (_) { }
-          }
-          video.removeEventListener('ended', onEnded);
-          if (cache.stopRun === stop) cache.stopRun = null;
-          error ? reject(error) : resolve();
-        };
-        const capture = async (now, metadata = {}) => {
-          if (settled || cache.cancelled || token !== cache.runToken) {
-            return finish();
-          }
-          const currentTime = Number(metadata.mediaTime) || Number(video.currentTime) || 0;
-          const bucket = clamp(
-            Math.round((currentTime / Math.max(0.001, cache.clip.duration)) * (cache.frameCount - 1)),
-            0,
-            cache.frameCount - 1,
-          );
-          if (!cache.frames[bucket]) {
-            ctx.drawImage(video, 0, 0, cache.width, cache.height);
-            const frame = await createImageBitmap(canvas);
-            if (cache.cancelled || state.previewFrameCache !== cache || token !== cache.runToken) {
-              try { frame.close(); } catch (_) { }
-              return finish();
-            }
-            cache.frames[bucket] = frame;
-            cache.captured += 1;
-            if (cache.captured === 1 || cache.captured % 12 === 0) renderTimelineFilmstrip(cache);
-          }
-          cache.resumeTime = Math.max(cache.resumeTime, currentTime);
-          cache.progress = clamp(currentTime / Math.max(0.001, cache.clip.duration), 0, 1);
-          if (currentTime >= cache.clip.duration - 0.01 || video.ended) return finish();
-          callbackId = video.requestVideoFrameCallback(capture);
-        };
-        const onEnded = () => finish();
-        cache.stopRun = stop;
-        video.addEventListener('ended', onEnded, { once: true });
-        if (typeof video.requestVideoFrameCallback === 'function') {
-          callbackId = video.requestVideoFrameCallback(capture);
-        } else {
-          const tick = () => {
-            if (settled) return;
-            capture(performance.now()).catch(finish);
-            if (!settled) timerId = window.setTimeout(tick, 16);
-          };
-          tick();
-        }
-        video.play().catch(finish);
-      });
-      if (!cache.cancelled && state.previewFrameCache === cache && token === cache.runToken
-        && cache.resumeTime >= cache.clip.duration - 0.05) {
-        cache.status = 'ready';
-        renderTimelineFilmstrip(cache);
-      }
-    } catch (_) {
-      // Timeline interaction may preempt the background scan; the next idle window resumes it.
-    } finally {
-      if (token === cache.runToken) {
-        cache.running = false;
-        try { video.pause(); } catch (_) { }
-      }
-    }
-  }
-
-  async function buildPreviewFrameCache(clip) {
+  async function buildTimelineThumbnails(clip) {
     if (!clip) return;
-    releasePreviewFrameCache();
-    const buildToken = state.previewFrameCacheToken;
-    let video;
+    releaseTimelineThumbnails();
+    const token = state.timelineThumbnailToken;
+    const controller = new AbortController();
+    const canvases = createTimelineThumbnailCanvases();
+    const job = { controller };
+    state.timelineThumbnailJob = job;
+    el.timelineFilmstrip?.setAttribute('aria-busy', 'true');
+    let video = null;
     try {
       video = await createDetachedClipVideo(clip);
-    } catch (_) {
-      return;
+      const images = [];
+      for (let index = 0; index < canvases.length; index += 1) {
+        if (controller.signal.aborted || state.clip !== clip || token !== state.timelineThumbnailToken) {
+          throw new CancelledError();
+        }
+        const time = clip.duration * index / Math.max(1, canvases.length - 1);
+        await seekVideo(video, Math.min(time, Math.max(0, clip.duration - 0.001)), clip.duration, controller.signal);
+        const image = drawTimelineThumbnail(video, canvases[index]);
+        if (image) images.push(image);
+      }
+      if (controller.signal.aborted || state.timelineThumbnailJob !== job) throw new CancelledError();
+      state.timelineThumbnails = Object.freeze({
+        canvases: Object.freeze(canvases),
+        analysis: calculateTimelineThumbnailAnalysis(images),
+        ready: true,
+      });
+      updateEstimatedFileSize();
+    } catch (error) {
+      if (!(error instanceof CancelledError)) el.timelineFilmstrip?.removeAttribute('aria-busy');
+    } finally {
+      if (video) releaseDetachedClipVideo(clip, video);
+      if (state.timelineThumbnailJob === job) {
+        state.timelineThumbnailJob = null;
+        el.timelineFilmstrip?.removeAttribute('aria-busy');
+      }
     }
-    if (state.clip !== clip || buildToken !== state.previewFrameCacheToken) {
-      releaseDetachedClipVideo(clip, video);
-      return;
-    }
-    const profile = choosePreviewCacheProfile(clip);
-    const cache = {
-      status: 'building',
-      cancelled: false,
-      running: false,
-      runToken: 0,
-      resumeTime: 0,
-      progress: 0,
-      captured: 0,
-      stopRun: null,
-      clip,
-      ...profile,
-      frames: new Array(profile.frameCount),
-      video,
-    };
-    state.previewFrameCache = cache;
-    void resumePreviewFrameCache(cache);
   }
 
   function openPanel() {
@@ -4865,7 +4731,6 @@
   }
 
   function disposeClip() {
-    cancelSizeEstimate({ clearCache: true });
     if (state.exportVideo) {
       releaseDetachedClipVideo(state.clip, state.exportVideo);
       state.exportVideo = null;
@@ -4874,7 +4739,7 @@
     clearEditorViewportAnimation();
     cancelEditorPreviewRender();
     stopTrimPreview();
-    releasePreviewFrameCache();
+    releaseTimelineThumbnails();
     const clip = state.clip;
     if (clip?.attachments) {
       for (const video of [...clip.attachments.keys()]) cleanupClipAttachment(clip, video);
@@ -5231,9 +5096,17 @@
     }
   }
 
+  function updateRecordingUi(recording) {
+    const timeText = formatRecordTime((performance.now() - recording.startedAt) / 1000);
+    el.recordTimer.textContent = timeText;
+    el.selectionTimer.textContent = timeText;
+    const mapping = getMediaMapping(recording.video);
+    if (mapping) positionSelectionToolbar(selectionToScreenRect(recording.selection, mapping));
+  }
+
   function cleanupRecordingResources(recording) {
     if (!recording) return;
-    if (recording.rafId) cancelAnimationFrame(recording.rafId);
+    recording.stopFramePump?.();
     if (recording.timerId) clearInterval(recording.timerId);
     if (recording.maxTimerId) clearTimeout(recording.maxTimerId);
     try { recording.stream?.getTracks().forEach((track) => track.stop()); } catch (_) { }
@@ -5292,14 +5165,7 @@
       el.panel.classList.add('hidden');
       updateModeUi();
       setStatus('');
-      recording.timerId = setInterval(() => {
-        const seconds = (performance.now() - recording.startedAt) / 1000;
-        const timeText = formatRecordTime(seconds);
-        el.recordTimer.textContent = timeText;
-        el.selectionTimer.textContent = timeText;
-        const liveMapping = getMediaMapping(recording.video);
-        if (liveMapping) positionSelectionToolbar(selectionToScreenRect(recording.selection, liveMapping));
-      }, 80);
+      recording.timerId = setInterval(() => updateRecordingUi(recording), 200);
       recording.maxTimerId = setTimeout(() => stopRecording('limit'), MAX_RECORD_SECONDS * 1000);
     } catch (error) {
       state.busy = false;
@@ -5392,8 +5258,7 @@
         liveWallClockStartMs,
         liveIdentity: IS_LIVE_PAGE ? getLiveRoomIdentity() : null,
         startedAt: performance.now(),
-        lastDrawAt: 0,
-        rafId: 0,
+        stopFramePump: null,
         timerId: 0,
         maxTimerId: 0,
         stopping: false,
@@ -5415,31 +5280,15 @@
       });
       recorder.addEventListener('stop', () => finalizeRecording(recording), { once: true });
 
-      const drawLoop = (now) => {
-        if (state.recording !== recording || recording.stopping) return;
-        if (now - recording.lastDrawAt >= (1000 / RECORD_FPS) - 1) {
-          try {
-            drawSelectedVideoFrame(video, recording.selection, ctx, captureWidth, captureHeight);
-            recording.lastDrawAt = now;
-          } catch (error) {
-            recording.error = error;
-            stopRecording('error');
-            return;
-          }
-        }
-        recording.rafId = requestAnimationFrame(drawLoop);
-      };
-
       recorder.start(250);
-      recording.rafId = requestAnimationFrame(drawLoop);
-      recording.timerId = setInterval(() => {
-        const seconds = (performance.now() - recording.startedAt) / 1000;
-        const timeText = formatRecordTime(seconds);
-        el.recordTimer.textContent = timeText;
-        el.selectionTimer.textContent = timeText;
-        const liveMapping = getMediaMapping(recording.video);
-        if (liveMapping) positionSelectionToolbar(selectionToScreenRect(recording.selection, liveMapping));
-      }, 80);
+      recording.stopFramePump = startVideoFramePump(video, RECORD_FPS, () => {
+        if (state.recording !== recording || recording.stopping) return;
+        drawSelectedVideoFrame(video, recording.selection, ctx, captureWidth, captureHeight);
+      }, (error) => {
+        recording.error = error;
+        stopRecording('error');
+      });
+      recording.timerId = setInterval(() => updateRecordingUi(recording), 200);
       recording.maxTimerId = setTimeout(() => stopRecording('limit'), MAX_RECORD_SECONDS * 1000);
 
       try {
@@ -5472,7 +5321,7 @@
       return;
     }
     try { recording.video.pause(); } catch (_) { }
-    if (recording.rafId) cancelAnimationFrame(recording.rafId);
+    recording.stopFramePump?.();
     if (recording.timerId) clearInterval(recording.timerId);
     if (recording.maxTimerId) clearTimeout(recording.maxTimerId);
     updateModeUi();
@@ -5556,7 +5405,6 @@
 
   async function loadRecordedClip(blob, metadata) {
     disposeClip();
-    state.clipRevision += 1;
     const url = URL.createObjectURL(blob);
     state.clip = { ...metadata, kind: 'blob', blob, url, duration: metadata.measuredDuration };
     await Promise.all([
@@ -5573,7 +5421,6 @@
 
   async function loadLiveRewindClip(snapshot, metadata) {
     disposeClip();
-    state.clipRevision += 1;
     state.clip = {
       ...metadata,
       kind: 'media-source',
@@ -5662,7 +5509,7 @@
     fitEditorLayout();
     updateResolutionOptions();
     updateEstimatedFileSize();
-    void buildPreviewFrameCache(state.clip);
+    void buildTimelineThumbnails(state.clip);
   }
 
   function getEditorMapping() {
@@ -5947,7 +5794,6 @@
       }
       if (!request.isCurrent() || token !== state.timelineSettleToken || state.timelineDrag) return;
       renderExportPreviewFrame();
-      void resumePreviewFrameCache();
     };
     settle().catch(() => { });
   }
@@ -5977,7 +5823,6 @@
     stopTrimPreview();
     cancelTimelinePreview();
     try { el.scrubVideo.pause(); } catch (_) { }
-    pausePreviewFrameCache();
     state.timelineSettleToken += 1;
     const handleType = event.target?.dataset?.timelineHandle;
     state.timelineDrag = {
@@ -6014,7 +5859,6 @@
       );
     } else {
       hideTimelineHandlePreview();
-      void resumePreviewFrameCache();
     }
     updateTrimUi();
     updateEstimatedFileSize();
@@ -6051,12 +5895,11 @@
 
     let stopped = false;
     let jumping = false;
-    let lastDrawAt = 0;
-    let animationFrame = 0;
+    let stopFramePump = null;
     const stop = () => {
       if (stopped) return;
       stopped = true;
-      if (animationFrame) cancelAnimationFrame(animationFrame);
+      stopFramePump?.();
       el.clipVideo.removeEventListener('timeupdate', check);
       state.trimPreviewCleanup = null;
       el.previewTrimBtn.textContent = '▶ 播放';
@@ -6097,18 +5940,18 @@
       };
       el.previewTrimBtn.textContent = '⏸ 暂停';
       el.clipVideo.playbackRate = Math.max(0.1, Number(el.speedSelect.value) || 1);
-      const tick = (now) => {
+      const drawPreview = () => {
         if (stopped) return;
-        const fps = Math.max(1, Number(el.fpsSelect.value) || 12);
-        if (!lastDrawAt || now - lastDrawAt >= 1000 / fps) {
-          renderExportPreviewFrame();
-          lastDrawAt = now;
-        }
+        renderExportPreviewFrame();
         updateTimelinePlayhead();
-        if (!stopped) animationFrame = requestAnimationFrame(tick);
       };
       renderExportPreviewFrame();
-      animationFrame = requestAnimationFrame(tick);
+      stopFramePump = startVideoFramePump(
+        el.clipVideo,
+        Math.max(1, Number(el.fpsSelect.value) || 12),
+        drawPreview,
+        (error) => setStatus(friendlyError(error), 'error'),
+      );
       await el.clipVideo.play();
       if (previewToken !== state.trimPreviewToken) {
         el.clipVideo.pause();
@@ -6589,7 +6432,7 @@
   function updatePreviewCanvasLayout(settings = null) {
     if (!state.clip || !el.previewCanvas || !el.editorPreviewWrap) return null;
     const nextSettings = settings || (() => {
-      try { return readExportSettings(); } catch (_) { return null; }
+      try { return readOutputFrameSettings(); } catch (_) { return null; }
     })();
     if (!nextSettings) return null;
     if (state.editorCropSession || state.editorViewportAnimation || state.editorBackgroundIntent) return null;
@@ -6993,11 +6836,12 @@
     const selected = Array.from(frames || []);
     if (!selected.length) throw new Error('没有可用于调色板的选区画面。');
     const longest = Math.max(settings.outputWidth, settings.outputHeight);
-    const sampleScale = Math.min(1, PREVIEW_CACHE_MAX_EDGE / longest);
+    const sampleScale = Math.min(1, PALETTE_SAMPLE_MAX_EDGE / longest);
     const paletteSettings = makeWorkerFrameSettings(settings, {
       outputWidth: Math.max(2, Math.round(settings.outputWidth * sampleScale)),
       outputHeight: Math.max(2, Math.round(settings.outputHeight * sampleScale)),
       outputRadius: Math.max(0, Math.round(settings.outputRadius * sampleScale)),
+      crop: { x: 0, y: 0, w: 1, h: 1 },
     });
     const { workerUrl } = moduleUrls;
     const worker = new Worker(workerUrl, { type: 'module', name: 'bella-gif-palette' });
@@ -7044,7 +6888,10 @@
       throw error;
     }
     const { gifencUrl, gifsicleUrl, workerUrl } = moduleUrls;
-    const workerCount = calculateEncoderWorkerCount(navigator.hardwareConcurrency);
+    const workerCount = calculateEncoderWorkerCount(
+      navigator.hardwareConcurrency,
+      settings.outputLongestEdge,
+    );
     const workers = [];
     const activeTasks = new Map();
     const activePromises = new Set();
@@ -7177,7 +7024,7 @@
         let posted = false;
         try {
           while (!settled) {
-            const workerIndex = selectEncoderWorker(workers.map((item) => item.inFlight));
+            const workerIndex = selectEncoderWorker(workers.map((item) => item.inFlight), 1);
             if (workerIndex >= 0) {
               if (backpressured) settings.onBackpressure?.(false);
               backpressured = false;
@@ -7293,19 +7140,8 @@
     }
   }
 
-  function readExportSettings() {
+  function readOutputFrameSettings() {
     if (!state.clip) throw new Error('没有可导出的片段。');
-    const start = state.trimStart;
-    const end = state.trimEnd;
-    if (end <= start) throw new Error('结束时间必须晚于开始时间。');
-    if (end - start < 0.15) throw new Error('片段太短，至少需要 0.15 秒。');
-
-    const fps = Number(el.fpsSelect.value);
-    const speed = Number(el.speedSelect.value);
-    const quality = Object.hasOwn(GIF_QUALITY_PRESETS, el.qualitySelect.value)
-      ? el.qualitySelect.value
-      : 'bei';
-    const qualityPreset = GIF_QUALITY_PRESETS[quality];
     const cornerRadiusRatio = getCornerRadiusRatio();
     const crop = state.editorCrop;
     const sourceWidth = Math.max(2, crop.w * state.clip.width);
@@ -7323,13 +7159,7 @@
 
     const outputRadius = getCornerRadiusPixels(outputWidth, outputHeight, cornerRadiusRatio);
 
-    const plan = createExportPlan({
-      start,
-      end,
-      fps,
-      speed,
-      quality,
-      qualityPreset,
+    return Object.freeze({
       cornerRadiusRatio,
       outputRadius,
       transparentCorners: outputRadius > 0,
@@ -7341,25 +7171,32 @@
         .filter((layer) => String(layer.text || '').trim())
         .map((layer) => ({ ...layer })),
     });
+  }
+
+  function readExportSettings() {
+    const output = readOutputFrameSettings();
+    const start = state.trimStart;
+    const end = state.trimEnd;
+    if (end <= start) throw new Error('结束时间必须晚于开始时间。');
+    if (end - start < 0.15) throw new Error('片段太短，至少需要 0.15 秒。');
+    const fps = Number(el.fpsSelect.value);
+    const speed = Number(el.speedSelect.value);
+    const quality = Object.hasOwn(GIF_QUALITY_PRESETS, el.qualitySelect.value)
+      ? el.qualitySelect.value
+      : 'bei';
+    const plan = createExportPlan({
+      ...output,
+      start,
+      end,
+      fps,
+      speed,
+      quality,
+      qualityPreset: GIF_QUALITY_PRESETS[quality],
+    });
     if (plan.finalFrames > MAX_EXPORT_FRAMES) {
       throw new Error('帧数超过上限，请缩短片段或降低帧率。');
     }
     return plan;
-  }
-
-  function makeEstimateSignature(plan) {
-    return JSON.stringify([
-      state.clipRevision,
-      plan.start.toFixed(6), plan.end.toFixed(6), plan.fps, plan.speed,
-      plan.outputWidth, plan.outputHeight, plan.quality,
-      plan.outputRadius, plan.transparentCorners,
-      plan.crop.x.toFixed(6), plan.crop.y.toFixed(6),
-      plan.crop.w.toFixed(6), plan.crop.h.toFixed(6),
-      plan.textLayers.map((layer) => [
-        layer.text, layer.x, layer.y, layer.fontScale,
-        layer.textColor, layer.strokeColor, layer.strokeScale,
-      ]),
-    ]);
   }
 
   function formatFileSize(bytes) {
@@ -7380,83 +7217,6 @@
     }
   }
 
-  function cancelSizeEstimate({ clearCache = false } = {}) {
-    clearTimeout(state.sizeEstimateTimer);
-    state.sizeEstimateTimer = 0;
-    const job = state.sizeEstimateJob;
-    if (job) {
-      job.controller.abort();
-      job.session?.cancel(new CancelledError());
-      if (state.cancelExportPreparation) state.cancelExportPreparation();
-    }
-    state.sizeEstimateJob = null;
-    if (clearCache) state.sizeEstimateCache = null;
-  }
-
-  async function estimateExportSize(plan, signature, job) {
-    const clip = state.clip;
-    if (!clip) throw new CancelledError();
-    const windows = createEstimateSampleWindows(plan.frameTimes);
-    let samples = [];
-    let paletteFrames = [];
-    try {
-      job.video = await createDetachedClipVideo(clip);
-      samples = await captureSampleFrames(
-        job.video,
-        windows,
-        clip,
-        { fps: plan.fps, signal: job.controller.signal },
-      );
-      paletteFrames = await Promise.all(samples.map((sample) => createImageBitmap(sample.bitmap)));
-      const sourceIndexes = new Map(plan.frameTimes.map((time, index) => [Number(time).toFixed(6), index]));
-      const samplePlan = {
-        ...plan,
-        frameTimes: Object.freeze(samples.map((sample) => sample.time)),
-        frameDelays: Object.freeze(samples.map((sample) => (
-          plan.frameDelays[sourceIndexes.get(Number(sample.time).toFixed(6))]
-        ))),
-        baseFrames: samples.length,
-        finalFrames: samples.length,
-      };
-      job.session = await createGifEncodingSession(samplePlan, {
-        sampleFrames: paletteFrames,
-        timeoutMs: 120_000,
-      });
-      paletteFrames = [];
-      if (job.controller.signal.aborted) {
-        job.session.cancel(new CancelledError());
-        throw new CancelledError();
-      }
-      const preparedPalette = job.session.palette;
-      for (const sample of samples) {
-        if (job.controller.signal.aborted) throw new CancelledError();
-        const frame = new VideoFrame(sample.bitmap, { timestamp: Math.round(sample.time * 1_000_000) });
-        await job.session.addFrame(frame, sample.flatIndex, samplePlan.frameDelays[sample.flatIndex]);
-      }
-      const blob = await job.session.finish();
-      const report = inspectGifFrameBytes(await blob.arrayBuffer());
-      const complete = samples.length >= plan.finalFrames;
-      const windowStarts = samples
-        .filter((sample) => sample.indexInWindow === 0)
-        .map((sample) => sample.flatIndex);
-      const bytes = calculateEstimatedGifBytes(report, plan.finalFrames, windowStarts);
-      if (!bytes) throw new Error('无法分析样本 GIF。');
-      if (job.controller.signal.aborted || state.sizeEstimateJob !== job) {
-        throw new CancelledError();
-      }
-      state.sizeEstimateCache = { signature, bytes, palette: preparedPalette };
-      setEstimatedSizeText(
-        `预计${complete ? ' ' : '约 '}${formatFileSize(bytes)}`,
-        complete ? '根据全部导出帧计算。' : '根据选区内连续画面采样计算。',
-      );
-    } finally {
-      job.session?.destroy();
-      closeImageBitmaps(paletteFrames);
-      closeImageBitmaps(samples.map((sample) => sample.bitmap));
-      releaseDetachedClipVideo(clip, job.video);
-    }
-  }
-
   function updateEstimatedFileSize({ actualBytes = 0 } = {}) {
     if (!el.estimatedSize) return;
     if (actualBytes > 0) {
@@ -7464,7 +7224,6 @@
       return;
     }
     if (!state.clip || state.mode !== 'edit' || state.busy) {
-      cancelSizeEstimate();
       setEstimatedSizeText('预计 --');
       return;
     }
@@ -7475,28 +7234,22 @@
       setEstimatedSizeText('预计 --');
       return;
     }
-    const signature = makeEstimateSignature(plan);
-    if (state.sizeEstimateCache?.signature === signature) {
-      const complete = plan.finalFrames <= ESTIMATE_WINDOW_FRAMES * ESTIMATE_WINDOW_COUNT;
-      setEstimatedSizeText(
-        `预计${complete ? ' ' : '约 '}${formatFileSize(state.sizeEstimateCache.bytes)}`,
-        complete ? '根据全部导出帧计算。' : '根据选区内连续画面采样计算。',
-      );
-      return;
-    }
-    cancelSizeEstimate();
-    const job = { controller: new AbortController(), session: null, video: null };
-    state.sizeEstimateJob = job;
-    setEstimatedSizeText('预计计算中…', '正在分析选区画面。', true);
-    state.sizeEstimateTimer = window.setTimeout(() => {
-      state.sizeEstimateTimer = 0;
-      estimateExportSize(plan, signature, job).catch((error) => {
-        if (state.sizeEstimateJob !== job || error instanceof CancelledError) return;
-        setEstimatedSizeText('预计 --', friendlyError(error));
-      }).finally(() => {
-        if (state.sizeEstimateJob === job) state.sizeEstimateJob = null;
-      });
-    }, 300);
+    const analysis = state.timelineThumbnails?.analysis || {
+      colorComplexity: 0.55,
+      motionComplexity: 0.25,
+    };
+    const bytesPerPixelFrame = 0.035
+      + analysis.colorComplexity * 0.08
+      + analysis.motionComplexity * 0.22;
+    const qualityFactor = { nai: 1.25, bei: 1, ran: 0.78 }[plan.quality] || 1;
+    const overlayFactor = plan.textLayers.length ? 1.04 : 1;
+    const cornerFactor = plan.transparentCorners ? 0.98 : 1;
+    const bytes = 1024 + plan.outputWidth * plan.outputHeight * plan.finalFrames
+      * bytesPerPixelFrame * qualityFactor * overlayFactor * cornerFactor;
+    setEstimatedSizeText(
+      `预计约 ${formatFileSize(bytes)}`,
+      '根据画面复杂度快速估算，可能存在约 30%～50% 误差。',
+    );
   }
 
   function makeFileName(settings) {
@@ -7536,9 +7289,7 @@
       settings = readExportSettings();
       fileName = makeFileName(settings);
 
-      cancelSizeEstimate();
       stopTrimPreview();
-      pausePreviewFrameCache();
       state.busy = true;
       state.mode = 'exporting';
       exportController = new AbortController();
@@ -7551,21 +7302,16 @@
       exportClip = clip;
       exportVideo = await createDetachedClipVideo(clip);
       state.exportVideo = exportVideo;
-      const estimateSignature = makeEstimateSignature(settings);
-      let preparedPalette = state.sizeEstimateCache?.signature === estimateSignature
-        ? state.sizeEstimateCache.palette
-        : null;
       let paletteFrames = [];
-      if (!preparedPalette) {
-        const samples = await captureSampleFrames(
-          exportVideo,
-          createEstimateSampleWindows(settings.frameTimes),
-          clip,
-          { fps: settings.fps, signal: exportController.signal },
-        );
-        paletteFrames = samples.map((sample) => sample.bitmap);
-        pendingPaletteFrames = paletteFrames;
-      }
+      const samples = await capturePaletteFrames(
+        exportVideo,
+        createPaletteSampleWindows(settings.frameTimes),
+        clip,
+        settings,
+        { fps: settings.fps, signal: exportController.signal },
+      );
+      paletteFrames = samples.map((sample) => sample.bitmap);
+      pendingPaletteFrames = paletteFrames;
 
       encodingSession = await createGifEncodingSession({
         ...settings,
@@ -7585,7 +7331,6 @@
         },
       }, {
         sampleFrames: paletteFrames,
-        preparedPalette,
       });
       paletteFrames = [];
       pendingPaletteFrames = [];
@@ -7635,7 +7380,6 @@
       updateModeUi();
       if (state.mode === 'edit') updateEditorCropBox();
 
-      if (state.mode === 'edit') void resumePreviewFrameCache();
     }
   }
 
@@ -7643,7 +7387,6 @@
     if (state.mode !== 'exporting' || !state.busy) return;
     state.exportAbortController?.abort();
     setStatus('正在取消导出…');
-    pausePreviewFrameCache();
     try { state.exportVideo?.pause(); } catch (_) { }
     state.cancelExportPreparation?.();
     state.exportEncodingSession?.cancel(new CancelledError());
@@ -7900,8 +7643,7 @@
     if (state.panelLayoutRaf) cancelAnimationFrame(state.panelLayoutRaf);
     cancelEditorPreviewRender();
     stopTrimPreview();
-    releasePreviewFrameCache();
-    cancelSizeEstimate({ clearCache: true });
+    releaseTimelineThumbnails();
     cleanupRecordingResources(state.recording);
     state.exportAbortController?.abort();
     state.exportEncodingSession?.destroy();
