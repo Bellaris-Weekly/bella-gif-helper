@@ -134,12 +134,34 @@
     return `-O1 -Okeep-empty${lossy} input.gif -o /out/output.gif`;
   }
 
-  function calculateEncoderWorkerCount(hardwareConcurrency, outputLongestEdge = 720) {
+  function calculateEncoderWorkerCount(hardwareConcurrency, outputLongestEdge = 720, decoderCount = 0) {
     const cores = Math.max(1, Math.floor(Number(hardwareConcurrency) || 4));
-    const available = Math.max(2, cores - 2);
+    const decoders = Math.max(0, Math.floor(Number(decoderCount) || 0));
+    const available = Math.max(2, cores - decoders - 1);
     const edge = Math.max(1, Number(outputLongestEdge) || 720);
-    const sizeLimit = edge <= 480 ? 8 : edge <= 720 ? 6 : 4;
+    const sizeLimit = edge <= 480 ? 10 : edge <= 720 ? 8 : 6;
     return Math.min(sizeLimit, available);
+  }
+
+  function calculateExportDecoderCount(hardwareConcurrency, frameCount, outputLongestEdge = 720) {
+    const cores = Math.max(1, Math.floor(Number(hardwareConcurrency) || 4));
+    const frames = Math.max(0, Math.floor(Number(frameCount) || 0));
+    const edge = Math.max(1, Number(outputLongestEdge) || 720);
+    const coreLimit = cores >= 10 ? 3 : cores >= 6 ? 2 : 1;
+    const workLimit = frames >= 180 ? 3 : frames >= 60 ? 2 : 1;
+    const sizeLimit = edge > 1080 ? 2 : 3;
+    return Math.min(coreLimit, workLimit, sizeLimit);
+  }
+
+  function partitionFrameRanges(frameTimes, count) {
+    const times = Array.from(frameTimes || []);
+    if (!times.length) return Object.freeze([]);
+    const rangeCount = Math.min(times.length, Math.max(1, Math.floor(Number(count) || 1)));
+    return Object.freeze(Array.from({ length: rangeCount }, (_, index) => {
+      const offset = Math.floor(index * times.length / rangeCount);
+      const end = Math.floor((index + 1) * times.length / rangeCount);
+      return Object.freeze({ offset, times: Object.freeze(times.slice(offset, end)) });
+    }));
   }
 
   function selectEncoderWorker(inFlightCounts, maxInFlight = 2) {
@@ -1957,6 +1979,8 @@
   const MAX_RECORD_SECONDS = 60;
   const MAX_EXPORT_FRAMES = 900;
   const ENCODE_TIMEOUT_MS = 600_000;
+  const ENCODER_MAX_IN_FLIGHT_PER_WORKER = 2;
+  const EXPORT_UI_UPDATE_INTERVAL_MS = 120;
   const MIN_SELECT_PX = 24;
   const EDITOR_CROP_PADDING = 18;
   const EDITOR_VIEWPORT_MOTION_MS = 260;
@@ -2001,7 +2025,7 @@
     trimPreviewCleanup: null,
     exportEncodingSession: null,
     exportAbortController: null,
-    exportVideo: null,
+    exportVideos: [],
     cancelExportPreparation: null,
     launcherDrag: null,
     panelDrag: null,
@@ -4472,6 +4496,21 @@
     return video;
   }
 
+  async function createDetachedClipVideos(clip, count) {
+    const results = await Promise.allSettled(
+      Array.from({ length: Math.max(1, count) }, () => createDetachedClipVideo(clip)),
+    );
+    const videos = results
+      .filter((result) => result.status === 'fulfilled')
+      .map((result) => result.value);
+    const failure = results.find((result) => result.status === 'rejected');
+    if (failure) {
+      for (const video of videos) releaseDetachedClipVideo(clip, video);
+      throw failure.reason;
+    }
+    return videos;
+  }
+
   function releaseDetachedClipVideo(clip, video) {
     if (!video) return;
     cleanupClipAttachment(clip, video);
@@ -4611,10 +4650,11 @@
     }
   }
 
-  async function capturePaletteFrames(video, windows, clip, settings, { fps = 12, signal = null } = {}) {
-    const samples = [];
-    const sourceWidth = Math.max(2, video.videoWidth || clip.width);
-    const sourceHeight = Math.max(2, video.videoHeight || clip.height);
+  async function capturePaletteFrames(videos, windows, clip, settings, { fps = 12, signal = null } = {}) {
+    const sources = (Array.isArray(videos) ? videos : [videos]).filter(Boolean);
+    if (!sources.length) throw new Error('没有可用于调色板的解码源。');
+    const sourceWidth = Math.max(2, sources[0].videoWidth || clip.width);
+    const sourceHeight = Math.max(2, sources[0].videoHeight || clip.height);
     const crop = settings.crop;
     const sx = Math.round(clamp(crop.x, 0, 1) * sourceWidth);
     const sy = Math.round(clamp(crop.y, 0, 1) * sourceHeight);
@@ -4623,31 +4663,44 @@
     const scale = Math.min(1, PALETTE_SAMPLE_MAX_EDGE / Math.max(sw, sh));
     const resizeWidth = Math.max(2, Math.round(sw * scale));
     const resizeHeight = Math.max(2, Math.round(sh * scale));
-    try {
-      for (let windowIndex = 0; windowIndex < windows.length; windowIndex += 1) {
-        await extractFramesContinuously(video, windows[windowIndex], clip, {
-          fps,
-          signal,
-          onFrame: async (indexInWindow, time) => {
-            samples.push({
-              bitmap: await createImageBitmap(video, sx, sy, sw, sh, {
-                resizeWidth,
-                resizeHeight,
-                resizeQuality: 'high',
-              }),
-              flatIndex: samples.length,
-              indexInWindow,
-              time,
-              windowIndex,
-            });
-          },
-        });
+    const jobs = sources.map(async (video, sourceIndex) => {
+      const samples = [];
+      try {
+        for (let windowIndex = sourceIndex; windowIndex < windows.length; windowIndex += sources.length) {
+          await extractFramesContinuously(video, windows[windowIndex], clip, {
+            fps,
+            signal,
+            onFrame: async (indexInWindow, time) => {
+              samples.push({
+                bitmap: await createImageBitmap(video, sx, sy, sw, sh, {
+                  resizeWidth,
+                  resizeHeight,
+                  resizeQuality: 'medium',
+                }),
+                indexInWindow,
+                time,
+                windowIndex,
+              });
+            },
+          });
+        }
+      } catch (error) {
+        closeImageBitmaps(samples.map((sample) => sample.bitmap));
+        throw error;
       }
       return samples;
-    } catch (error) {
+    });
+    const results = await Promise.allSettled(jobs);
+    const samples = results
+      .filter((result) => result.status === 'fulfilled')
+      .flatMap((result) => result.value)
+      .sort((a, b) => a.windowIndex - b.windowIndex || a.indexInWindow - b.indexInWindow);
+    const failure = results.find((result) => result.status === 'rejected');
+    if (failure) {
       closeImageBitmaps(samples.map((sample) => sample.bitmap));
-      throw error;
+      throw failure.reason;
     }
+    return samples;
   }
 
   async function buildTimelineThumbnails(clip) {
@@ -4789,10 +4842,8 @@
   }
 
   function disposeClip() {
-    if (state.exportVideo) {
-      releaseDetachedClipVideo(state.clip, state.exportVideo);
-      state.exportVideo = null;
-    }
+    for (const video of state.exportVideos) releaseDetachedClipVideo(state.clip, video);
+    state.exportVideos = [];
     discardEditorBackgroundIntent();
     clearEditorViewportAnimation();
     cancelEditorPreviewRender();
@@ -6497,6 +6548,7 @@
   async function createGifEncodingSession(settings, {
     sampleFrames = [],
     preparedPalette = null,
+    decoderCount = 0,
     timeoutMs = ENCODE_TIMEOUT_MS,
   } = {}) {
     const resources = await loadEncodingResourceTexts();
@@ -6514,6 +6566,7 @@
     const workerCount = calculateEncoderWorkerCount(
       navigator.hardwareConcurrency,
       settings.outputLongestEdge,
+      decoderCount,
     );
     const workers = [];
     const activeTasks = new Map();
@@ -6526,7 +6579,6 @@
     let compressionWorkerUrl = null;
     let compressorSource = '';
     let settled = false;
-    let backpressured = false;
     let resultResolve;
     let resultReject;
     const result = new Promise((resolve, reject) => {
@@ -6544,8 +6596,6 @@
     const settleError = (error) => {
       if (settled) return;
       settled = true;
-      if (backpressured) settings.onBackpressure?.(false);
-      backpressured = false;
       const normalized = error instanceof Error ? error : new Error(String(error));
       resultReject(normalized);
       activeTasks.forEach((task) => task.reject(normalized));
@@ -6643,14 +6693,16 @@
     }
 
     return {
-      async addFrame(frame, index, delay) {
+      async addFrame(frame, index, delay, sourceVideo = null) {
         let posted = false;
+        let waitingForCapacity = false;
         try {
           while (!settled) {
-            const workerIndex = selectEncoderWorker(workers.map((item) => item.inFlight), 1);
+            const workerIndex = selectEncoderWorker(
+              workers.map((item) => item.inFlight),
+              ENCODER_MAX_IN_FLIGHT_PER_WORKER,
+            );
             if (workerIndex >= 0) {
-              if (backpressured) settings.onBackpressure?.(false);
-              backpressured = false;
               const available = workers[workerIndex];
               const id = nextTaskId++;
               let resolveTask;
@@ -6668,8 +6720,10 @@
               posted = true;
               return;
             }
-            if (!backpressured) settings.onBackpressure?.(true);
-            backpressured = true;
+            if (!waitingForCapacity) {
+              waitingForCapacity = true;
+              try { sourceVideo?.pause(); } catch (_) { }
+            }
             await Promise.race(activePromises);
           }
           throw new CancelledError();
@@ -6905,9 +6959,19 @@
     let fileName;
     let encodingSession = null;
     let exportController = null;
-    let exportVideo = null;
+    let exportVideos = [];
     let exportClip = null;
     let pendingPaletteFrames = [];
+    const lastUiUpdateAt = { extracting: 0, encoding: 0 };
+    const reportExportProgress = (phase, completed, total) => {
+      const now = performance.now();
+      if (completed < total && now - lastUiUpdateAt[phase] < EXPORT_UI_UPDATE_INTERVAL_MS) return;
+      lastUiUpdateAt[phase] = now;
+      setProgress(calculateExportProgress(phase, completed, total));
+      setStatus(phase === 'encoding'
+        ? `正在并行编码：${completed}/${total}`
+        : `正在提取画面：${completed}/${total}`);
+    };
     try {
       settings = readExportSettings();
       fileName = makeFileName(settings);
@@ -6923,11 +6987,16 @@
 
       const clip = state.clip;
       exportClip = clip;
-      exportVideo = await createDetachedClipVideo(clip);
-      state.exportVideo = exportVideo;
+      const decoderCount = calculateExportDecoderCount(
+        navigator.hardwareConcurrency,
+        settings.finalFrames,
+        settings.outputLongestEdge,
+      );
+      exportVideos = await createDetachedClipVideos(clip, decoderCount);
+      state.exportVideos = exportVideos;
       let paletteFrames = [];
       const samples = await capturePaletteFrames(
-        exportVideo,
+        exportVideos,
         createPaletteSampleWindows(settings.frameTimes),
         clip,
         settings,
@@ -6946,33 +7015,43 @@
         },
         onProgress: (phase, completed, total) => {
           if (phase !== 'encoding') return;
-          setProgress(calculateExportProgress('encoding', completed, total));
-          setStatus(`正在并行编码：${completed}/${total}`);
-        },
-        onBackpressure: (full) => {
-          if (full) exportVideo.pause();
+          reportExportProgress(phase, completed, total);
         },
       }, {
         sampleFrames: paletteFrames,
+        decoderCount,
       });
       paletteFrames = [];
       pendingPaletteFrames = [];
       state.exportEncodingSession = encodingSession;
       if (exportController.signal.aborted) throw new CancelledError();
 
-      const frameTimes = settings.frameTimes;
-      await extractFramesContinuously(exportVideo, frameTimes, clip, {
-        fps: settings.fps,
-        signal: exportController.signal,
-        onFrame: async (index, time) => {
-          const frame = new VideoFrame(exportVideo, {
-            timestamp: Math.round(time * 1_000_000),
-          });
-          await encodingSession.addFrame(frame, index, settings.frameDelays[index]);
-          setProgress(calculateExportProgress('extracting', index + 1, settings.baseFrames));
-          setStatus(`正在提取画面：${index + 1}/${settings.baseFrames}`);
-        },
-      });
+      let extractedFrames = 0;
+      const ranges = partitionFrameRanges(settings.frameTimes, exportVideos.length);
+      let extractionError = null;
+      const extractionResults = await Promise.allSettled(ranges.map((range, rangeIndex) => {
+        const video = exportVideos[rangeIndex];
+        return extractFramesContinuously(video, range.times, clip, {
+          fps: settings.fps,
+          signal: exportController.signal,
+          onFrame: async (indexInRange, time) => {
+            const index = range.offset + indexInRange;
+            const frame = new VideoFrame(video, {
+              timestamp: Math.round(time * 1_000_000),
+            });
+            await encodingSession.addFrame(frame, index, settings.frameDelays[index], video);
+            extractedFrames += 1;
+            reportExportProgress('extracting', extractedFrames, settings.baseFrames);
+          },
+        }).catch((error) => {
+          extractionError ||= error;
+          exportController.abort();
+          throw error;
+        });
+      }));
+      if (extractionError) throw extractionError;
+      const failedExtraction = extractionResults.find((result) => result.status === 'rejected');
+      if (failedExtraction) throw failedExtraction.reason;
 
       if (exportController.signal.aborted) throw new CancelledError();
       setProgress(calculateExportProgress('encoding', 0, settings.baseFrames));
@@ -6994,10 +7073,8 @@
       }
       if (state.exportEncodingSession === encodingSession) state.exportEncodingSession = null;
       if (state.exportAbortController === exportController) state.exportAbortController = null;
-      if (exportVideo) {
-        releaseDetachedClipVideo(exportClip, exportVideo);
-        if (state.exportVideo === exportVideo) state.exportVideo = null;
-      }
+      for (const video of exportVideos) releaseDetachedClipVideo(exportClip, video);
+      if (state.exportVideos === exportVideos) state.exportVideos = [];
       state.busy = false;
       state.mode = state.clip ? 'edit' : 'capture';
       updateModeUi();
@@ -7010,7 +7087,9 @@
     if (state.mode !== 'exporting' || !state.busy) return;
     state.exportAbortController?.abort();
     setStatus('正在取消导出…');
-    try { state.exportVideo?.pause(); } catch (_) { }
+    for (const video of state.exportVideos) {
+      try { video.pause(); } catch (_) { }
+    }
     state.cancelExportPreparation?.();
     state.exportEncodingSession?.cancel(new CancelledError());
   }
@@ -7262,7 +7341,7 @@
     cleanupRecordingResources(state.recording);
     state.exportAbortController?.abort();
     state.exportEncodingSession?.destroy();
-    if (state.exportVideo) releaseDetachedClipVideo(state.clip, state.exportVideo);
+    for (const video of state.exportVideos) releaseDetachedClipVideo(state.clip, video);
     state.cancelExportPreparation?.();
     if (state.clip?.attachments) {
       for (const video of [...state.clip.attachments.keys()]) cleanupClipAttachment(state.clip, video);

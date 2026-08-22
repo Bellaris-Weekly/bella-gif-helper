@@ -104,9 +104,9 @@ test('userscript uses pinned parallel encoder resources and sRGB canvases', () =
   assert.match(source, /gifenc@1\.0\.3\/dist\/gifenc\.esm\.js/);
   assert.match(source, /gifsicle-wasm-browser@1\.5\.19\/dist\/gifsicle\.min\.js/);
   assert.match(source, /colorSpace: 'srgb'/);
-  assert.match(source, /new VideoFrame\(exportVideo/);
+  assert.match(source, /new VideoFrame\(video/);
   assert.match(source, /source\.displayWidth \|\| source\.width/);
-  assert.match(source, /selectEncoderWorker\(workers\.map/);
+  assert.match(source, /selectEncoderWorker\(\s*workers\.map/);
   assert.match(source, /calculateEncoderWorkerCount\(\s*navigator\.hardwareConcurrency,/);
   assert.match(source, /navigation\?\.addEventListener\('currententrychange'/);
   assert.doesNotMatch(source, /@noframes/);
