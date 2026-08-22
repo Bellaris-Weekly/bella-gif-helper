@@ -9,7 +9,7 @@ const {
   matchesShortcut,
   normalizeShortcut,
   shortcutFromKeyboardEvent,
-} = require('../bella-gif-helper.user.js');
+} = require('./load-userscript-api');
 
 test('default shortcut is Ctrl+Z and can be formatted for display', () => {
   assert.deepEqual(DEFAULT_SHORTCUT, {

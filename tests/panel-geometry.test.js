@@ -5,7 +5,7 @@ const test = require('node:test');
 const {
   calculatePanelResize,
   constrainPanelGeometry,
-} = require('../bella-gif-helper.user.js');
+} = require('./load-userscript-api');
 
 test('east and south handles resize while anchoring the opposite edges', () => {
   const resized = calculatePanelResize(

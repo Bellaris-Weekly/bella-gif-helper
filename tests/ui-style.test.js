@@ -104,10 +104,11 @@ test('crop release precomputes its target and defers expensive canvas rendering'
 test('crop interaction pauses cache work without stopping playback', () => {
   assert.match(source, /EDITOR_BACKGROUND_RESUME_DELAY_MS\s*=\s*320/);
   const suspendBlock = source.match(/function suspendEditorBackgroundWork\(\)\s*\{[\s\S]*?\n  \}/)?.[0] || '';
-  assert.match(suspendBlock, /pausePreviewFrameCache\(\);/);
+  assert.match(suspendBlock, /cancelEditorPreviewRender\(\);/);
+  assert.match(suspendBlock, /setOutputPreviewVisible\(false\);/);
   assert.doesNotMatch(suspendBlock, /stopTrimPreview\(\)/);
   assert.match(source, /function scheduleEditorBackgroundResume\(\)[\s\S]*?requestIdleCallback[\s\S]*?resumeEditorBackgroundWork\(\)/);
-  assert.match(source, /if \(intent\.resumeCache\) void resumePreviewFrameCache\(\);/);
+  assert.match(source, /state\.editorBackgroundIntent = null;/);
 });
 
 test('filled actions and muted text retain readable contrast', () => {

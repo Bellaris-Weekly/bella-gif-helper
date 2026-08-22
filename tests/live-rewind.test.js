@@ -15,7 +15,7 @@ const {
   parseLiveMedia,
   readIsoBoxes,
   toVideoOnlyMimeType,
-} = require('../bella-gif-helper.user.js');
+} = require('./load-userscript-api');
 
 test('活动直播房间和轻量播放器路径使用同一房间识别规则', () => {
   assert.equal(extractLiveRoomId('/21919321'), '21919321');

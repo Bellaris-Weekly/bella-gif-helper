@@ -9,14 +9,9 @@ const {
   GIF_QUALITY_PRESETS,
   buildGifsicleCommand,
   calculateCropViewport,
-  calculateEstimatedGifBytes,
   calculateTimelinePlaybackTarget,
-  createEstimateSampleWindows,
-  createExportFrameTimes,
   createExportTiming,
-  inspectGifFrameBytes,
-  normalizeGifDelay,
-} = require('../bella-gif-helper.user.js');
+} = require('./load-userscript-api');
 
 const userscriptPath = path.join(__dirname, '..', 'bella-gif-helper.user.js');
 
@@ -39,15 +34,9 @@ test('quality presets produce the intended Gifsicle commands', () => {
   assert.equal(buildGifsicleCommand(GIF_QUALITY_PRESETS.ran), '-O1 -Okeep-empty --lossy=50 input.gif -o /out/output.gif');
 });
 
-test('GIF delay follows the user frame rate and speed at GIF precision', () => {
-  assert.equal(normalizeGifDelay(12, 1), 80);
-  assert.equal(normalizeGifDelay(12, 1.5), 60);
-  assert.equal(normalizeGifDelay(8, 0.75), 170);
-});
-
 test('export plans keep every frame inside the selected interval', () => {
   for (const [start, end, fps] of [[2, 8, 12], [0.5, 3, 8]]) {
-    const times = createExportFrameTimes(start, end, fps);
+    const times = createExportTiming(start, end, fps).frameTimes;
     assert.equal(times.length, Math.ceil((end - start) * fps));
     assert.ok(times.every((time) => time >= start && time < end));
     assert.ok(times[times.length - 1] < end);
@@ -74,57 +63,6 @@ test('timeline handles restart from the selected range while the playhead resume
   assert.equal(calculateTimelinePlaybackTarget('handle', 1.7, 0.2), 0.2);
   assert.equal(calculateTimelinePlaybackTarget('handle', 1.7, 0.6), 0.6);
   assert.equal(calculateTimelinePlaybackTarget('playhead', 1.7, 0.2), 1.7);
-});
-
-test('size sampling windows cover short clips and three separated ranges', () => {
-  const shortFrames = createExportFrameTimes(0.5, 3, 8);
-  const short = createEstimateSampleWindows(shortFrames);
-  assert.ok(short.every((window) => window.length <= 8));
-  assert.deepEqual(short.flat(), [...shortFrames]);
-  const longFrames = createExportFrameTimes(2, 12, 12);
-  const long = createEstimateSampleWindows(longFrames);
-  assert.equal(long.length, 3);
-  assert.ok(long.every((window) => window.length <= 8));
-  assert.equal(long[0][0], longFrames[0]);
-  assert.equal(long[2][long[2].length - 1], longFrames[longFrames.length - 1]);
-  assert.ok(long[0][0] < long[1][0] && long[1][0] < long[2][0]);
-});
-
-test('complete samples use their real GIF size', () => {
-  const exactReport = { totalBytes: 5000, containerBytes: 1000, frameBytes: [2000, 1000, 1000] };
-  assert.equal(calculateEstimatedGifBytes(exactReport, 3, [0]), 5000);
-});
-
-test('three sample windows produce one estimate from their internal follow-up frames', () => {
-  const sampledReport = {
-    totalBytes: 32_000,
-    containerBytes: 100,
-    frameBytes: [
-      1000, 100, 200, 300,
-      9000, 400, 500, 600,
-      9000, 700, 800, 900,
-    ],
-  };
-  const estimate = calculateEstimatedGifBytes(sampledReport, 20, [0, 4, 8]);
-  assert.equal(estimate, 10_600);
-  assert.equal(typeof estimate, 'number');
-});
-
-test('one unusually large sampled frame does not dominate the estimate', () => {
-  const sampledReport = {
-    totalBytes: 55_000,
-    containerBytes: 1000,
-    frameBytes: [2000, 400, 500, 50_000, 600, 700, 800],
-  };
-  assert.equal(calculateEstimatedGifBytes(sampledReport, 10, [0, 3]), 8400);
-});
-
-test('GIF byte inspection separates container and frame payload', () => {
-  const gif = Buffer.from('R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==', 'base64');
-  const report = inspectGifFrameBytes(gif);
-  assert.equal(report.totalBytes, gif.length);
-  assert.equal(report.frameBytes.length, 1);
-  assert.equal(report.containerBytes + report.frameBytes[0], gif.length);
 });
 
 test('crop-aware preview fills the viewport and zooms out as the crop expands', () => {
@@ -169,7 +107,7 @@ test('userscript uses pinned parallel encoder resources and sRGB canvases', () =
   assert.match(source, /new VideoFrame\(exportVideo/);
   assert.match(source, /source\.displayWidth \|\| source\.width/);
   assert.match(source, /selectEncoderWorker\(workers\.map/);
-  assert.match(source, /calculateEncoderWorkerCount\(navigator\.hardwareConcurrency\)/);
+  assert.match(source, /calculateEncoderWorkerCount\(\s*navigator\.hardwareConcurrency,/);
   assert.match(source, /navigation\?\.addEventListener\('currententrychange'/);
   assert.doesNotMatch(source, /@noframes/);
   assert.match(source, /bella-gif-helper-live-frame-v1/);

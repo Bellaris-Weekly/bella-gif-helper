@@ -5,8 +5,7 @@ const test = require('node:test');
 
 const {
   calculateViewportTransitionTransform,
-  mergeEditorBackgroundIntent,
-} = require('../bella-gif-helper.user.js');
+} = require('./load-userscript-api');
 
 test('viewport transition reaches the fitted frame while zooming in', () => {
   const transform = calculateViewportTransitionTransform(
@@ -69,23 +68,4 @@ test('viewport transition maps every child point through the parent transform', 
 
   assert.equal(childPoint.x * transform.scaleX + transform.translateX, 600);
   assert.equal(childPoint.y * transform.scaleY + transform.translateY, 280);
-});
-
-test('repeated crop interactions preserve deferred cache work', () => {
-  const firstDrag = mergeEditorBackgroundIntent(null, {
-    resumeCache: true,
-  });
-  const interruptedDrag = mergeEditorBackgroundIntent(firstDrag, {
-    resumeCache: false,
-  });
-
-  assert.deepEqual(interruptedDrag, {
-    resumeCache: true,
-  });
-});
-
-test('crop interaction does not invent background work that was inactive', () => {
-  assert.deepEqual(mergeEditorBackgroundIntent(null, null), {
-    resumeCache: false,
-  });
 });

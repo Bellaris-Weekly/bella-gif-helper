@@ -90,9 +90,6 @@
 
     document.addEventListener('click', async (event) => {
       const path = event.composedPath();
-      if (path.some((node) => node.id === 'cancelExportBtn')) {
-        document.documentElement.dataset.cancelStartedAt = String(performance.now());
-      }
       const anchor = path.find((node) => node instanceof HTMLAnchorElement && node.download);
       if (!anchor?.href.startsWith('blob:')) return;
       const blob = await fetch(anchor.href).then((response) => response.blob());
@@ -111,16 +108,6 @@
       });
     }, true);
 
-    window.addEventListener('DOMContentLoaded', () => {
-      const badge = document.querySelector('#bili-gif-maker-host')?.shadowRoot?.getElementById('stageBadge');
-      if (!badge) return;
-      new MutationObserver(() => {
-        const startedAt = Number(document.documentElement.dataset.cancelStartedAt);
-        if (startedAt && badge.textContent === '编辑') {
-          document.documentElement.dataset.cancelRecoveryMs = String(performance.now() - startedAt);
-        }
-      }).observe(badge, { childList: true });
-    }, { once: true });
   </script>
   <script>
     const canvas = document.querySelector('#source');

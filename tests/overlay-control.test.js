@@ -2,7 +2,7 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { calculateInnerOverlayPosition } = require('../bella-gif-helper.user.js');
+const { calculateInnerOverlayPosition } = require('./load-userscript-api');
 
 test('overlay control stays inside a full-size crop with corner clearance', () => {
   assert.deepEqual(

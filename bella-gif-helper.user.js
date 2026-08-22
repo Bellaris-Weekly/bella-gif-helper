@@ -134,10 +134,6 @@
     return `-O1 -Okeep-empty${lossy} input.gif -o /out/output.gif`;
   }
 
-  function normalizeGifDelay(fps, speed) {
-    return Math.max(20, Math.round(((1000 / fps) / speed) / 10) * 10);
-  }
-
   function calculateEncoderWorkerCount(hardwareConcurrency, outputLongestEdge = 720) {
     const cores = Math.max(1, Math.floor(Number(hardwareConcurrency) || 4));
     const available = Math.max(2, cores - 2);
@@ -159,25 +155,8 @@
     return Math.min(6, Math.max(2, 48 / Math.max(1, Number(fps) || 1)));
   }
 
-  function requiresPreciseFrameSeek(currentTime, targetTime, endTime, tolerance) {
-    return Number(currentTime) >= Number(endTime)
-      || Number(currentTime) > Number(targetTime) + Math.max(0, Number(tolerance) || 0);
-  }
-
   function calculateExportFrameCount(duration, fps) {
     return Math.max(1, Math.ceil(Math.max(0, Number(duration) || 0) * Math.max(1, Number(fps) || 1)));
-  }
-
-  function calculateExportFrameTime(start, end, index, fps) {
-    return Math.min(Number(end) - 0.001, Number(start) + Number(index) / Math.max(1, Number(fps) || 1));
-  }
-
-  function createExportFrameTimes(start, end, fps) {
-    const frameCount = calculateExportFrameCount(Number(end) - Number(start), fps);
-    return Object.freeze(Array.from(
-      { length: frameCount },
-      (_, index) => calculateExportFrameTime(start, end, index, fps),
-    ));
   }
 
   function createExportTiming(start, end, fps, speed = 1) {
@@ -1218,6 +1197,314 @@
     return stop;
   }
 
+  function clamp(value, min, max) {
+    return Math.min(max, Math.max(min, value));
+  }
+
+  function normalizedSelectionToSource(selection, video) {
+    const number = (value) => Number(value) || 0;
+    return {
+      sx: clamp(number(selection?.x), 0, 1) * video.videoWidth,
+      sy: clamp(number(selection?.y), 0, 1) * video.videoHeight,
+      sw: clamp(number(selection?.w), 0, 1) * video.videoWidth,
+      sh: clamp(number(selection?.h), 0, 1) * video.videoHeight,
+    };
+  }
+
+  function drawSelectedVideoFrame(video, selection, ctx, width, height) {
+    const source = normalizedSelectionToSource(selection, video);
+    if (source.sw < 2 || source.sh < 2) throw new Error('选区太小，请重新框选。');
+    ctx.clearRect(0, 0, width, height);
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, width, height);
+    try {
+      ctx.drawImage(video, source.sx, source.sy, source.sw, source.sh, 0, 0, width, height);
+    } catch (error) {
+      if (error?.name === 'SecurityError') {
+        throw new Error(`SecurityError: 浏览器拒绝读取当前视频画面。${error.message || ''}`);
+      }
+      throw error;
+    }
+  }
+
+  function calculateCaptureDimensions(video, selection, maxWidth = 720) {
+    const source = normalizedSelectionToSource(selection, video);
+    if (source.sw < 2 || source.sh < 2) throw new Error('选区太小，请重新框选。');
+    const width = Math.max(2, Math.round(Math.min(maxWidth, source.sw) / 2) * 2);
+    const height = Math.max(2, Math.round((width / (source.sw / source.sh)) / 2) * 2);
+    return { width, height };
+  }
+
+  function createCanvasCapture(video, selection, maxWidth = 720) {
+    const { width, height } = calculateCaptureDimensions(video, selection, maxWidth);
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d', { alpha: false, willReadFrequently: false });
+    if (!ctx) throw new Error('无法创建录制画布。');
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    return {
+      canvas,
+      ctx,
+      width,
+      height,
+      draw: () => drawSelectedVideoFrame(video, selection, ctx, width, height),
+    };
+  }
+
+  function chooseRecorderMimeType() {
+    if (typeof MediaRecorder === 'undefined') return '';
+    return ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm']
+      .find((type) => MediaRecorder.isTypeSupported?.(type)) || '';
+  }
+
+  function createCanvasRecorder(capture, fps) {
+    if (typeof MediaRecorder === 'undefined') throw new Error('当前浏览器不支持录制。');
+    const captureStream = HTMLCanvasElement.prototype.captureStream
+      || HTMLCanvasElement.prototype.mozCaptureStream;
+    if (typeof captureStream !== 'function') throw new Error('当前浏览器不支持画布录制。');
+    const stream = captureStream.call(capture.canvas, fps);
+    const mimeType = chooseRecorderMimeType();
+    const options = { videoBitsPerSecond: capture.width >= 640 ? 6_000_000 : 4_000_000 };
+    if (mimeType) options.mimeType = mimeType;
+    const recorder = new MediaRecorder(stream, options);
+    return { stream, recorder, mimeType: recorder.mimeType || mimeType || 'video/webm' };
+  }
+
+  function cleanupRecordingResources(recording) {
+    if (!recording) return;
+    recording.stopFramePump?.();
+    if (recording.timerId) clearInterval(recording.timerId);
+    if (recording.maxTimerId) clearTimeout(recording.maxTimerId);
+    try { recording.stream?.getTracks().forEach((track) => track.stop()); } catch (_) { }
+  }
+
+  function createCanvasRecording(video, selection, {
+    maxWidth = 720,
+    fps = 24,
+    maxSeconds = 60,
+    onComplete,
+    onStopping,
+  } = {}) {
+    const capture = createCanvasCapture(video, selection, maxWidth);
+    const { recorder, stream, mimeType } = createCanvasRecorder(capture, fps);
+    const recording = {
+      video,
+      recorder,
+      stream,
+      chunks: [],
+      mimeType,
+      selection,
+      captureWidth: capture.width,
+      captureHeight: capture.height,
+      snapshot: {
+        playbackRate: video.playbackRate,
+        sourceStart: Number(video.currentTime) || 0,
+      },
+      startedAt: performance.now(),
+      stopFramePump: null,
+      maxTimerId: 0,
+      stopping: false,
+      completed: false,
+      stopReason: '',
+      error: null,
+    };
+
+    const finish = () => {
+      if (recording.completed) return;
+      recording.completed = true;
+      recording.measuredDuration = Math.max(0, (performance.now() - recording.startedAt) / 1000);
+      recording.sourceEnd = Number(video.currentTime)
+        || recording.snapshot.sourceStart + recording.measuredDuration;
+      cleanupRecordingResources(recording);
+      try { video.playbackRate = recording.snapshot.playbackRate; } catch (_) { }
+      try { video.pause(); } catch (_) { }
+      void onComplete?.(recording);
+    };
+
+    recording.stop = (reason = 'manual') => {
+      if (recording.stopping || recording.completed) return;
+      recording.stopping = true;
+      recording.stopReason = reason;
+      recording.stopFramePump?.();
+      if (recording.maxTimerId) clearTimeout(recording.maxTimerId);
+      recording.stopFramePump = null;
+      recording.maxTimerId = 0;
+      try { video.pause(); } catch (_) { }
+      onStopping?.(recording);
+      try {
+        if (recorder.state === 'inactive') finish();
+        else {
+          try { recorder.requestData(); } catch (_) { }
+          recorder.stop();
+        }
+      } catch (error) {
+        recording.error = error;
+        finish();
+      }
+    };
+
+    recording.start = async () => {
+      try {
+        video.pause();
+        video.playbackRate = 1;
+        capture.draw();
+        recorder.start(250);
+        recording.stopFramePump = startVideoFramePump(video, fps, capture.draw, (error) => {
+          recording.error = error;
+          recording.stop('error');
+        });
+        recording.maxTimerId = setTimeout(
+          () => recording.stop('limit'),
+          Math.max(1, Number(maxSeconds) || 60) * 1000,
+        );
+        await video.play();
+      } catch (error) {
+        recording.error = error instanceof Error ? error : new Error(String(error));
+        recording.stop('error');
+        throw recording.error;
+      }
+      return recording;
+    };
+
+    recording.destroy = () => {
+      if (recording.completed) return;
+      recording.completed = true;
+      cleanupRecordingResources(recording);
+      try { video.playbackRate = recording.snapshot.playbackRate; } catch (_) { }
+      try { recorder.stop(); } catch (_) { }
+    };
+    recorder.addEventListener('dataavailable', (event) => {
+      if (event.data?.size > 0) recording.chunks.push(event.data);
+    });
+    recorder.addEventListener('error', (event) => {
+      recording.error = event.error || new Error('录制失败。');
+      recording.stop('error');
+    });
+    recorder.addEventListener('stop', finish, { once: true });
+    return recording;
+  }
+
+  function createFrameCompositor() {
+    const bound = (value, min, max) => Math.min(max, Math.max(min, value));
+
+    const wrapText = (ctx, text, maxWidth, maxLines = 5) => {
+      const lines = [];
+      for (const paragraph of String(text || '').replace(/\r/g, '').split('\n')) {
+        if (lines.length >= maxLines) break;
+        if (!paragraph) {
+          lines.push('');
+          continue;
+        }
+        let line = '';
+        for (const char of paragraph) {
+          const candidate = line + char;
+          if (line && ctx.measureText(candidate).width > maxWidth) {
+            lines.push(line);
+            line = char;
+            if (lines.length >= maxLines) break;
+          } else {
+            line = candidate;
+          }
+        }
+        if (lines.length < maxLines && line) lines.push(line);
+      }
+      if (lines.length === maxLines) {
+        let last = lines[maxLines - 1];
+        while (last && ctx.measureText(`${last}…`).width > maxWidth) last = last.slice(0, -1);
+        lines[maxLines - 1] = `${last}…`;
+      }
+      return lines;
+    };
+
+    const drawText = (ctx, width, height, layers) => {
+      for (const layer of layers || []) {
+        const value = String(layer.text || '').trim();
+        if (!value) continue;
+        const fontSize = Math.max(16, Math.round(width * layer.fontScale));
+        const lineHeight = Math.round(fontSize * 1.18);
+        ctx.save();
+        ctx.font = `850 ${fontSize}px "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.lineJoin = 'round';
+        ctx.miterLimit = 2;
+        ctx.fillStyle = layer.textColor;
+        ctx.strokeStyle = layer.strokeColor;
+        ctx.lineWidth = Math.max(1, fontSize * layer.strokeScale * 2);
+        const lines = wrapText(ctx, value, width * 0.9, 6);
+        const span = Math.max(0, lines.length - 1) * lineHeight;
+        const centerX = bound(layer.x, 0, 1) * width;
+        const centerY = bound(layer.y, 0, 1) * height;
+        lines.forEach((line, index) => {
+          const y = centerY - span / 2 + index * lineHeight;
+          if (layer.strokeScale > 0) ctx.strokeText(line, centerX, y);
+          ctx.fillText(line, centerX, y);
+        });
+        ctx.restore();
+      }
+    };
+
+    const normalizeCorner = (ctx, x, y, size) => {
+      const image = ctx.getImageData(x, y, size, size);
+      for (let offset = 0; offset < image.data.length; offset += 4) {
+        if (image.data[offset + 3] < 255) {
+          image.data[offset] = 0;
+          image.data[offset + 1] = 0;
+          image.data[offset + 2] = 0;
+          image.data[offset + 3] = 0;
+        }
+      }
+      ctx.putImageData(image, x, y);
+    };
+
+    const draw = (ctx, settings, source, fallbackWidth = 0, fallbackHeight = 0, binaryAlpha = false) => {
+      const width = settings.outputWidth;
+      const height = settings.outputHeight;
+      const radius = Number(settings.outputRadius)
+        || Math.min(width, height) * bound(Number(settings.cornerRadiusRatio) || 0, 0, 0.5);
+      const transparent = settings.transparentCorners === true || radius > 0;
+      const sourceWidth = Number(source.videoWidth || source.displayWidth || source.width || fallbackWidth);
+      const sourceHeight = Number(source.videoHeight || source.displayHeight || source.height || fallbackHeight);
+      const { crop } = settings;
+
+      ctx.clearRect(0, 0, width, height);
+      if (!transparent || radius <= 0) {
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, width, height);
+      }
+      ctx.drawImage(
+        source,
+        crop.x * sourceWidth,
+        crop.y * sourceHeight,
+        crop.w * sourceWidth,
+        crop.h * sourceHeight,
+        0,
+        0,
+        width,
+        height,
+      );
+      drawText(ctx, width, height, settings.textLayers);
+      if (!transparent || radius <= 0) return;
+      ctx.save();
+      ctx.globalCompositeOperation = 'destination-in';
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      ctx.roundRect(0, 0, width, height, radius);
+      ctx.fill();
+      ctx.restore();
+      if (!binaryAlpha) return;
+      const size = Math.min(Math.max(1, Math.ceil(radius) + 1), width, height);
+      normalizeCorner(ctx, 0, 0, size);
+      normalizeCorner(ctx, width - size, 0, size);
+      normalizeCorner(ctx, 0, height - size, size);
+      normalizeCorner(ctx, width - size, height - size, size);
+    };
+
+    return { draw };
+  }
+
   function installLiveFrameAgent(collector) {
     if (!collector || window.top === window) return null;
     const expectedOrigin = location.origin;
@@ -1226,8 +1513,6 @@
     let observer = null;
     let recording = null;
     const frameId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    const bound = (value, min, max) => Math.min(max, Math.max(min, value));
-
     const post = (message, transfer = []) => {
       window.parent.postMessage({
         channel: LIVE_FRAME_CHANNEL,
@@ -1256,31 +1541,10 @@
       });
     };
 
-    const cleanupRecording = (session) => {
-      if (!session) return;
-      session.stopFramePump?.();
-      if (session.maxTimerId) clearTimeout(session.maxTimerId);
-      try { session.stream?.getTracks().forEach((track) => track.stop()); } catch (_) { }
-    };
-
-    const stopRecordingLoop = (session) => {
-      if (!session) return;
-      session.stopFramePump?.();
-      if (session.maxTimerId) clearTimeout(session.maxTimerId);
-      session.stopFramePump = null;
-      session.maxTimerId = 0;
-    };
-
     const completeRecording = async (session) => {
-      if (recording !== session || session.completed) return;
-      session.completed = true;
-      cleanupRecording(session);
-      try { session.video.playbackRate = session.playbackRate; } catch (_) { }
-      try { session.video.pause(); } catch (_) { }
+      if (recording !== session) return;
       recording = null;
-
-      const measuredDuration = Math.max(0, (performance.now() - session.startedAt) / 1000);
-      if (session.error || measuredDuration < 0.2 || !session.chunks.length) {
+      if (session.error || session.measuredDuration < 0.2 || !session.chunks.length) {
         post({
           kind: 'recording-complete',
           recordingId: session.id,
@@ -1296,9 +1560,9 @@
         result: {
           bytes,
           mimeType: session.mimeType,
-          measuredDuration,
-          sourceStart: session.sourceStart,
-          sourceEnd: Number(session.video.currentTime) || session.sourceStart + measuredDuration,
+          measuredDuration: session.measuredDuration,
+          sourceStart: session.snapshot.sourceStart,
+          sourceEnd: session.sourceEnd,
           captureWidth: session.captureWidth,
           captureHeight: session.captureHeight,
           liveWallClockStartMs: session.liveWallClockStartMs,
@@ -1309,117 +1573,35 @@
     };
 
     const stopFrameRecording = (reason = 'manual') => {
-      const session = recording;
-      if (!session || session.stopping) return;
-      session.stopping = true;
-      session.stopReason = reason;
-      try { session.video.pause(); } catch (_) { }
-      stopRecordingLoop(session);
-      try {
-        if (session.recorder.state !== 'inactive') {
-          try { session.recorder.requestData(); } catch (_) { }
-          session.recorder.stop();
-        } else {
-          void completeRecording(session);
-        }
-      } catch (error) {
-        session.error = error;
-        void completeRecording(session);
-      }
+      recording?.stop(reason);
     };
 
     const startFrameRecording = async (data) => {
       if (recording) throw new Error('已有录制任务正在进行。');
       const video = refreshVideo();
       if (!video?.videoWidth || !video.videoHeight) throw new Error('未找到可录制的视频。');
-      if (typeof MediaRecorder === 'undefined') throw new Error('当前浏览器不支持录制。');
-      const captureStream = HTMLCanvasElement.prototype.captureStream
-        || HTMLCanvasElement.prototype.mozCaptureStream;
-      if (typeof captureStream !== 'function') throw new Error('当前浏览器不支持画布录制。');
-
       const selection = data.selection || {};
-      const sx = bound(Number(selection.x) || 0, 0, 1) * video.videoWidth;
-      const sy = bound(Number(selection.y) || 0, 0, 1) * video.videoHeight;
-      const sw = bound(Number(selection.w) || 0, 0, 1) * video.videoWidth;
-      const sh = bound(Number(selection.h) || 0, 0, 1) * video.videoHeight;
-      if (sw < 2 || sh < 2) throw new Error('选区太小，请重新框选。');
       const maxWidth = Math.max(2, Number(data.maxWidth) || 720);
       const fps = Math.max(1, Number(data.fps) || 24);
-      const captureWidth = Math.max(2, Math.round(Math.min(maxWidth, sw) / 2) * 2);
-      const captureHeight = Math.max(2, Math.round((captureWidth / (sw / sh)) / 2) * 2);
-      const canvas = document.createElement('canvas');
-      canvas.width = captureWidth;
-      canvas.height = captureHeight;
-      const ctx = canvas.getContext('2d', { alpha: false, willReadFrequently: false });
-      if (!ctx) throw new Error('无法创建录制画布。');
-      ctx.imageSmoothingEnabled = true;
-      ctx.imageSmoothingQuality = 'high';
-      const draw = () => {
-        ctx.fillStyle = '#000';
-        ctx.fillRect(0, 0, captureWidth, captureHeight);
-        ctx.drawImage(video, sx, sy, sw, sh, 0, 0, captureWidth, captureHeight);
-      };
-
-      const candidates = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'];
-      const mimeType = candidates.find((type) => MediaRecorder.isTypeSupported?.(type)) || '';
-      const stream = captureStream.call(canvas, fps);
-      const options = { videoBitsPerSecond: captureWidth >= 640 ? 6_000_000 : 4_000_000 };
-      if (mimeType) options.mimeType = mimeType;
-      const recorder = new MediaRecorder(stream, options);
-      const session = {
-        id: String(data.recordingId || ''),
-        video,
-        recorder,
-        stream,
-        chunks: [],
-        mimeType: recorder.mimeType || mimeType || 'video/webm',
-        playbackRate: video.playbackRate,
-        sourceStart: Number(video.currentTime) || 0,
-        captureWidth,
-        captureHeight,
-        liveWallClockStartMs: Date.now(),
-        startedAt: performance.now(),
-        stopFramePump: null,
-        maxTimerId: 0,
-        stopping: false,
-        completed: false,
-        stopReason: '',
-        error: null,
-      };
+      const session = createCanvasRecording(video, selection, {
+        maxWidth,
+        fps,
+        maxSeconds: data.maxSeconds,
+        onComplete: completeRecording,
+      });
+      session.id = String(data.recordingId || '');
+      session.liveWallClockStartMs = Date.now();
       recording = session;
-      recorder.addEventListener('dataavailable', (event) => {
-        if (event.data?.size > 0) session.chunks.push(event.data);
-      });
-      recorder.addEventListener('error', (event) => {
-        session.error = event.error || new Error('录制失败。');
-        stopFrameRecording('error');
-      });
-      recorder.addEventListener('stop', () => { void completeRecording(session); }, { once: true });
-
       try {
-        video.pause();
-        video.playbackRate = 1;
-        draw();
-        recorder.start(250);
-        session.stopFramePump = startVideoFramePump(video, fps, draw, (error) => {
-          session.error = error;
-          stopFrameRecording('error');
-        });
-        session.maxTimerId = setTimeout(
-          () => stopFrameRecording('limit'),
-          Math.max(1, Number(data.maxSeconds) || 60) * 1000,
-        );
-        await video.play();
+        await session.start();
       } catch (error) {
-        session.error = error instanceof Error ? error : new Error(String(error));
-        stopFrameRecording('error');
         throw session.error;
       }
       return {
         recordingId: session.id,
-        captureWidth,
-        captureHeight,
-        sourceStart: session.sourceStart,
+        captureWidth: session.captureWidth,
+        captureHeight: session.captureHeight,
+        sourceStart: session.snapshot.sourceStart,
         liveWallClockStartMs: session.liveWallClockStartMs,
         liveIdentity: getLiveIdentity(document),
       };
@@ -1512,9 +1694,7 @@
 
     const dispose = () => {
       if (recording) {
-        recording.completed = true;
-        cleanupRecording(recording);
-        try { recording.recorder.stop(); } catch (_) { }
+        recording.destroy();
         recording = null;
       }
       observer?.disconnect();
@@ -1688,57 +1868,6 @@
     };
   }
 
-  const liveRewindTestApi = {
-    LiveRewindTrack,
-    parseLiveInit,
-    parseLiveMedia,
-    readIsoBoxes,
-    rebaseLiveFragment,
-    filterLiveInitToTrack,
-    filterLiveMediaToTrack,
-    toVideoOnlyMimeType,
-    installLiveMediaCollector,
-    extractLiveRoomId,
-    isLiveFrameMessage,
-    mapLiveFrameVideoRect,
-    GIF_QUALITY_PRESETS,
-    buildGifsicleCommand,
-    normalizeGifDelay,
-    calculateEncoderWorkerCount,
-    selectEncoderWorker,
-    calculateExtractionPlaybackRate,
-    requiresPreciseFrameSeek,
-    calculateExportFrameCount,
-    calculateExportFrameTime,
-    createExportFrameTimes,
-    createExportTiming,
-    calculateTimelinePlaybackTarget,
-    createTimelineSeekGate,
-    createExportPlan,
-    createPaletteSampleWindows,
-    calculateExportProgress,
-    orderFrameChunks,
-    GIF_TRANSPARENT_INDEX,
-    calculateCropViewport,
-    calculateInnerOverlayPosition,
-    calculateViewportTransitionTransform,
-    constrainPanelGeometry,
-    calculatePanelResize,
-    calculateLiveFirstFrameTime,
-    formatGifFileName,
-    sanitizeFileNamePart,
-    DEFAULT_SHORTCUT,
-    normalizeShortcut,
-    formatShortcut,
-    shortcutFromKeyboardEvent,
-    matchesShortcut,
-    isEditableShortcutEvent,
-  };
-  if (typeof module === 'object' && module.exports && typeof document === 'undefined') {
-    module.exports = liveRewindTestApi;
-    return;
-  }
-
   const IS_LIVE_PAGE = location.hostname === 'live.bilibili.com';
   const IS_TOP_WINDOW = window.top === window;
   const pageWindow = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
@@ -1838,6 +1967,7 @@
   const EXPORT_PREFERENCES_KEY = 'biliGifMakerExportPreferencesV1';
   const SHORTCUT_KEY = 'biliGifMakerShortcutV1';
   const UI_SAFE_MARGIN = 14;
+  const frameCompositor = createFrameCompositor();
     const state = {
     mode: 'capture',
     busy: false,
@@ -2115,16 +2245,6 @@
       }
       #shortcutInput:hover { background: var(--color-surface-hover); }
       #shortcutInput.recording { border-color: var(--color-brand-hover); box-shadow: 0 0 0 3px var(--color-brand-soft); }
-      #stageBadge {
-        flex: 0 0 auto;
-        padding: 3px 8px;
-        border-radius: var(--radius-compact);
-        background: var(--color-brand-soft);
-        color: var(--color-brand-hover);
-        font-size: 11px;
-        font-weight: 750;
-      }
-      #stageBadge { display: none; }
       .icon-btn {
         flex: 0 0 auto;
         width: 36px;
@@ -2146,8 +2266,6 @@
         border-radius: 0 0 calc(var(--radius-panel) - 1px) calc(var(--radius-panel) - 1px);
         padding: 0;
       }
-      #captureStage { display: none !important; }
-      .utility-hidden { display: none !important; }
       #editStage {
         height: 100%;
         min-height: 0;
@@ -2545,7 +2663,6 @@
         margin-top: 10px;
       }
       .export-options .field > label { font-size: 11px; white-space: nowrap; }
-      .grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
       .field { min-width: 0; }
       .field > label {
         display: block;
@@ -2677,7 +2794,6 @@
         white-space: nowrap;
         transition: background var(--motion-fast), border-color var(--motion-fast), color var(--motion-fast);
       }
-      .small-btn.danger-text { color: #ff9f99; }
       .small-btn:hover { border-color: var(--color-border-strong); background: var(--color-surface-hover); color: var(--color-text); }
 
       .text-tabs {
@@ -2732,30 +2848,6 @@
       }
       .text-tab:disabled { cursor: not-allowed; opacity: .48; }
       .text-empty { display: none !important; }
-      details.advanced {
-        margin-top: 9px;
-        border: 1px solid rgba(255,255,255,.08);
-        border-radius: 11px;
-        background: rgba(255,255,255,.035);
-      }
-      details.advanced > summary {
-        padding: 10px 11px;
-        color: #bdc3cb;
-        font-size: 12px;
-        cursor: pointer;
-        user-select: none;
-      }
-      .advanced-body { padding: 0 10px 10px; }
-      .check-row {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px 14px;
-        margin-top: 9px;
-        color: #c7ccd3;
-        font-size: 12px;
-      }
-      .check-row label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
-
       #status {
         min-height: 0;
         margin-top: 10px;
@@ -2947,8 +3039,6 @@
         .action-dock .btn { min-height: 44px; }
         #pageSelectCancel { min-height: 44px; }
         #selectionRecordBtn, #selectionReselectBtn, #selectionClearBtn { min-height: 40px; }
-        .grid-3 { grid-template-columns: 1fr 1fr; }
-        .grid-3 .field:last-child { grid-column: 1 / -1; }
       }
     </style>
 
@@ -2958,7 +3048,6 @@
       <div class="header">
         <div class="title-row">
           <div class="title">贝报GIF助手</div>
-          <span id="stageBadge">编辑</span>
         </div>
         <div class="header-actions">
           <div class="shortcut-setting">
@@ -2970,15 +3059,6 @@
       </div>
 
       <div class="body">
-        <div id="captureStage" class="hidden">
-          <button id="selectAreaBtn"></button>
-          <button id="clearAreaBtn"></button>
-          <div id="selectionInfo"></div>
-          <button id="recordBtn"></button>
-        </div>
-        <div class="utility-hidden">
-        </div>
-
         <div id="editStage" class="hidden">
           <div class="workspace">
             <div id="editorPreviewWrap">
@@ -3161,8 +3241,6 @@
       <button id="selectionClearBtn" title="清除选区">✕</button>
     </div>
 
-    <div id="recordHud" class="hidden"><span id="recordTimer">00:00.0</span><button id="hudStopBtn">停止</button></div>
-
     <div id="pageSelectOverlay" class="hidden">
       <div id="pageSelectBoundary"></div>
       <div id="pageSelectBox"></div>
@@ -3182,14 +3260,8 @@
     header: $('.header'),
     shortcutInput: $('#shortcutInput'),
     closeBtn: $('#closeBtn'),
-    stageBadge: $('#stageBadge'),
-    captureStage: $('#captureStage'),
     editStage: $('#editStage'),
     editorSettingsScroll: $('#editorSettingsScroll'),
-    selectAreaBtn: $('#selectAreaBtn'),
-    clearAreaBtn: $('#clearAreaBtn'),
-    selectionInfo: $('#selectionInfo'),
-    recordBtn: $('#recordBtn'),
     pageSelectionMarker: $('#pageSelectionMarker'),
     selectionToolbar: $('#selectionToolbar'),
     selectionRecordBtn: $('#selectionRecordBtn'),
@@ -3200,9 +3272,6 @@
     pageSelectBoundary: $('#pageSelectBoundary'),
     pageSelectBox: $('#pageSelectBox'),
     pageSelectCancel: $('#pageSelectCancel'),
-    recordHud: $('#recordHud'),
-    recordTimer: $('#recordTimer'),
-    hudStopBtn: $('#hudStopBtn'),
     editorPreviewWrap: $('#editorPreviewWrap'),
     editorMotionLayer: $('#editorMotionLayer'),
     clipVideo: $('#clipVideo'),
@@ -3262,10 +3331,6 @@
       super(message);
       this.name = 'CancelledError';
     }
-  }
-
-  function clamp(value, min, max) {
-    return Math.min(max, Math.max(min, value));
   }
 
   function formatTime(seconds) {
@@ -3628,18 +3693,12 @@
 
   function updateModeUi() {
     const editVisible = state.mode === 'edit' || state.mode === 'exporting';
-    el.captureStage.classList.add('hidden');
     el.editStage.classList.toggle('hidden', !editVisible);
-
-    if (state.mode === 'recording') el.stageBadge.textContent = '录制中';
-    else if (state.mode === 'exporting') el.stageBadge.textContent = '导出中';
-    else el.stageBadge.textContent = '编辑';
 
     const recording = state.mode === 'recording';
     const pageSelectionVisible = state.mode === 'capture' || recording;
     el.launcher.classList.toggle('recording', recording);
     el.launcher.textContent = '';
-    el.recordHud.classList.add('hidden');
     el.pageSelectionMarker.classList.toggle('recording', recording);
     if (!pageSelectionVisible) {
       el.pageSelectionMarker.classList.add('hidden');
@@ -3647,7 +3706,6 @@
     }
 
     const recordDisabled = !state.pageSelection || state.busy || Boolean(state.recording?.stopping);
-    el.recordBtn.disabled = recordDisabled;
     el.selectionRecordBtn.disabled = recordDisabled;
     el.selectionRecordBtn.textContent = recording
       ? (state.recording?.stopping ? '正在停止…' : '■ 停止')
@@ -4776,19 +4834,8 @@
     state.pageAdjustSession = null;
     el.pageSelectionMarker.classList.add('hidden');
     el.selectionToolbar.classList.add('hidden');
-    el.selectionInfo.textContent = '';
-    el.selectionInfo.classList.remove('ready');
     updateModeUi();
     if (!keepStatus) setStatus('');
-  }
-
-  function normalizedSelectionToSource(selection, video) {
-    return {
-      sx: clamp(selection.x, 0, 1) * video.videoWidth,
-      sy: clamp(selection.y, 0, 1) * video.videoHeight,
-      sw: clamp(selection.w, 0, 1) * video.videoWidth,
-      sh: clamp(selection.h, 0, 1) * video.videoHeight,
-    };
   }
 
   function selectionToScreenRect(selection, mapping) {
@@ -4803,8 +4850,8 @@
     return normalizeScreenRect(topLeft.x, topLeft.y, bottomRight.x, bottomRight.y);
   }
 
-  function screenRectToNormalizedSelection(rect, mapping) {
-    const bounded = intersectRects(rect, mapping.visibleRect);
+  function screenRectToNormalizedCrop(rect, mapping, boundary) {
+    const bounded = intersectRects(rect, boundary);
     if (!bounded) return null;
     const p1 = mapping.screenToSource(bounded.left, bounded.top);
     const p2 = mapping.screenToSource(bounded.right, bounded.bottom);
@@ -4984,19 +5031,8 @@
       return;
     }
 
-    const p1 = mapping.screenToSource(rect.left, rect.top);
-    const p2 = mapping.screenToSource(rect.right, rect.bottom);
-    const left = Math.min(p1.x, p2.x);
-    const top = Math.min(p1.y, p2.y);
-    const right = Math.max(p1.x, p2.x);
-    const bottom = Math.max(p1.y, p2.y);
-
-    state.pageSelection = {
-      x: clamp(left / mapping.videoWidth, 0, 1),
-      y: clamp(top / mapping.videoHeight, 0, 1),
-      w: clamp((right - left) / mapping.videoWidth, 0, 1),
-      h: clamp((bottom - top) / mapping.videoHeight, 0, 1),
-    };
+    state.pageSelection = screenRectToNormalizedCrop(rect, mapping, mapping.visibleRect);
+    if (!state.pageSelection) return;
     finishPageSelection(false);
     setStatus('');
   }
@@ -5051,7 +5087,7 @@
     const rect = session.type === 'move'
       ? moveScreenRect(session.startRect, dx, dy, session.mapping.visibleRect)
       : resizeScreenRect(session.startRect, session.handle, dx, dy, session.mapping.visibleRect);
-    const selection = screenRectToNormalizedSelection(rect, session.mapping);
+    const selection = screenRectToNormalizedCrop(rect, session.mapping, session.mapping.visibleRect);
     if (!selection) return;
     state.pageSelection = selection;
     updatePageSelectionUi();
@@ -5066,50 +5102,11 @@
     updatePageSelectionUi();
   }
 
-  function chooseRecorderMimeType() {
-    if (typeof MediaRecorder === 'undefined') return '';
-    const candidates = [
-      'video/webm;codecs=vp9',
-      'video/webm;codecs=vp8',
-      'video/webm',
-    ];
-    return candidates.find((type) => MediaRecorder.isTypeSupported?.(type)) || '';
-  }
-
-  function drawSelectedVideoFrame(video, selection, ctx, width, height) {
-    const source = normalizedSelectionToSource(selection, video);
-    if (source.sw < 2 || source.sh < 2) throw new Error('选区太小，请重新框选。');
-    ctx.clearRect(0, 0, width, height);
-    ctx.fillStyle = '#000';
-    ctx.fillRect(0, 0, width, height);
-    try {
-      ctx.drawImage(
-        video,
-        source.sx, source.sy, source.sw, source.sh,
-        0, 0, width, height,
-      );
-    } catch (error) {
-      if (error?.name === 'SecurityError') {
-        throw new Error(`SecurityError: 浏览器拒绝读取当前视频画面。${error.message || ''}`);
-      }
-      throw error;
-    }
-  }
-
   function updateRecordingUi(recording) {
     const timeText = formatRecordTime((performance.now() - recording.startedAt) / 1000);
-    el.recordTimer.textContent = timeText;
     el.selectionTimer.textContent = timeText;
     const mapping = getMediaMapping(recording.video);
     if (mapping) positionSelectionToolbar(selectionToScreenRect(recording.selection, mapping));
-  }
-
-  function cleanupRecordingResources(recording) {
-    if (!recording) return;
-    recording.stopFramePump?.();
-    if (recording.timerId) clearInterval(recording.timerId);
-    if (recording.maxTimerId) clearTimeout(recording.maxTimerId);
-    try { recording.stream?.getTracks().forEach((track) => track.stop()); } catch (_) { }
   }
 
   async function startRemoteRecording(video) {
@@ -5117,12 +5114,10 @@
     const recordingSelection = { ...state.pageSelection };
     const sourceWidth = Math.max(2, Number(video.videoWidth) || 2);
     const sourceHeight = Math.max(2, Number(video.videoHeight) || 2);
-    const source = normalizedSelectionToSource(recordingSelection, {
+    const { width: captureWidth, height: captureHeight } = calculateCaptureDimensions({
       videoWidth: sourceWidth,
       videoHeight: sourceHeight,
-    });
-    const captureWidth = Math.max(2, Math.round(Math.min(RECORD_MAX_WIDTH, source.sw) / 2) * 2);
-    const captureHeight = Math.max(2, Math.round((captureWidth / (source.sw / source.sh)) / 2) * 2);
+    }, recordingSelection, RECORD_MAX_WIDTH);
     const recording = {
       id: recordingId,
       remote: true,
@@ -5196,110 +5191,26 @@
       void startRemoteRecording(video);
       return;
     }
-    if (typeof MediaRecorder === 'undefined') {
-      setStatus('当前浏览器不支持录制。', 'error');
-      return;
-    }
-
-    const captureStream = HTMLCanvasElement.prototype.captureStream
-      || HTMLCanvasElement.prototype.mozCaptureStream;
-    if (typeof captureStream !== 'function') {
-      setStatus('当前浏览器不支持画布录制。', 'error');
-      return;
-    }
-
     const recordingSelection = { ...state.pageSelection };
-    const source = normalizedSelectionToSource(recordingSelection, video);
-    const captureWidth = Math.max(2, Math.round(Math.min(RECORD_MAX_WIDTH, source.sw) / 2) * 2);
-    const captureHeight = Math.max(2, Math.round((captureWidth / (source.sw / source.sh)) / 2) * 2);
-    const canvas = document.createElement('canvas');
-    canvas.width = captureWidth;
-    canvas.height = captureHeight;
-    const ctx = canvas.getContext('2d', { alpha: false, willReadFrequently: false });
-    if (!ctx) {
-      setStatus('无法创建录制画布。', 'error');
-      return;
-    }
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = 'high';
-
-    const snapshot = {
-      playbackRate: video.playbackRate,
-      paused: video.paused,
-      sourceStart: video.currentTime,
-    };
-
     try {
-      video.pause();
-      video.playbackRate = 1;
-      drawSelectedVideoFrame(video, recordingSelection, ctx, captureWidth, captureHeight);
-      const liveWallClockStartMs = IS_LIVE_PAGE ? Date.now() : null;
-
-      const stream = captureStream.call(canvas, RECORD_FPS);
-      const mimeType = chooseRecorderMimeType();
-      const recorderOptions = {
-        videoBitsPerSecond: captureWidth >= 640 ? 6_000_000 : 4_000_000,
-      };
-      if (mimeType) recorderOptions.mimeType = mimeType;
-      const recorder = new MediaRecorder(stream, recorderOptions);
-      const chunks = [];
-      const recording = {
-        video,
-        recorder,
-        stream,
-        canvas,
-        ctx,
-        chunks,
-        snapshot,
-        selection: recordingSelection,
-        captureWidth,
-        captureHeight,
-        mimeType: recorder.mimeType || mimeType || 'video/webm',
-        liveWallClockStartMs,
-        liveIdentity: IS_LIVE_PAGE ? getLiveRoomIdentity() : null,
-        startedAt: performance.now(),
-        stopFramePump: null,
-        timerId: 0,
-        maxTimerId: 0,
-        stopping: false,
-        stopReason: '',
-        error: null,
-      };
+      const recording = createCanvasRecording(video, recordingSelection, {
+        maxWidth: RECORD_MAX_WIDTH,
+        fps: RECORD_FPS,
+        maxSeconds: MAX_RECORD_SECONDS,
+        onComplete: finalizeRecording,
+        onStopping: updateModeUi,
+      });
+      recording.liveWallClockStartMs = IS_LIVE_PAGE ? Date.now() : null;
+      recording.liveIdentity = IS_LIVE_PAGE ? getLiveRoomIdentity() : null;
       state.recording = recording;
       state.mode = 'recording';
       el.panel.classList.add('hidden');
       updateModeUi();
       setStatus('');
-
-      recorder.addEventListener('dataavailable', (event) => {
-        if (event.data && event.data.size > 0) chunks.push(event.data);
-      });
-      recorder.addEventListener('error', (event) => {
-        recording.error = event.error || new Error('录制失败。');
-        stopRecording('error');
-      });
-      recorder.addEventListener('stop', () => finalizeRecording(recording), { once: true });
-
-      recorder.start(250);
-      recording.stopFramePump = startVideoFramePump(video, RECORD_FPS, () => {
-        if (state.recording !== recording || recording.stopping) return;
-        drawSelectedVideoFrame(video, recording.selection, ctx, captureWidth, captureHeight);
-      }, (error) => {
-        recording.error = error;
-        stopRecording('error');
-      });
       recording.timerId = setInterval(() => updateRecordingUi(recording), 200);
-      recording.maxTimerId = setTimeout(() => stopRecording('limit'), MAX_RECORD_SECONDS * 1000);
-
-      try {
-        await video.play();
-      } catch (error) {
-        recording.error = new Error(`视频无法自动播放：${error.message || error}`);
-        stopRecording('error');
-      }
+      await recording.start();
     } catch (error) {
-      cleanupRecordingResources(state.recording);
-      try { video.playbackRate = snapshot.playbackRate; } catch (_) { }
+      state.recording?.destroy?.();
       state.recording = null;
       state.mode = 'capture';
       updateModeUi();
@@ -5310,9 +5221,9 @@
   function stopRecording(reason = 'manual') {
     const recording = state.recording;
     if (!recording || recording.stopping) return;
-    recording.stopping = true;
-    recording.stopReason = reason;
     if (recording.remote) {
+      recording.stopping = true;
+      recording.stopReason = reason;
       void liveMediaCollector.stopRecording(recording.video, { reason }).catch((error) => {
         recording.error = error;
         void finalizeRecording(recording);
@@ -5320,22 +5231,8 @@
       updateModeUi();
       return;
     }
-    try { recording.video.pause(); } catch (_) { }
-    recording.stopFramePump?.();
-    if (recording.timerId) clearInterval(recording.timerId);
-    if (recording.maxTimerId) clearTimeout(recording.maxTimerId);
+    recording.stop(reason);
     updateModeUi();
-    try {
-      if (recording.recorder.state !== 'inactive') {
-        try { recording.recorder.requestData(); } catch (_) { }
-        recording.recorder.stop();
-      } else {
-        finalizeRecording(recording);
-      }
-    } catch (error) {
-      recording.error = error;
-      finalizeRecording(recording);
-    }
   }
 
   function waitForEvent(target, eventName, timeoutMs = 8_000) {
@@ -5449,7 +5346,6 @@
       || Number(recording.video.currentTime)
       || recording.snapshot.sourceStart + measuredDuration;
     state.recording = null;
-    el.recordTimer.textContent = '00:00.0';
     el.selectionTimer.textContent = '00:00.0';
 
     if (recording.error) {
@@ -5514,32 +5410,6 @@
 
   function getEditorMapping() {
     return getMediaMapping(el.clipVideo);
-  }
-
-  function cropToScreenRect(crop, mapping) {
-    const topLeft = mapping.sourceToScreen(crop.x * mapping.videoWidth, crop.y * mapping.videoHeight);
-    const bottomRight = mapping.sourceToScreen(
-      (crop.x + crop.w) * mapping.videoWidth,
-      (crop.y + crop.h) * mapping.videoHeight,
-    );
-    return normalizeScreenRect(topLeft.x, topLeft.y, bottomRight.x, bottomRight.y);
-  }
-
-  function screenRectToEditorCrop(rect, mapping) {
-    const bounded = intersectRects(rect, mapping.renderedRect);
-    if (!bounded) return null;
-    const p1 = mapping.screenToSource(bounded.left, bounded.top);
-    const p2 = mapping.screenToSource(bounded.right, bounded.bottom);
-    const left = Math.min(p1.x, p2.x);
-    const top = Math.min(p1.y, p2.y);
-    const right = Math.max(p1.x, p2.x);
-    const bottom = Math.max(p1.y, p2.y);
-    return {
-      x: clamp(left / mapping.videoWidth, 0, 1),
-      y: clamp(top / mapping.videoHeight, 0, 1),
-      w: clamp((right - left) / mapping.videoWidth, 0, 1),
-      h: clamp((bottom - top) / mapping.videoHeight, 0, 1),
-    };
   }
 
   function updateEditorCropBox({ force = false, render = true } = {}) {
@@ -5641,7 +5511,7 @@
     const mapping = getEditorMapping();
     if (!mapping) return;
     const viewport = getEditorViewportRect();
-    const startRect = cropToScreenRect(state.editorCrop, mapping);
+    const startRect = selectionToScreenRect(state.editorCrop, mapping);
     const handle = event.target?.dataset?.resize || '';
     state.editorCropSession = {
       pointerId: event.pointerId,
@@ -5671,7 +5541,7 @@
       : (state.aspectSquare
         ? resizeSquareScreenRect(session.startRect, session.handle, dx, dy, session.mapping.renderedRect)
         : resizeScreenRect(session.startRect, session.handle, dx, dy, session.mapping.renderedRect));
-    const crop = screenRectToEditorCrop(rect, session.mapping);
+    const crop = screenRectToNormalizedCrop(rect, session.mapping, session.mapping.renderedRect);
     if (!crop) return;
     state.editorCrop = crop;
     session.fittedLayout = calculateFittedEditorViewport(session.viewport, crop);
@@ -5685,12 +5555,6 @@
     state.editorCropSession = null;
     try { el.editorCropBox.releasePointerCapture?.(session.pointerId); } catch (_) { }
     animateCropIntoPreview(session.fittedLayout);
-  }
-
-  function resetEditorCrop() {
-    if (!state.clip || state.mode !== 'edit') return;
-    state.editorCrop = { x: 0, y: 0, w: 1, h: 1 };
-    animateCropIntoPreview();
   }
 
   function updateTimelinePlayhead() {
@@ -6111,10 +5975,6 @@
     updateEstimatedFileSize();
   }
 
-  function deleteActiveTextLayer() {
-    if (state.activeTextId) deleteTextLayerById(state.activeTextId);
-  }
-
   function updateActiveTextLayerFromControls() {
     const layer = getActiveTextLayer();
     if (!layer) return;
@@ -6260,66 +6120,6 @@
     });
   }
 
-  function wrapCaption(ctx, text, maxWidth, maxLines = 5) {
-    const result = [];
-    const paragraphs = text.replace(/\r/g, '').split('\n');
-    for (const paragraph of paragraphs) {
-      if (result.length >= maxLines) break;
-      if (!paragraph) {
-        result.push('');
-        continue;
-      }
-      let line = '';
-      for (const char of paragraph) {
-        const candidate = line + char;
-        if (line && ctx.measureText(candidate).width > maxWidth) {
-          result.push(line);
-          line = char;
-          if (result.length >= maxLines) break;
-        } else {
-          line = candidate;
-        }
-      }
-      if (result.length < maxLines && line) result.push(line);
-    }
-    if (result.length === maxLines) {
-      const lastIndex = result.length - 1;
-      let last = result[lastIndex];
-      while (last && ctx.measureText(`${last}…`).width > maxWidth) last = last.slice(0, -1);
-      result[lastIndex] = `${last}…`;
-    }
-    return result;
-  }
-
-  function drawTextLayers(ctx, width, height, layers) {
-    if (!Array.isArray(layers) || !layers.length) return;
-    layers.forEach((layer) => {
-      const textValue = String(layer.text || '').trim();
-      if (!textValue) return;
-      const fontSize = Math.max(16, Math.round(width * layer.fontScale));
-      const lineHeight = Math.round(fontSize * 1.18);
-      ctx.save();
-      ctx.font = `850 ${fontSize}px "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif`;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.lineJoin = 'round';
-      ctx.miterLimit = 2;
-      ctx.fillStyle = layer.textColor;
-      ctx.strokeStyle = layer.strokeColor;
-      ctx.lineWidth = Math.max(1, fontSize * layer.strokeScale * 2);
-      const lines = wrapCaption(ctx, textValue, width * 0.9, 6);
-      const span = Math.max(0, lines.length - 1) * lineHeight;
-      const centerX = clamp(layer.x, 0, 1) * width;
-      const centerY = clamp(layer.y, 0, 1) * height;
-      lines.forEach((line, index) => {
-        const y = centerY - span / 2 + index * lineHeight;
-        if (layer.strokeScale > 0) ctx.strokeText(line, centerX, y);
-        ctx.fillText(line, centerX, y);
-      });
-      ctx.restore();
-    });
-  }
-
   function getCornerRadiusRatio() {
     const value = Number(el.cornerRadiusSelect?.value);
     return clamp(Number.isFinite(value) ? value : 0, 0, 0.5);
@@ -6340,93 +6140,8 @@
     }
   }
 
-  function hasTransparentCorners(settings) {
-    return settings.transparentCorners === true
-      || getCornerRadiusPixels(
-        settings.outputWidth,
-        settings.outputHeight,
-        settings.cornerRadiusRatio,
-      ) > 0;
-  }
-
-  function addRoundedRectPath(ctx, width, height, radius) {
-    const r = clamp(Number(radius) || 0, 0, Math.min(width, height) / 2);
-    if (r <= 0) {
-      ctx.rect(0, 0, width, height);
-      return;
-    }
-    ctx.moveTo(r, 0);
-    ctx.lineTo(width - r, 0);
-    ctx.arcTo(width, 0, width, r, r);
-    ctx.lineTo(width, height - r);
-    ctx.arcTo(width, height, width - r, height, r);
-    ctx.lineTo(r, height);
-    ctx.arcTo(0, height, 0, height - r, r);
-    ctx.lineTo(0, r);
-    ctx.arcTo(0, 0, r, 0, r);
-    ctx.closePath();
-  }
-
-  function normalizeTransparentCorner(ctx, x, y, size) {
-    const image = ctx.getImageData(x, y, size, size);
-    const pixels = image.data;
-    for (let i = 0; i < pixels.length; i += 4) {
-      const alpha = pixels[i + 3];
-      // GIF transparency is binary; keep no partially covered edge pixel visible.
-      if (alpha < 255) {
-        pixels[i] = 0;
-        pixels[i + 1] = 0;
-        pixels[i + 2] = 0;
-        pixels[i + 3] = 0;
-      } else {
-        pixels[i + 3] = 255;
-      }
-    }
-    ctx.putImageData(image, x, y);
-  }
-
-  function normalizeTransparentCorners(ctx, width, height, radius) {
-    const size = Math.min(
-      Math.max(1, Math.ceil(radius) + 1),
-      width,
-      height,
-    );
-    normalizeTransparentCorner(ctx, 0, 0, size);
-    normalizeTransparentCorner(ctx, width - size, 0, size);
-    normalizeTransparentCorner(ctx, 0, height - size, size);
-    normalizeTransparentCorner(ctx, width - size, height - size, size);
-  }
-
   function drawExportCanvasFrame(ctx, settings, source) {
-    const width = settings.outputWidth;
-    const height = settings.outputHeight;
-    const radius = Number(settings.outputRadius)
-      || getCornerRadiusPixels(width, height, settings.cornerRadiusRatio);
-    const transparentCorners = hasTransparentCorners(settings);
-    const sourceWidth = Number(source.videoWidth || source.displayWidth || source.width || state.clip.width);
-    const sourceHeight = Number(source.videoHeight || source.displayHeight || source.height || state.clip.height);
-    const sx = settings.crop.x * sourceWidth;
-    const sy = settings.crop.y * sourceHeight;
-    const sw = settings.crop.w * sourceWidth;
-    const sh = settings.crop.h * sourceHeight;
-
-    ctx.clearRect(0, 0, width, height);
-    if (!transparentCorners || radius <= 0) {
-      ctx.fillStyle = '#000';
-      ctx.fillRect(0, 0, width, height);
-    }
-    ctx.drawImage(source, sx, sy, sw, sh, 0, 0, width, height);
-    drawTextLayers(ctx, width, height, settings.textLayers);
-    if (transparentCorners && radius > 0) {
-      ctx.save();
-      ctx.globalCompositeOperation = 'destination-in';
-      ctx.fillStyle = '#fff';
-      ctx.beginPath();
-      addRoundedRectPath(ctx, width, height, radius);
-      ctx.fill();
-      ctx.restore();
-      normalizeTransparentCorners(ctx, width, height, radius);
-    }
+    frameCompositor.draw(ctx, settings, source, state.clip.width, state.clip.height, true);
   }
 
   function updatePreviewCanvasLayout(settings = null) {
@@ -6516,6 +6231,7 @@
       let globalPalette = null;
       let canvas = null;
       let ctx = null;
+      const frameCompositor = (${createFrameCompositor.toString()})();
 
       function reportError(error) {
         const message = String(error && (error.message || error) || '编码失败');
@@ -6524,77 +6240,6 @@
 
       function clamp(value, min, max) {
         return Math.min(max, Math.max(min, value));
-      }
-
-      function addRoundedRectPath(context, width, height, radius) {
-        const safeRadius = clamp(radius, 0, Math.min(width, height) / 2);
-        context.moveTo(safeRadius, 0);
-        context.lineTo(width - safeRadius, 0);
-        context.quadraticCurveTo(width, 0, width, safeRadius);
-        context.lineTo(width, height - safeRadius);
-        context.quadraticCurveTo(width, height, width - safeRadius, height);
-        context.lineTo(safeRadius, height);
-        context.quadraticCurveTo(0, height, 0, height - safeRadius);
-        context.lineTo(0, safeRadius);
-        context.quadraticCurveTo(0, 0, safeRadius, 0);
-      }
-
-      function wrapCaption(context, text, maxWidth, maxLines) {
-        const result = [];
-        const paragraphs = String(text || '').replace(/\\r/g, '').split('\\n');
-        for (const paragraph of paragraphs) {
-          if (result.length >= maxLines) break;
-          if (!paragraph) {
-            result.push('');
-            continue;
-          }
-          let line = '';
-          for (const char of paragraph) {
-            const candidate = line + char;
-            if (line && context.measureText(candidate).width > maxWidth) {
-              result.push(line);
-              line = char;
-              if (result.length >= maxLines) break;
-            } else {
-              line = candidate;
-            }
-          }
-          if (result.length < maxLines && line) result.push(line);
-        }
-        if (result.length === maxLines) {
-          let last = result[result.length - 1];
-          while (last && context.measureText(last + '…').width > maxWidth) last = last.slice(0, -1);
-          result[result.length - 1] = last + '…';
-        }
-        return result;
-      }
-
-      function drawTextLayers(context, width, height, layers) {
-        for (const layer of layers || []) {
-          const value = String(layer.text || '').trim();
-          if (!value) continue;
-          const fontSize = Math.max(16, Math.round(width * layer.fontScale));
-          const lineHeight = Math.round(fontSize * 1.18);
-          context.save();
-          context.font = '850 ' + fontSize + 'px "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif';
-          context.textAlign = 'center';
-          context.textBaseline = 'middle';
-          context.lineJoin = 'round';
-          context.miterLimit = 2;
-          context.fillStyle = layer.textColor;
-          context.strokeStyle = layer.strokeColor;
-          context.lineWidth = Math.max(1, fontSize * layer.strokeScale * 2);
-          const lines = wrapCaption(context, value, width * 0.9, 6);
-          const span = Math.max(0, lines.length - 1) * lineHeight;
-          const centerX = clamp(layer.x, 0, 1) * width;
-          const centerY = clamp(layer.y, 0, 1) * height;
-          lines.forEach((line, index) => {
-            const y = centerY - span / 2 + index * lineHeight;
-            if (layer.strokeScale > 0) context.strokeText(line, centerX, y);
-            context.fillText(line, centerX, y);
-          });
-          context.restore();
-        }
       }
 
       function composeFrame(source, frameSettings) {
@@ -6606,29 +6251,7 @@
           ctx.imageSmoothingEnabled = true;
           ctx.imageSmoothingQuality = 'high';
         }
-        const crop = frameSettings.crop;
-        const sourceWidth = Number(source.displayWidth || source.width);
-        const sourceHeight = Number(source.displayHeight || source.height);
-        const sx = crop.x * sourceWidth;
-        const sy = crop.y * sourceHeight;
-        const sw = crop.w * sourceWidth;
-        const sh = crop.h * sourceHeight;
-        ctx.clearRect(0, 0, width, height);
-        if (!frameSettings.transparentCorners) {
-          ctx.fillStyle = '#000';
-          ctx.fillRect(0, 0, width, height);
-        }
-        ctx.drawImage(source, sx, sy, sw, sh, 0, 0, width, height);
-        drawTextLayers(ctx, width, height, frameSettings.textLayers);
-        if (frameSettings.transparentCorners && frameSettings.outputRadius > 0) {
-          ctx.save();
-          ctx.globalCompositeOperation = 'destination-in';
-          ctx.fillStyle = '#fff';
-          ctx.beginPath();
-          addRoundedRectPath(ctx, width, height, frameSettings.outputRadius);
-          ctx.fill();
-          ctx.restore();
-        }
+        frameCompositor.draw(ctx, frameSettings, source);
         return ctx.getImageData(0, 0, width, height);
       }
 
@@ -7523,17 +7146,9 @@
   });
 
   el.closeBtn.addEventListener('click', closePanel);
-  el.selectAreaBtn.addEventListener('click', beginPageSelection);
-  el.clearAreaBtn.addEventListener('click', () => {
-    if (state.mode === 'recording' || state.mode === 'exporting') return;
-    clearPageSelection();
-  });
-  el.recordBtn.addEventListener('click', startRecording);
   el.selectionRecordBtn.addEventListener('click', startRecording);
   el.selectionReselectBtn.addEventListener('click', beginPageSelection);
   el.selectionClearBtn.addEventListener('click', () => clearPageSelection());
-  el.hudStopBtn.addEventListener('click', () => stopRecording('manual'));
-
   el.pageSelectCancel.addEventListener('click', (event) => {
     event.stopPropagation();
     finishPageSelection(true);
