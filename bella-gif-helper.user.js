@@ -204,6 +204,28 @@
     return type === 'playhead' ? Number(target) : Number(trimStart);
   }
 
+  function createTimelineSeekGate() {
+    let revision = 0;
+    let controller = null;
+    return Object.freeze({
+      start() {
+        controller?.abort();
+        controller = new AbortController();
+        const requestRevision = ++revision;
+        const { signal } = controller;
+        return Object.freeze({
+          signal,
+          isCurrent: () => !signal.aborted && requestRevision === revision,
+        });
+      },
+      cancel() {
+        revision += 1;
+        controller?.abort();
+        controller = null;
+      },
+    });
+  }
+
   function createExportPlan(settings) {
     const timing = createExportTiming(settings.start, settings.end, settings.fps, settings.speed);
     return Object.freeze({
@@ -1740,6 +1762,7 @@
     createExportFrameTimes,
     createExportTiming,
     calculateTimelinePlaybackTarget,
+    createTimelineSeekGate,
     createExportPlan,
     createEstimateSampleWindows,
     inspectGifFrameBytes,
@@ -1884,6 +1907,8 @@
     timelinePreviewRaf: 0,
     timelinePreviewTarget: null,
     timelinePreviewType: null,
+    timelineSeekGate: createTimelineSeekGate(),
+    previewFrameCacheToken: 0,
     timelineSettleToken: 0,
     timelineResumePlayback: false,
     previewFrameCache: null,
@@ -1893,6 +1918,7 @@
     aspectSquare: true,
     trimStart: 0,
     trimEnd: 0,
+    trimPreviewToken: 0,
     trimPreviewCleanup: null,
     exportEncodingSession: null,
     exportAbortController: null,
@@ -4279,6 +4305,7 @@
   }
 
   function releasePreviewFrameCache() {
+    state.previewFrameCacheToken += 1;
     const cache = state.previewFrameCache;
     if (el.timelineFilmstrip) el.timelineFilmstrip.replaceChildren();
     if (!cache) return;
@@ -4290,6 +4317,7 @@
     cache.frames?.forEach((frame) => {
       try { frame.close(); } catch (_) { }
     });
+    releaseDetachedClipVideo(cache.clip, cache.video);
     state.previewFrameCache = null;
   }
 
@@ -4579,13 +4607,9 @@
     return calculatePreviewCacheProfile(clip.width, clip.height, clip.duration);
   }
 
-  function hasPreviewCacheFrames() {
-    return Boolean(state.previewFrameCache?.frames?.some(Boolean));
-  }
-
   function pausePreviewFrameCache() {
     const cache = state.previewFrameCache;
-    if (!cache || cache.status === 'ready' || cache.cancelled) return;
+    if (!cache || cache.cancelled) return;
     cache.runToken += 1;
     cache.running = false;
     cache.stopRun?.();
@@ -4684,9 +4708,20 @@
     }
   }
 
-  function buildPreviewFrameCache(clip) {
-    if (!clip || !el.scrubVideo) return;
+  async function buildPreviewFrameCache(clip) {
+    if (!clip) return;
     releasePreviewFrameCache();
+    const buildToken = state.previewFrameCacheToken;
+    let video;
+    try {
+      video = await createDetachedClipVideo(clip);
+    } catch (_) {
+      return;
+    }
+    if (state.clip !== clip || buildToken !== state.previewFrameCacheToken) {
+      releaseDetachedClipVideo(clip, video);
+      return;
+    }
     const profile = choosePreviewCacheProfile(clip);
     const cache = {
       status: 'building',
@@ -4700,40 +4735,10 @@
       clip,
       ...profile,
       frames: new Array(profile.frameCount),
-      video: el.scrubVideo,
+      video,
     };
     state.previewFrameCache = cache;
     void resumePreviewFrameCache(cache);
-  }
-
-  function getCachedPreviewFrame(time) {
-    const cache = state.previewFrameCache;
-    if (!cache || !cache.frames.length) return null;
-    const target = clamp(
-      Math.round(((Number(time) || 0) / Math.max(0.001, cache.clip.duration)) * (cache.frameCount - 1)),
-      0,
-      cache.frameCount - 1,
-    );
-    if (cache.frames[target]) return cache.frames[target];
-    for (let distance = 1; distance < cache.frameCount; distance += 1) {
-      if (cache.frames[target - distance]) return cache.frames[target - distance];
-      if (cache.frames[target + distance]) return cache.frames[target + distance];
-    }
-    return null;
-  }
-
-  function renderCachedPreviewFrame(settings, time) {
-    const cache = state.previewFrameCache;
-    const frame = getCachedPreviewFrame(time);
-    if (!cache || !frame || !el.previewCanvas) return false;
-    updatePreviewCanvasLayout(settings);
-    const ctx = el.previewCanvas.getContext('2d', { alpha: true, colorSpace: 'srgb' });
-    if (!ctx) return false;
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = 'high';
-    drawExportCanvasFrame(ctx, settings, frame);
-    setOutputPreviewVisible(true);
-    return true;
   }
 
   function openPanel() {
@@ -5632,7 +5637,7 @@
     fitEditorLayout();
     updateResolutionOptions();
     updateEstimatedFileSize();
-    buildPreviewFrameCache(state.clip);
+    void buildPreviewFrameCache(state.clip);
   }
 
   function getEditorMapping() {
@@ -5867,6 +5872,7 @@
     state.timelinePreviewRaf = 0;
     state.timelinePreviewTarget = null;
     state.timelinePreviewType = null;
+    state.timelineSeekGate.cancel();
   }
 
   function queueTimelinePreview(time, type) {
@@ -5878,26 +5884,15 @@
       state.timelinePreviewRaf = 0;
       if (!state.timelineDrag || state.timelinePreviewTarget === null) return;
       const target = state.timelinePreviewTarget;
-      let settings;
-      try { settings = readExportSettings(); } catch (_) { return; }
       el.scrubVideo.classList.add('active');
-      if (hasPreviewCacheFrames()) {
-        renderCachedPreviewFrame(settings, target);
-      }
-      if (Math.abs((Number(el.scrubVideo.currentTime) || 0) - target) < 0.008
-        && el.scrubVideo.readyState >= 2) {
-        renderExportPreviewFrame();
-        return;
-      }
-      try { el.scrubVideo.currentTime = target; } catch (_) { }
+      const request = state.timelineSeekGate.start();
+      seekVideo(el.scrubVideo, target, state.clip.duration, request.signal)
+        .then(() => {
+          if (!request.isCurrent() || !state.timelineDrag) return;
+          renderExportPreviewFrame();
+        })
+        .catch(() => { });
     });
-  }
-
-  function renderTimelinePreviewIfCurrent(video) {
-    if (!state.timelineDrag || !video || state.timelinePreviewTarget === null) return;
-    const target = state.timelinePreviewTarget;
-    if (Math.abs((Number(video.currentTime) || 0) - target) > 0.035) return;
-    renderExportPreviewFrame();
   }
 
   function hideTimelineHandlePreview() {
@@ -5910,20 +5905,22 @@
   function settleTimelinePreview(type, target, resumePlayback = false) {
     if (!state.clip || !Number.isFinite(target)) return;
     const token = ++state.timelineSettleToken;
-    const video = type === 'handle' ? el.scrubVideo : el.clipVideo;
+    const video = el.scrubVideo;
     const playbackTarget = calculateTimelinePlaybackTarget(type, target, state.trimStart);
     if (!video || !Number.isFinite(playbackTarget)) return;
-    if (type === 'handle') el.scrubVideo.classList.add('active');
+    video.pause();
+    el.scrubVideo.classList.add('active');
+    const request = state.timelineSeekGate.start();
     const settle = async () => {
-      await seekVideo(video, target, state.clip.duration);
-      if (token !== state.timelineSettleToken || state.timelineDrag) return;
+      await seekVideo(video, target, state.clip.duration, request.signal);
+      if (!request.isCurrent() || token !== state.timelineSettleToken || state.timelineDrag) return;
       el.scrubVideo.classList.remove('active');
       if (resumePlayback) {
         await previewTrimmedClip({ startAt: playbackTarget });
-      } else if (type === 'handle') {
-        await seekVideo(el.clipVideo, target, state.clip.duration);
+      } else {
+        await seekVideo(el.clipVideo, target, state.clip.duration, request.signal);
       }
-      if (token !== state.timelineSettleToken || state.timelineDrag) return;
+      if (!request.isCurrent() || token !== state.timelineSettleToken || state.timelineDrag) return;
       renderExportPreviewFrame();
       void resumePreviewFrameCache();
     };
@@ -5953,6 +5950,8 @@
     if (event.button !== 0 || state.mode !== 'edit' || !state.clip) return;
     state.timelineResumePlayback = Boolean(state.trimPreviewCleanup && !el.clipVideo.paused);
     stopTrimPreview();
+    cancelTimelinePreview();
+    try { el.scrubVideo.pause(); } catch (_) { }
     pausePreviewFrameCache();
     state.timelineSettleToken += 1;
     const handleType = event.target?.dataset?.timelineHandle;
@@ -5997,6 +5996,7 @@
   }
 
   function stopTrimPreview({ keepPosition = true } = {}) {
+    state.trimPreviewToken += 1;
     if (typeof state.trimPreviewCleanup === 'function') state.trimPreviewCleanup();
     state.trimPreviewCleanup = null;
     if (state.previewSnapshot) {
@@ -6022,6 +6022,7 @@
       stopTrimPreview();
       return;
     }
+    const previewToken = ++state.trimPreviewToken;
 
     let stopped = false;
     let jumping = false;
@@ -6062,6 +6063,7 @@
           : state.trimStart);
       el.clipVideo.pause();
       await seekVideo(el.clipVideo, resumeAt, state.clip.duration);
+      if (previewToken !== state.trimPreviewToken) return;
       state.previewSnapshot = { playbackRate: el.clipVideo.playbackRate };
       el.clipVideo.addEventListener('timeupdate', check);
       state.trimPreviewCleanup = () => {
@@ -6083,6 +6085,10 @@
       renderExportPreviewFrame();
       animationFrame = requestAnimationFrame(tick);
       await el.clipVideo.play();
+      if (previewToken !== state.trimPreviewToken) {
+        el.clipVideo.pause();
+        return;
+      }
       setStatus('');
     } catch (error) {
       stopTrimPreview();
@@ -7820,10 +7826,7 @@
   el.captionLayer.addEventListener('pointercancel', finishTextLayerDrag);
   el.clipVideo.addEventListener('timeupdate', updateTimelinePlayhead);
   el.clipVideo.addEventListener('timeupdate', () => {
-    if (state.timelineDrag) {
-      if (state.timelineDrag.type === 'playhead') renderTimelinePreviewIfCurrent(el.clipVideo);
-      return;
-    }
+    if (state.timelineDrag) return;
     renderExportPreviewFrame();
   });
   el.clipVideo.addEventListener('loadeddata', () => {
@@ -7838,9 +7841,6 @@
     updateEditorCropBox();
   });
   el.scrubVideo.addEventListener('loadeddata', () => renderExportPreviewFrame());
-  el.scrubVideo.addEventListener('seeked', () => {
-    if (state.timelineDrag) renderTimelinePreviewIfCurrent(el.scrubVideo);
-  });
 
   el.newRecordingBtn.addEventListener('click', handleNewRecording);
   el.generateBtn.addEventListener('click', generateGif);

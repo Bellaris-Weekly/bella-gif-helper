@@ -13,6 +13,7 @@ const {
   calculateExportFrameTime,
   calculateExtractionPlaybackRate,
   calculatePreviewCacheProfile,
+  createTimelineSeekGate,
   orderFrameChunks,
   requiresPreciseFrameSeek,
   selectEncoderWorker,
@@ -61,18 +62,38 @@ test('preview cache stays inside the fixed memory budget for landscape and squar
   assert.equal(Math.max(square.width, square.height), 260);
 });
 
-test('timeline scrubbing replaces the responsive cache frame with a full-resolution seek', () => {
-  assert.match(userscriptSource, /function renderCachedPreviewFrame[\s\S]*?imageSmoothingQuality = 'high'/);
-  assert.match(userscriptSource, /renderCachedPreviewFrame\(settings, target\);[\s\S]*?el\.scrubVideo\.currentTime = target/);
-  assert.match(userscriptSource, /function renderTimelinePreviewIfCurrent[\s\S]*?renderExportPreviewFrame\(\)/);
-  assert.doesNotMatch(userscriptSource, /function renderTimelinePreviewIfCurrent[\s\S]*?hasPreviewCacheFrames\(\)[\s\S]*?return;/);
-  assert.match(userscriptSource, /el\.scrubVideo\.addEventListener\('seeked'[\s\S]*?if \(state\.timelineDrag\) renderTimelinePreviewIfCurrent/);
+test('timeline seek gate accepts only the latest request', () => {
+  const gate = createTimelineSeekGate();
+  const first = gate.start();
+  const second = gate.start();
+  const third = gate.start();
+  assert.equal(first.signal.aborted, true);
+  assert.equal(second.signal.aborted, true);
+  assert.equal(first.isCurrent(), false);
+  assert.equal(second.isCurrent(), false);
+  assert.equal(third.isCurrent(), true);
+  gate.cancel();
+  assert.equal(third.signal.aborted, true);
+  assert.equal(third.isCurrent(), false);
+});
+
+test('timeline scrubbing uses a paused exact source instead of cached substitutes', () => {
+  const queueSource = userscriptSource.match(/function queueTimelinePreview[\s\S]*?function hideTimelineHandlePreview/)?.[0] || '';
+  const cacheSource = userscriptSource.match(/async function buildPreviewFrameCache[\s\S]*?function openPanel/)?.[0] || '';
+  assert.match(queueSource, /timelineSeekGate\.start\(\)[\s\S]*?seekVideo\(el\.scrubVideo/);
+  assert.match(queueSource, /request\.isCurrent\(\)[\s\S]*?renderExportPreviewFrame\(\)/);
+  assert.doesNotMatch(queueSource, /renderCachedPreviewFrame|getCachedPreviewFrame|\.play\(\)/);
+  assert.match(cacheSource, /createDetachedClipVideo\(clip\)/);
+  assert.doesNotMatch(cacheSource, /video:\s*el\.scrubVideo/);
+  assert.doesNotMatch(userscriptSource, /function renderCachedPreviewFrame|function getCachedPreviewFrame/);
+  assert.match(userscriptSource, /function stopTrimPreview[\s\S]*?trimPreviewToken \+= 1/);
+  assert.match(userscriptSource, /function previewTrimmedClip[\s\S]*?previewToken !== state\.trimPreviewToken/);
 });
 
 test('steady editor preview has one visible picture and all visual settings share its compositor', () => {
   assert.match(userscriptSource, /function setOutputPreviewVisible[\s\S]*?classList\.toggle\('output-previewing', visible\)/);
   assert.match(userscriptSource, /output-previewing #clipVideo[\s\S]*?visibility: hidden/);
-  assert.match(userscriptSource, /function renderCachedPreviewFrame[\s\S]*?drawExportCanvasFrame\(ctx, settings, frame\)/);
+  assert.match(userscriptSource, /function renderExportPreviewFrame[\s\S]*?drawExportCanvasFrame\(ctx, nextSettings, sourceVideo\)/);
   assert.match(userscriptSource, /function drawExportCanvasFrame[\s\S]*?drawTextLayers\(ctx, width, height, settings\.textLayers\)[\s\S]*?normalizeTransparentCorners/);
   assert.doesNotMatch(userscriptSource, /const includeText = mode !== 'preview'/);
 });
