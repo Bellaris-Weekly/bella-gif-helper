@@ -379,6 +379,17 @@
     };
   }
 
+  function calculateInnerOverlayPosition(crop, controlWidth, controlHeight, preferredInset = 24) {
+    const availableHorizontal = Math.max(0, crop.width - controlWidth);
+    const availableVertical = Math.max(0, crop.height - controlHeight);
+    const rightInset = Math.min(preferredInset, availableHorizontal / 2);
+    const topInset = Math.min(preferredInset, availableVertical / 2);
+    return {
+      left: crop.left + availableHorizontal - rightInset,
+      top: crop.top + topInset,
+    };
+  }
+
   function calculateViewportTransitionTransform(first, last) {
     const scaleX = last.width / first.width;
     const scaleY = last.height / first.height;
@@ -1772,6 +1783,7 @@
     orderFrameChunks,
     GIF_TRANSPARENT_INDEX,
     calculateCropViewport,
+    calculateInnerOverlayPosition,
     calculateViewportTransitionTransform,
     constrainPanelGeometry,
     calculatePanelResize,
@@ -2280,8 +2292,8 @@
       #scrubVideo.active { visibility: visible; }
       #aspectSquareBtn {
         position: absolute;
-        top: 10px;
-        right: 16px;
+        top: 16px;
+        left: 16px;
         z-index: 12;
         min-width: 40px;
         height: 28px;
@@ -3863,6 +3875,18 @@
     };
   }
 
+  function positionAspectSquareButton(crop) {
+    const wrap = el.editorPreviewWrap;
+    const button = el.aspectSquareBtn;
+    if (!wrap || !button) return;
+    const buttonWidth = button.offsetWidth || 40;
+    const buttonHeight = button.offsetHeight || 28;
+    const position = calculateInnerOverlayPosition(crop, buttonWidth, buttonHeight);
+    button.style.left = `${position.left}px`;
+    button.style.top = `${position.top}px`;
+    button.style.right = 'auto';
+  }
+
   function setOutputPreviewVisible(visible) {
     if (!el.editorMotionLayer || !el.previewCanvas) return;
     el.editorMotionLayer.classList.toggle('output-previewing', visible);
@@ -3879,6 +3903,7 @@
       height: `${crop.height}px`,
       visibility: 'visible',
     });
+    positionAspectSquareButton(crop);
     Object.assign(el.editorBoundary.style, {
       left: `${layout.left}px`,
       top: `${layout.top}px`,
