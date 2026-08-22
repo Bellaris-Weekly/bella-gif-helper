@@ -95,17 +95,30 @@ test('parallel frame chunks are assembled in source order with a reserved transp
 });
 
 test('cancellation stops cache analysis and encoder work before restoring the editor', () => {
-  assert.match(userscriptSource, /function cancelExport\(\)[\s\S]*?exportVideo\?\.pause\(\);[\s\S]*?exportEncodingSession\?\.cancel/);
+  assert.match(userscriptSource, /function cancelSizeEstimate[\s\S]*?job\.controller\.abort\(\)[\s\S]*?job\.session\?\.cancel/);
+  assert.match(userscriptSource, /function cancelExport\(\)[\s\S]*?exportAbortController\?\.abort\(\)[\s\S]*?exportEncodingSession\?\.cancel/);
+  assert.match(userscriptSource, /beforeunload[\s\S]*?exportAbortController\?\.abort\(\)[\s\S]*?exportEncodingSession\?\.destroy/);
+  assert.match(userscriptSource, /estimateExportSize\(plan, signature, job\)\.catch\([\s\S]*?\.finally\([\s\S]*?state\.sizeEstimateJob === job/);
   assert.match(userscriptSource, /cache\.stopRun\?\.\(\)/);
   assert.match(userscriptSource, /createDetachedClipVideo\(clip\)/);
   assert.doesNotMatch(userscriptSource, /await completePreviewFrameCacheForExport\(\)/);
   assert.match(userscriptSource, /void resumePreviewFrameCache\(\)/);
 });
 
+test('size estimation and export share continuous extraction without legacy sampled seeks', () => {
+  const estimateSource = userscriptSource.match(/async function estimateExportSize[\s\S]*?function updateEstimatedFileSize/)?.[0] || '';
+  const exportSource = userscriptSource.match(/async function generateGif[\s\S]*?function cancelExport/)?.[0] || '';
+  assert.match(userscriptSource, /async function extractFramesContinuously[\s\S]*?requestVideoFrameCallback[\s\S]*?extractPrecisely/);
+  assert.match(estimateSource, /captureSampleFrames/);
+  assert.equal((estimateSource.match(/createGifEncodingSession/g) || []).length, 1);
+  assert.match(exportSource, /extractFramesContinuously\(exportVideo, frameTimes, clip/);
+  assert.doesNotMatch(userscriptSource, /calculateEstimatedSizeRange|flattenSampleTimes|captureImageBitmapsAtTimes/);
+});
+
 test('export owns a detached source and pauses when the encoder queue is full', () => {
   assert.match(userscriptSource, /onBackpressure: \(full\) =>/);
   assert.match(userscriptSource, /if \(full\) exportVideo\.pause\(\)/);
-  assert.match(userscriptSource, /await extractRemainingPrecisely\(extractedFrames\)/);
+  assert.match(userscriptSource, /async function extractFramesContinuously[\s\S]*?await extractPrecisely\(extractedFrames\)/);
   assert.doesNotMatch(userscriptSource, /fillRemainingWithCurrentFrame/);
   assert.doesNotMatch(userscriptSource, /settings\.video/);
 });

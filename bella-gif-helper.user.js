@@ -42,6 +42,8 @@
   const PREVIEW_CACHE_FPS = 2;
   const PREVIEW_CACHE_MAX_EDGE = 260;
   const PREVIEW_CACHE_MIN_EDGE = 256;
+  const ESTIMATE_WINDOW_FRAMES = 8;
+  const ESTIMATE_WINDOW_COUNT = 3;
   const PANEL_MIN_WIDTH = 360;
   const PANEL_MAX_WIDTH = 720;
   const PANEL_MIN_HEIGHT = 560;
@@ -215,16 +217,22 @@
     });
   }
 
-  function createEstimateSampleWindows(frameTimes, windowSize = 8) {
+  function createEstimateSampleWindows(frameTimes, windowSize = ESTIMATE_WINDOW_FRAMES) {
     const times = Array.from(frameTimes || []);
     if (!times.length) return Object.freeze([]);
-    if (times.length <= windowSize * 3) return Object.freeze([Object.freeze(times)]);
+    if (times.length <= windowSize * ESTIMATE_WINDOW_COUNT) {
+      return Object.freeze(Array.from(
+        { length: Math.ceil(times.length / windowSize) },
+        (_, index) => Object.freeze(times.slice(index * windowSize, (index + 1) * windowSize)),
+      ));
+    }
     const size = Math.min(windowSize, times.length);
-    const windows = [0.1, 0.5, 0.9].map((ratio) => {
-      const anchor = Math.round((times.length - 1) * ratio);
-      const start = Math.min(times.length - size, Math.max(0, anchor - Math.floor(size / 2)));
-      return Object.freeze(times.slice(start, start + size));
-    });
+    const middle = Math.min(
+      times.length - size,
+      Math.max(0, Math.round((times.length - size) / 2)),
+    );
+    const windows = [0, middle, times.length - size]
+      .map((start) => Object.freeze(times.slice(start, start + size)));
     return Object.freeze(windows);
   }
 
@@ -271,24 +279,28 @@
     });
   }
 
-  function calculateEstimatedSizeRange(reports, totalFrames, complete = false) {
-    const valid = (reports || []).filter((report) => report?.frameBytes?.length);
-    if (!valid.length || totalFrames < 1) return null;
-    if (complete && valid.length === 1 && valid[0].frameBytes.length === totalFrames) {
-      return Object.freeze({ min: valid[0].totalBytes, max: valid[0].totalBytes });
-    }
-    const containers = valid.map((report) => report.containerBytes).sort((a, b) => a - b);
-    const firstFrames = valid.map((report) => report.frameBytes[0]).sort((a, b) => a - b);
-    const following = valid.flatMap((report) => report.frameBytes.slice(1));
-    if (!following.length) following.push(...firstFrames);
-    const container = containers[Math.floor(containers.length / 2)];
-    const first = firstFrames[Math.floor(firstFrames.length / 2)];
-    const low = container + first + Math.min(...following) * Math.max(0, totalFrames - 1);
-    const high = container + first + Math.max(...following) * Math.max(0, totalFrames - 1);
-    return Object.freeze({
-      min: Math.max(1024, Math.floor(low * 0.9)),
-      max: Math.max(1024, Math.ceil(high * 1.1)),
-    });
+  function calculateEstimatedGifBytes(report, totalFrames, windowStarts = [0]) {
+    if (!report?.frameBytes?.length || totalFrames < 1) return 0;
+    if (totalFrames <= report.frameBytes.length) return report.totalBytes;
+
+    const boundaries = new Set(Array.from(windowStarts || []).slice(1));
+    const following = report.frameBytes
+      .filter((_, index) => index > 0 && !boundaries.has(index))
+      .sort((a, b) => a - b);
+    if (!following.length) return report.totalBytes;
+
+    const trimCount = following.length >= 5
+      ? Math.max(1, Math.floor(following.length * 0.1))
+      : 0;
+    const representative = trimCount
+      ? following.slice(trimCount, following.length - trimCount)
+      : following;
+    const average = representative.reduce((sum, bytes) => sum + bytes, 0) / representative.length;
+    return Math.round(
+      report.containerBytes
+      + report.frameBytes[0]
+      + average * Math.max(0, totalFrames - 1),
+    );
   }
 
   function calculateExportProgress(phase, completed = 0, total = 1) {
@@ -1731,7 +1743,7 @@
     createExportPlan,
     createEstimateSampleWindows,
     inspectGifFrameBytes,
-    calculateEstimatedSizeRange,
+    calculateEstimatedGifBytes,
     calculateExportProgress,
     calculatePreviewCacheProfile,
     orderFrameChunks,
@@ -1883,6 +1895,7 @@
     trimEnd: 0,
     trimPreviewCleanup: null,
     exportEncodingSession: null,
+    exportAbortController: null,
     exportVideo: null,
     cancelExportPreparation: null,
     launcherDrag: null,
@@ -1899,13 +1912,11 @@
     nextTextLayerId: 1,
     toastTimer: 0,
     sizeEstimateTimer: 0,
-    sizeEstimateToken: 0,
     sizeEstimateJob: null,
     sizeEstimateCache: null,
     clipRevision: 0,
     encodingResourceTexts: null,
     previewSnapshot: null,
-      cancelRequested: false,
       liveCaptureMode: initialLiveCaptureMode,
       mainVideo: null,
       videoScanQueued: false,
@@ -4405,41 +4416,162 @@
     cleanupClipAttachment(clip, video);
   }
 
-  function flattenSampleTimes(windows) {
-    const seen = new Set();
-    const times = [];
-    for (const windowTimes of windows || []) {
-      for (const time of windowTimes) {
-        const key = Number(time).toFixed(6);
-        if (seen.has(key)) continue;
-        seen.add(key);
-        times.push(Number(time));
+  async function extractFramesContinuously(video, frameTimes, clip, {
+    fps = 12,
+    signal = null,
+    onFrame,
+  } = {}) {
+    const times = Array.from(frameTimes || []);
+    if (!times.length) return;
+    if (typeof onFrame !== 'function') throw new Error('取帧回调无效。');
+
+    const ensureActive = () => {
+      if (signal?.aborted) throw new CancelledError();
+    };
+    const extractPrecisely = async (startIndex) => {
+      video.pause();
+      for (let index = startIndex; index < times.length; index += 1) {
+        ensureActive();
+        await seekVideo(video, times[index], clip.duration, signal);
+        ensureActive();
+        await onFrame(index, times[index]);
+        ensureActive();
       }
+    };
+
+    await seekVideo(video, times[0], clip.duration, signal);
+    ensureActive();
+    await onFrame(0, times[0]);
+    ensureActive();
+    if (times.length === 1) return;
+    if (typeof video.requestVideoFrameCallback !== 'function') {
+      await extractPrecisely(1);
+      return;
     }
-    return times;
+
+    const extractionPlaybackRate = calculateExtractionPlaybackRate(fps);
+    const frameTolerance = 0.5 / Math.max(1, Number(fps) || 1);
+    const endTime = Number.isFinite(clip.duration) ? clip.duration : times[times.length - 1] + 1;
+    let extractedFrames = 1;
+    video.playbackRate = extractionPlaybackRate;
+
+    await new Promise((resolve, reject) => {
+      let settled = false;
+      let callbackId = 0;
+      let timeoutId = 0;
+
+      const cleanup = () => {
+        clearTimeout(timeoutId);
+        if (callbackId && typeof video.cancelVideoFrameCallback === 'function') {
+          try { video.cancelVideoFrameCallback(callbackId); } catch (_) { }
+        }
+        video.removeEventListener('error', onError);
+        video.removeEventListener('ended', onEnded);
+        signal?.removeEventListener('abort', onAbort);
+        try { video.pause(); } catch (_) { }
+      };
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve();
+      };
+      const fail = (error) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(error instanceof Error ? error : new Error(String(error)));
+      };
+      const onError = () => fail(new Error('视频解码失败。'));
+      const onAbort = () => fail(new CancelledError());
+      const onEnded = async () => {
+        try {
+          clearTimeout(timeoutId);
+          timeoutId = 0;
+          await extractPrecisely(extractedFrames);
+          finish();
+        } catch (error) {
+          fail(error);
+        }
+      };
+      const onVideoFrame = async (_now, metadata) => {
+        if (settled) return;
+        try {
+          ensureActive();
+          if (extractedFrames >= times.length) {
+            finish();
+            return;
+          }
+          const mediaTime = Number(metadata?.mediaTime);
+          const currentTime = Number.isFinite(mediaTime) ? mediaTime : Number(video.currentTime) || 0;
+          const target = times[extractedFrames];
+          if (currentTime > target + frameTolerance || currentTime >= endTime) {
+            clearTimeout(timeoutId);
+            timeoutId = 0;
+            await extractPrecisely(extractedFrames);
+            finish();
+            return;
+          }
+          if (currentTime + frameTolerance < target) {
+            callbackId = video.requestVideoFrameCallback(onVideoFrame);
+            return;
+          }
+          await onFrame(extractedFrames, target);
+          if (settled) return;
+          ensureActive();
+          extractedFrames += 1;
+          if (extractedFrames >= times.length) {
+            finish();
+            return;
+          }
+          if (video.paused) await video.play();
+          callbackId = video.requestVideoFrameCallback(onVideoFrame);
+        } catch (error) {
+          fail(error);
+        }
+      };
+
+      const expectedMs = ((times[times.length - 1] - times[0]) / extractionPlaybackRate) * 1000;
+      timeoutId = window.setTimeout(
+        () => fail(new Error('取帧超时，请重试。')),
+        Math.max(15_000, expectedMs + 12_000),
+      );
+      video.addEventListener('error', onError, { once: true });
+      video.addEventListener('ended', onEnded, { once: true });
+      signal?.addEventListener('abort', onAbort, { once: true });
+      callbackId = video.requestVideoFrameCallback(onVideoFrame);
+      video.play().catch((error) => fail(new Error(`无法启动取帧：${error.message || error}`)));
+    });
   }
 
-  async function captureImageBitmapsAtTimes(video, times, clip, isCancelled = () => false) {
-    const frames = new Map();
-    try {
-      for (const time of times) {
-        if (isCancelled()) throw new CancelledError();
-        await seekVideo(video, time, clip.duration);
-        if (isCancelled()) throw new CancelledError();
-        frames.set(Number(time).toFixed(6), await createImageBitmap(video));
-      }
-      return frames;
-    } catch (error) {
-      for (const frame of frames.values()) {
-        try { frame.close(); } catch (_) { }
-      }
-      throw error;
-    }
-  }
-
-  function closeImageBitmapMap(frames) {
-    for (const frame of frames?.values?.() || []) {
+  function closeImageBitmaps(frames) {
+    for (const frame of frames || []) {
       try { frame.close(); } catch (_) { }
+    }
+  }
+
+  async function captureSampleFrames(video, windows, clip, { fps = 12, signal = null } = {}) {
+    const samples = [];
+    try {
+      for (let windowIndex = 0; windowIndex < windows.length; windowIndex += 1) {
+        await extractFramesContinuously(video, windows[windowIndex], clip, {
+          fps,
+          signal,
+          onFrame: async (indexInWindow, time) => {
+            samples.push({
+              bitmap: await createImageBitmap(video),
+              flatIndex: samples.length,
+              indexInWindow,
+              time,
+              windowIndex,
+            });
+          },
+        });
+      }
+      return samples;
+    } catch (error) {
+      closeImageBitmaps(samples.map((sample) => sample.bitmap));
+      throw error;
     }
   }
 
@@ -6199,8 +6331,12 @@
     });
   }
 
-  function seekVideo(video, targetTime, knownDuration = null) {
+  function seekVideo(video, targetTime, knownDuration = null, signal = null) {
     return new Promise((resolve, reject) => {
+      if (signal?.aborted) {
+        reject(new CancelledError());
+        return;
+      }
       const duration = Number.isFinite(knownDuration)
         ? knownDuration
         : (Number.isFinite(video.duration) ? video.duration : targetTime);
@@ -6218,30 +6354,34 @@
         clearTimeout(timeout);
         video.removeEventListener('seeked', onSeeked);
         video.removeEventListener('error', onError);
+        signal?.removeEventListener('abort', onAbort);
         await waitForFreshFrame(video);
         resolve();
       };
-      const fail = (message) => {
+      const fail = (error) => {
         if (settled) return;
         settled = true;
         clearTimeout(timeout);
         video.removeEventListener('seeked', onSeeked);
         video.removeEventListener('error', onError);
-        reject(new Error(message));
+        signal?.removeEventListener('abort', onAbort);
+        reject(error instanceof Error ? error : new Error(String(error)));
       };
       const onSeeked = () => finish();
-      const onError = () => fail('视频跳转失败。');
+      const onError = () => fail(new Error('视频跳转失败。'));
+      const onAbort = () => fail(new CancelledError());
       const timeout = setTimeout(() => {
         if (Math.abs(video.currentTime - target) < 0.14 && video.readyState >= 2) finish();
-        else fail('跳转超时。');
+        else fail(new Error('跳转超时。'));
       }, 10_000);
 
       video.addEventListener('seeked', onSeeked);
       video.addEventListener('error', onError, { once: true });
+      signal?.addEventListener('abort', onAbort, { once: true });
       try {
         video.currentTime = target;
       } catch (error) {
-        fail(`无法跳转时间轴：${error.message || error}`);
+        fail(new Error(`无法跳转时间轴：${error.message || error}`));
       }
     });
   }
@@ -7136,12 +7276,6 @@
       : 'bei';
     const qualityPreset = GIF_QUALITY_PRESETS[quality];
     const cornerRadiusRatio = getCornerRadiusRatio();
-    const baseFrames = calculateExportFrameCount(end - start, fps);
-    const finalFrames = baseFrames;
-    if (finalFrames > MAX_EXPORT_FRAMES) {
-      throw new Error('帧数超过上限，请缩短片段或降低帧率。');
-    }
-
     const crop = state.editorCrop;
     const sourceWidth = Math.max(2, crop.w * state.clip.width);
     const sourceHeight = Math.max(2, crop.h * state.clip.height);
@@ -7158,7 +7292,7 @@
 
     const outputRadius = getCornerRadiusPixels(outputWidth, outputHeight, cornerRadiusRatio);
 
-    return createExportPlan({
+    const plan = createExportPlan({
       start,
       end,
       fps,
@@ -7168,9 +7302,6 @@
       cornerRadiusRatio,
       outputRadius,
       transparentCorners: outputRadius > 0,
-      delay: normalizeGifDelay(fps, speed),
-      baseFrames,
-      finalFrames,
       outputWidth,
       outputHeight,
       crop,
@@ -7179,12 +7310,16 @@
         .filter((layer) => String(layer.text || '').trim())
         .map((layer) => ({ ...layer })),
     });
+    if (plan.finalFrames > MAX_EXPORT_FRAMES) {
+      throw new Error('帧数超过上限，请缩短片段或降低帧率。');
+    }
+    return plan;
   }
 
   function makeEstimateSignature(plan) {
     return JSON.stringify([
       state.clipRevision,
-      plan.start.toFixed(6), plan.end.toFixed(6), plan.fps,
+      plan.start.toFixed(6), plan.end.toFixed(6), plan.fps, plan.speed,
       plan.outputWidth, plan.outputHeight, plan.quality,
       plan.outputRadius, plan.transparentCorners,
       plan.crop.x.toFixed(6), plan.crop.y.toFixed(6),
@@ -7202,13 +7337,6 @@
     return `${(bytes / 1024 / 1024).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0)} MB`;
   }
 
-  function formatEstimatedSizeRange(range) {
-    if (!range) return '--';
-    const minText = formatFileSize(range.min);
-    const maxText = formatFileSize(range.max);
-    return minText === maxText ? minText : `${minText}～${maxText}`;
-  }
-
   function setEstimatedSizeText(text, title = '', busy = false) {
     if (el.estimatedSize) {
       el.estimatedSize.textContent = text;
@@ -7224,10 +7352,9 @@
   function cancelSizeEstimate({ clearCache = false } = {}) {
     clearTimeout(state.sizeEstimateTimer);
     state.sizeEstimateTimer = 0;
-    state.sizeEstimateToken += 1;
     const job = state.sizeEstimateJob;
     if (job) {
-      job.cancelled = true;
+      job.controller.abort();
       job.session?.cancel(new CancelledError());
       if (state.cancelExportPreparation) state.cancelExportPreparation();
     }
@@ -7235,73 +7362,67 @@
     if (clearCache) state.sizeEstimateCache = null;
   }
 
-  async function estimateExportSize(plan, signature, token) {
+  async function estimateExportSize(plan, signature, job) {
     const clip = state.clip;
     if (!clip) throw new CancelledError();
     const windows = createEstimateSampleWindows(plan.frameTimes);
-    const sampleTimes = flattenSampleTimes(windows);
-    const job = { cancelled: false, session: null, video: null };
-    state.sizeEstimateJob = job;
-    let frames = null;
+    let samples = [];
     let paletteFrames = [];
     try {
       job.video = await createDetachedClipVideo(clip);
-      frames = await captureImageBitmapsAtTimes(
+      samples = await captureSampleFrames(
         job.video,
-        sampleTimes,
+        windows,
         clip,
-        () => job.cancelled || token !== state.sizeEstimateToken,
+        { fps: plan.fps, signal: job.controller.signal },
       );
-      paletteFrames = await Promise.all([...frames.values()].map((frame) => createImageBitmap(frame)));
-      const reports = [];
-      let preparedPalette = null;
-      for (let windowIndex = 0; windowIndex < windows.length; windowIndex += 1) {
-        if (job.cancelled || token !== state.sizeEstimateToken) throw new CancelledError();
-        const windowTimes = windows[windowIndex];
-        const samplePlan = {
-          ...plan,
-          frameTimes: windowTimes,
-          baseFrames: windowTimes.length,
-          finalFrames: windowTimes.length,
-        };
-        job.session = await createGifEncodingSession(samplePlan, {
-          sampleFrames: windowIndex === 0 ? paletteFrames : [],
-          preparedPalette,
-          timeoutMs: 120_000,
-        });
-        paletteFrames = [];
-        if (job.cancelled || token !== state.sizeEstimateToken) {
-          job.session.cancel(new CancelledError());
-          throw new CancelledError();
-        }
-        if (!preparedPalette) preparedPalette = job.session.palette;
-        for (let index = 0; index < windowTimes.length; index += 1) {
-          const time = windowTimes[index];
-          const source = frames.get(Number(time).toFixed(6));
-          const frame = new VideoFrame(source, { timestamp: Math.round(time * 1_000_000) });
-          await job.session.addFrame(frame, index, plan.delay);
-        }
-        const blob = await job.session.finish();
-        reports.push(inspectGifFrameBytes(await blob.arrayBuffer()));
-        job.session.destroy();
-        job.session = null;
+      paletteFrames = await Promise.all(samples.map((sample) => createImageBitmap(sample.bitmap)));
+      const sourceIndexes = new Map(plan.frameTimes.map((time, index) => [Number(time).toFixed(6), index]));
+      const samplePlan = {
+        ...plan,
+        frameTimes: Object.freeze(samples.map((sample) => sample.time)),
+        frameDelays: Object.freeze(samples.map((sample) => (
+          plan.frameDelays[sourceIndexes.get(Number(sample.time).toFixed(6))]
+        ))),
+        baseFrames: samples.length,
+        finalFrames: samples.length,
+      };
+      job.session = await createGifEncodingSession(samplePlan, {
+        sampleFrames: paletteFrames,
+        timeoutMs: 120_000,
+      });
+      paletteFrames = [];
+      if (job.controller.signal.aborted) {
+        job.session.cancel(new CancelledError());
+        throw new CancelledError();
       }
-      const complete = windows.length === 1 && windows[0].length === plan.finalFrames;
-      const range = calculateEstimatedSizeRange(reports, plan.finalFrames, complete);
-      if (!range || job.cancelled || token !== state.sizeEstimateToken) throw new CancelledError();
-      state.sizeEstimateCache = { signature, range, palette: preparedPalette };
+      const preparedPalette = job.session.palette;
+      for (const sample of samples) {
+        if (job.controller.signal.aborted) throw new CancelledError();
+        const frame = new VideoFrame(sample.bitmap, { timestamp: Math.round(sample.time * 1_000_000) });
+        await job.session.addFrame(frame, sample.flatIndex, samplePlan.frameDelays[sample.flatIndex]);
+      }
+      const blob = await job.session.finish();
+      const report = inspectGifFrameBytes(await blob.arrayBuffer());
+      const complete = samples.length >= plan.finalFrames;
+      const windowStarts = samples
+        .filter((sample) => sample.indexInWindow === 0)
+        .map((sample) => sample.flatIndex);
+      const bytes = calculateEstimatedGifBytes(report, plan.finalFrames, windowStarts);
+      if (!bytes) throw new Error('无法分析样本 GIF。');
+      if (job.controller.signal.aborted || state.sizeEstimateJob !== job) {
+        throw new CancelledError();
+      }
+      state.sizeEstimateCache = { signature, bytes, palette: preparedPalette };
       setEstimatedSizeText(
-        `预计 ${formatEstimatedSizeRange(range)}`,
+        `预计${complete ? ' ' : '约 '}${formatFileSize(bytes)}`,
         complete ? '根据全部导出帧计算。' : '根据选区内连续画面采样计算。',
       );
     } finally {
       job.session?.destroy();
-      for (const frame of paletteFrames) {
-        try { frame.close(); } catch (_) { }
-      }
-      closeImageBitmapMap(frames);
+      closeImageBitmaps(paletteFrames);
+      closeImageBitmaps(samples.map((sample) => sample.bitmap));
       releaseDetachedClipVideo(clip, job.video);
-      if (state.sizeEstimateJob === job) state.sizeEstimateJob = null;
     }
   }
 
@@ -7325,20 +7446,24 @@
     }
     const signature = makeEstimateSignature(plan);
     if (state.sizeEstimateCache?.signature === signature) {
+      const complete = plan.finalFrames <= ESTIMATE_WINDOW_FRAMES * ESTIMATE_WINDOW_COUNT;
       setEstimatedSizeText(
-        `预计 ${formatEstimatedSizeRange(state.sizeEstimateCache.range)}`,
-        '根据选区内连续画面采样计算。',
+        `预计${complete ? ' ' : '约 '}${formatFileSize(state.sizeEstimateCache.bytes)}`,
+        complete ? '根据全部导出帧计算。' : '根据选区内连续画面采样计算。',
       );
       return;
     }
     cancelSizeEstimate();
-    const token = state.sizeEstimateToken;
+    const job = { controller: new AbortController(), session: null, video: null };
+    state.sizeEstimateJob = job;
     setEstimatedSizeText('预计计算中…', '正在分析选区画面。', true);
     state.sizeEstimateTimer = window.setTimeout(() => {
       state.sizeEstimateTimer = 0;
-      estimateExportSize(plan, signature, token).catch((error) => {
-        if (token !== state.sizeEstimateToken || error instanceof CancelledError) return;
+      estimateExportSize(plan, signature, job).catch((error) => {
+        if (state.sizeEstimateJob !== job || error instanceof CancelledError) return;
         setEstimatedSizeText('预计 --', friendlyError(error));
+      }).finally(() => {
+        if (state.sizeEstimateJob === job) state.sizeEstimateJob = null;
       });
     }, 300);
   }
@@ -7372,6 +7497,7 @@
     let settings;
     let fileName;
     let encodingSession = null;
+    let exportController = null;
     let exportVideo = null;
     let exportClip = null;
     let pendingPaletteFrames = [];
@@ -7384,7 +7510,8 @@
       pausePreviewFrameCache();
       state.busy = true;
       state.mode = 'exporting';
-      state.cancelRequested = false;
+      exportController = new AbortController();
+      state.exportAbortController = exportController;
       updateModeUi();
       setProgress(0);
       setStatus('正在准备选区色彩……');
@@ -7399,18 +7526,13 @@
         : null;
       let paletteFrames = [];
       if (!preparedPalette) {
-        const paletteTimes = flattenSampleTimes(createEstimateSampleWindows(settings.frameTimes));
-        const paletteBitmaps = await captureImageBitmapsAtTimes(
+        const samples = await captureSampleFrames(
           exportVideo,
-          paletteTimes,
+          createEstimateSampleWindows(settings.frameTimes),
           clip,
-          () => state.cancelRequested,
+          { fps: settings.fps, signal: exportController.signal },
         );
-        try {
-          paletteFrames = await Promise.all([...paletteBitmaps.values()].map((frame) => createImageBitmap(frame)));
-        } finally {
-          closeImageBitmapMap(paletteBitmaps);
-        }
+        paletteFrames = samples.map((sample) => sample.bitmap);
         pendingPaletteFrames = paletteFrames;
       }
 
@@ -7437,154 +7559,27 @@
       paletteFrames = [];
       pendingPaletteFrames = [];
       state.exportEncodingSession = encodingSession;
-      if (state.cancelRequested) throw new CancelledError();
+      if (exportController.signal.aborted) throw new CancelledError();
 
       const frameTimes = settings.frameTimes;
-
-      const queueExportFrame = async (index) => {
-        if (state.cancelRequested) throw new CancelledError();
-        const frame = new VideoFrame(exportVideo, {
-          timestamp: Math.round(frameTimes[index] * 1_000_000),
-        });
-        await encodingSession.addFrame(frame, index, settings.frameDelays[index]);
-      };
-
-      const updateExtractionProgress = (count) => {
-        setProgress(calculateExportProgress('extracting', count, settings.baseFrames));
-        setStatus(`正在提取画面：${count}/${settings.baseFrames}`);
-      };
-
-      const extractRemainingPrecisely = async (startIndex) => {
-        exportVideo.pause();
-        for (let index = startIndex; index < frameTimes.length; index += 1) {
-          if (state.cancelRequested) throw new CancelledError();
-          await seekVideo(exportVideo, frameTimes[index], clip.duration);
-          await queueExportFrame(index);
-          updateExtractionProgress(index + 1);
-        }
-      };
-
-      if (typeof exportVideo.requestVideoFrameCallback === 'function') {
-        const extractionPlaybackRate = calculateExtractionPlaybackRate(settings.fps);
-        const frameTolerance = 0.5 / settings.fps;
-        await seekVideo(exportVideo, frameTimes[0], clip.duration);
-        if (state.cancelRequested) throw new CancelledError();
-
-        let extractedFrames = 0;
-        await queueExportFrame(extractedFrames);
-        extractedFrames = 1;
-        updateExtractionProgress(extractedFrames);
-
-        if (extractedFrames < settings.baseFrames) {
-          exportVideo.playbackRate = extractionPlaybackRate;
-          await new Promise((resolve, reject) => {
-            let settled = false;
-            let callbackId = 0;
-            let timeoutId = 0;
-
-            const cleanup = () => {
-              clearTimeout(timeoutId);
-              if (callbackId && typeof exportVideo.cancelVideoFrameCallback === 'function') {
-                try { exportVideo.cancelVideoFrameCallback(callbackId); } catch (_) { }
-              }
-              exportVideo.removeEventListener('error', onError);
-              exportVideo.removeEventListener('ended', onEnded);
-              try { exportVideo.pause(); } catch (_) { }
-            };
-
-            const finish = () => {
-              if (settled) return;
-              settled = true;
-              cleanup();
-              resolve();
-            };
-
-            const fail = (error) => {
-              if (settled) return;
-              settled = true;
-              cleanup();
-              reject(error instanceof Error ? error : new Error(String(error)));
-            };
-
-            const onError = () => fail(new Error('视频解码失败。'));
-            const onEnded = async () => {
-              if (state.cancelRequested) {
-                fail(new CancelledError());
-                return;
-              }
-              try {
-                clearTimeout(timeoutId);
-                timeoutId = 0;
-                await extractRemainingPrecisely(extractedFrames);
-                finish();
-              } catch (error) {
-                fail(error);
-              }
-            };
-
-            const onFrame = async (_now, metadata) => {
-              if (settled) return;
-              if (state.cancelRequested) {
-                fail(new CancelledError());
-                return;
-              }
-
-              const mediaTime = Number(metadata?.mediaTime);
-              const currentTime = Number.isFinite(mediaTime) ? mediaTime : Number(exportVideo.currentTime) || 0;
-
-              try {
-                if (extractedFrames >= frameTimes.length) {
-                  finish();
-                  return;
-                }
-                const target = frameTimes[extractedFrames];
-                if (requiresPreciseFrameSeek(currentTime, target, settings.end, frameTolerance)) {
-                  clearTimeout(timeoutId);
-                  timeoutId = 0;
-                  await extractRemainingPrecisely(extractedFrames);
-                  finish();
-                  return;
-                }
-                if (currentTime + frameTolerance < target) {
-                  callbackId = exportVideo.requestVideoFrameCallback(onFrame);
-                  return;
-                }
-                await queueExportFrame(extractedFrames);
-                extractedFrames += 1;
-                updateExtractionProgress(extractedFrames);
-                if (extractedFrames >= frameTimes.length) {
-                  finish();
-                  return;
-                }
-                if (exportVideo.paused) await exportVideo.play();
-
-                callbackId = exportVideo.requestVideoFrameCallback(onFrame);
-              } catch (error) {
-                fail(error);
-              }
-            };
-
-            const expectedMs = ((settings.end - settings.start) / extractionPlaybackRate) * 1000;
-            timeoutId = window.setTimeout(
-              () => fail(new Error('取帧超时，请重试。')),
-              Math.max(15_000, expectedMs + 12_000),
-            );
-
-            exportVideo.addEventListener('error', onError, { once: true });
-            exportVideo.addEventListener('ended', onEnded, { once: true });
-            callbackId = exportVideo.requestVideoFrameCallback(onFrame);
-            exportVideo.play().catch((error) => fail(new Error(`无法启动取帧：${error.message || error}`)));
+      await extractFramesContinuously(exportVideo, frameTimes, clip, {
+        fps: settings.fps,
+        signal: exportController.signal,
+        onFrame: async (index, time) => {
+          const frame = new VideoFrame(exportVideo, {
+            timestamp: Math.round(time * 1_000_000),
           });
-        }
-      } else {
-        await extractRemainingPrecisely(0);
-      }
+          await encodingSession.addFrame(frame, index, settings.frameDelays[index]);
+          setProgress(calculateExportProgress('extracting', index + 1, settings.baseFrames));
+          setStatus(`正在提取画面：${index + 1}/${settings.baseFrames}`);
+        },
+      });
 
-      if (state.cancelRequested) throw new CancelledError();
+      if (exportController.signal.aborted) throw new CancelledError();
       setProgress(calculateExportProgress('encoding', 0, settings.baseFrames));
       setStatus('正在并行编码……');
       const blob = await encodingSession.finish();
-      if (state.cancelRequested) throw new CancelledError();
+      if (exportController.signal.aborted) throw new CancelledError();
 
       updateEstimatedFileSize({ actualBytes: blob.size });
       setProgress(100);
@@ -7599,12 +7594,12 @@
         try { frame.close(); } catch (_) { }
       }
       if (state.exportEncodingSession === encodingSession) state.exportEncodingSession = null;
+      if (state.exportAbortController === exportController) state.exportAbortController = null;
       if (exportVideo) {
         releaseDetachedClipVideo(exportClip, exportVideo);
         if (state.exportVideo === exportVideo) state.exportVideo = null;
       }
       state.busy = false;
-      state.cancelRequested = false;
       state.mode = state.clip ? 'edit' : 'capture';
       updateModeUi();
       if (state.mode === 'edit') updateEditorCropBox();
@@ -7615,7 +7610,7 @@
 
   function cancelExport() {
     if (state.mode !== 'exporting' || !state.busy) return;
-    state.cancelRequested = true;
+    state.exportAbortController?.abort();
     setStatus('正在取消导出…');
     pausePreviewFrameCache();
     try { state.exportVideo?.pause(); } catch (_) { }
@@ -7883,6 +7878,7 @@
     releasePreviewFrameCache();
     cancelSizeEstimate({ clearCache: true });
     cleanupRecordingResources(state.recording);
+    state.exportAbortController?.abort();
     state.exportEncodingSession?.destroy();
     if (state.exportVideo) releaseDetachedClipVideo(state.clip, state.exportVideo);
     state.cancelExportPreparation?.();
