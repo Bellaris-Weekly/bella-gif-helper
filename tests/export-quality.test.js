@@ -10,8 +10,10 @@ const {
   buildGifsicleCommand,
   calculateCropViewport,
   calculateEstimatedSizeRange,
+  calculateTimelinePlaybackTarget,
   createEstimateSampleWindows,
   createExportFrameTimes,
+  createExportTiming,
   inspectGifFrameBytes,
   normalizeGifDelay,
 } = require('../bella-gif-helper.user.js');
@@ -50,6 +52,28 @@ test('export plans keep every frame inside the selected interval', () => {
     assert.ok(times.every((time) => time >= start && time < end));
     assert.ok(times[times.length - 1] < end);
   }
+});
+
+test('export timing preserves the selected playback duration at GIF precision', () => {
+  for (const [start, end, fps, speed] of [
+    [0, 1.01, 12, 1],
+    [0.35, 2.17, 17, 1.5],
+    [2, 12, 60, 10],
+  ]) {
+    const timing = createExportTiming(start, end, fps, speed);
+    const expectedDuration = Math.round(((end - start) / speed) * 100) * 10;
+    assert.equal(timing.durationMs, expectedDuration);
+    assert.equal(timing.frameDelays.reduce((sum, delay) => sum + delay, 0), expectedDuration);
+    assert.ok(timing.frameDelays.every((delay) => delay >= 20 && delay % 10 === 0));
+    assert.ok(timing.frameTimes.every((time) => time >= start && time < end));
+    assert.ok(timing.frameTimes[timing.frameTimes.length - 1] > start + (end - start) / 2);
+  }
+});
+
+test('timeline handles restart from the selected range while the playhead resumes at its target', () => {
+  assert.equal(calculateTimelinePlaybackTarget('handle', 1.7, 0.2), 0.2);
+  assert.equal(calculateTimelinePlaybackTarget('handle', 1.7, 0.6), 0.6);
+  assert.equal(calculateTimelinePlaybackTarget('playhead', 1.7, 0.2), 1.7);
 });
 
 test('size sampling windows cover short clips and three separated ranges', () => {

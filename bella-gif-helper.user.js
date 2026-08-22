@@ -175,16 +175,43 @@
     ));
   }
 
+  function createExportTiming(start, end, fps, speed = 1) {
+    const duration = Math.max(0, Number(end) - Number(start));
+    const playbackSpeed = Math.max(0.1, Number(speed) || 1);
+    const totalCentiseconds = Math.max(2, Math.round((duration / playbackSpeed) * 100));
+    const requestedFrames = calculateExportFrameCount(duration, fps);
+    const frameCount = Math.max(1, Math.min(requestedFrames, Math.floor(totalCentiseconds / 2)));
+    const sourceFrameStep = frameCount < requestedFrames
+      ? duration / frameCount
+      : 1 / Math.max(1, Number(fps) || 1);
+    const boundaries = Array.from(
+      { length: frameCount + 1 },
+      (_, index) => Math.round((index * totalCentiseconds) / frameCount),
+    );
+    const frameTimes = Object.freeze(Array.from(
+      { length: frameCount },
+      (_, index) => Math.min(Number(end) - 0.001, Number(start) + index * sourceFrameStep),
+    ));
+    const frameDelays = Object.freeze(boundaries.slice(1).map((boundary, index) => (
+      (boundary - boundaries[index]) * 10
+    )));
+    return Object.freeze({ frameTimes, frameDelays, durationMs: totalCentiseconds * 10 });
+  }
+
+  function calculateTimelinePlaybackTarget(type, target, trimStart) {
+    return type === 'playhead' ? Number(target) : Number(trimStart);
+  }
+
   function createExportPlan(settings) {
-    const frameTimes = createExportFrameTimes(settings.start, settings.end, settings.fps);
+    const timing = createExportTiming(settings.start, settings.end, settings.fps, settings.speed);
     return Object.freeze({
       ...settings,
       crop: Object.freeze({ ...settings.crop }),
       textLayers: Object.freeze((settings.textLayers || []).map((layer) => Object.freeze({ ...layer }))),
       qualityPreset: Object.freeze({ ...settings.qualityPreset }),
-      frameTimes,
-      baseFrames: frameTimes.length,
-      finalFrames: frameTimes.length,
+      ...timing,
+      baseFrames: timing.frameTimes.length,
+      finalFrames: timing.frameTimes.length,
     });
   }
 
@@ -1699,6 +1726,8 @@
     calculateExportFrameCount,
     calculateExportFrameTime,
     createExportFrameTimes,
+    createExportTiming,
+    calculateTimelinePlaybackTarget,
     createExportPlan,
     createEstimateSampleWindows,
     inspectGifFrameBytes,
@@ -5750,16 +5779,23 @@
     if (!state.clip || !Number.isFinite(target)) return;
     const token = ++state.timelineSettleToken;
     const video = type === 'handle' ? el.scrubVideo : el.clipVideo;
-    if (!video) return;
+    const playbackTarget = calculateTimelinePlaybackTarget(type, target, state.trimStart);
+    if (!video || !Number.isFinite(playbackTarget)) return;
     if (type === 'handle') el.scrubVideo.classList.add('active');
-    seekVideo(video, target, state.clip.duration).then(() => {
+    const settle = async () => {
+      await seekVideo(video, target, state.clip.duration);
       if (token !== state.timelineSettleToken || state.timelineDrag) return;
-      if (type === 'playhead') el.scrubVideo.classList.remove('active');
+      el.scrubVideo.classList.remove('active');
+      if (resumePlayback) {
+        await previewTrimmedClip({ startAt: playbackTarget });
+      } else if (type === 'handle') {
+        await seekVideo(el.clipVideo, target, state.clip.duration);
+      }
+      if (token !== state.timelineSettleToken || state.timelineDrag) return;
       renderExportPreviewFrame();
-      if (type === 'handle') el.scrubVideo.classList.remove('active');
-      if (resumePlayback) void ensureTrimPreviewPlaying();
       void resumePreviewFrameCache();
-    }).catch(() => { });
+    };
+    settle().catch(() => { });
   }
 
   function applyTimelineDrag(event) {
@@ -5848,7 +5884,7 @@
     await previewTrimmedClip();
   }
 
-  async function previewTrimmedClip() {
+  async function previewTrimmedClip({ startAt = null } = {}) {
     if (state.mode !== 'edit' || !state.clip) return;
     if (state.trimPreviewCleanup) {
       stopTrimPreview();
@@ -5870,7 +5906,7 @@
     const check = async () => {
       if (stopped || jumping) return;
       updateTimelinePlayhead();
-      if (el.clipVideo.currentTime < state.trimEnd - 0.025 && !el.clipVideo.ended) return;
+      if (el.clipVideo.currentTime < state.trimEnd - 0.001 && !el.clipVideo.ended) return;
       jumping = true;
       try {
         await seekVideo(el.clipVideo, state.trimStart, state.clip.duration);
@@ -5885,11 +5921,13 @@
 
     try {
       const current = Number(el.clipVideo.currentTime);
-      const resumeAt = Number.isFinite(current)
-        && current >= state.trimStart
-        && current < state.trimEnd - 0.025
-        ? current
-        : state.trimStart;
+      const resumeAt = Number.isFinite(startAt)
+        ? clamp(startAt, state.trimStart, Math.max(state.trimStart, state.trimEnd - 0.001))
+        : (Number.isFinite(current)
+          && current >= state.trimStart
+          && current < state.trimEnd - 0.001
+          ? current
+          : state.trimStart);
       el.clipVideo.pause();
       await seekVideo(el.clipVideo, resumeAt, state.clip.duration);
       state.previewSnapshot = { playbackRate: el.clipVideo.playbackRate };
@@ -7401,7 +7439,6 @@
       state.exportEncodingSession = encodingSession;
       if (state.cancelRequested) throw new CancelledError();
 
-      const delay = settings.delay;
       const frameTimes = settings.frameTimes;
 
       const queueExportFrame = async (index) => {
@@ -7409,7 +7446,7 @@
         const frame = new VideoFrame(exportVideo, {
           timestamp: Math.round(frameTimes[index] * 1_000_000),
         });
-        await encodingSession.addFrame(frame, index, delay);
+        await encodingSession.addFrame(frame, index, settings.frameDelays[index]);
       };
 
       const updateExtractionProgress = (count) => {
