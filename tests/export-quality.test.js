@@ -127,6 +127,10 @@ test('userscript uses pinned parallel encoder resources and sRGB canvases', () =
   assert.match(source, /selectEncoderWorker\(workers\.map/);
   assert.match(source, /calculateEncoderWorkerCount\(navigator\.hardwareConcurrency\)/);
   assert.match(source, /navigation\?\.addEventListener\('currententrychange'/);
+  assert.doesNotMatch(source, /@noframes/);
+  assert.match(source, /bella-gif-helper-live-frame-v1/);
+  assert.match(source, /action === 'start-recording'/);
+  assert.match(source, /kind: 'recording-complete'/);
   assert.match(source, /<option value="nai">\u4e43<\/option>/);
   assert.match(source, /<option value="bei" selected>\u8d1d<\/option>/);
   assert.match(source, /<option value="ran">\u7136<\/option>/);

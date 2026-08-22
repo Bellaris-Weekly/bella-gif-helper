@@ -16,7 +16,6 @@
 // @match        https://www.bilibili.com/cheese/play/*
 // @match        https://live.bilibili.com/*
 // @match        https://m.bilibili.com/video/*
-// @match        https://live.bilibili.com/*
 // @resource     MODERN_PALETTE_MODULE https://cdn.jsdelivr.net/npm/modern-palette@2.0.0/dist/index.mjs
 // @resource     GIFENC_MODULE https://cdn.jsdelivr.net/npm/gifenc@1.0.3/dist/gifenc.esm.js
 // @resource     GIFSICLE_MODULE https://cdn.jsdelivr.net/npm/gifsicle-wasm-browser@1.5.19/dist/gifsicle.min.js
@@ -25,7 +24,6 @@
 // @grant        GM_setValue
 // @grant        unsafeWindow
 // @run-at       document-start
-// @noframes
 // ==/UserScript==
 
 // GIF 调色使用 modern-palette 2.0.0，编码使用 gifenc 1.0.3（MIT License）。
@@ -37,6 +35,7 @@
   const LIVE_REWIND_BUFFER_SECONDS = 75;
   const LIVE_REWIND_TARGET_SECONDS = 60;
   const LIVE_CAPTURE_MODE_KEY = 'biliGifMakerLiveCaptureModeV1';
+  const LIVE_FRAME_CHANNEL = 'bella-gif-helper-live-frame-v1';
   const GIF_TRANSPARENT_INDEX = 255;
   const PREVIEW_CACHE_MEMORY_BUDGET = 32 * 1024 * 1024;
   const PREVIEW_CACHE_MAX_FRAMES = 121;
@@ -404,6 +403,31 @@
     const start = Number(liveWallClockStartMs);
     if (!Number.isFinite(start)) return null;
     return start + Math.max(0, Number(trimStart) || 0) * 1000;
+  }
+
+  function extractLiveRoomId(pathname) {
+    return String(pathname || '').match(/^\/(?:blanc\/)?(\d+)(?:\/|$)/)?.[1] || '';
+  }
+
+  function isLiveFrameMessage(event, expectedOrigin, expectedSource = null) {
+    return Boolean(
+      event
+      && event.origin === expectedOrigin
+      && (!expectedSource || event.source === expectedSource)
+      && event.data?.channel === LIVE_FRAME_CHANNEL
+      && event.data?.version === 1,
+    );
+  }
+
+  function mapLiveFrameVideoRect(frameRect, descriptor) {
+    if (!frameRect || !descriptor?.rect) return null;
+    const scaleX = frameRect.width / Math.max(1, Number(descriptor.viewportWidth) || frameRect.width);
+    const scaleY = frameRect.height / Math.max(1, Number(descriptor.viewportHeight) || frameRect.height);
+    const left = frameRect.left + descriptor.rect.left * scaleX;
+    const top = frameRect.top + descriptor.rect.top * scaleY;
+    const width = descriptor.rect.width * scaleX;
+    const height = descriptor.rect.height * scaleY;
+    return { left, top, right: left + width, bottom: top + height, width, height };
   }
 
   function formatGifFileName(dateValue, sourceLabel) {
@@ -1118,6 +1142,540 @@
     };
   }
 
+  function scanDocumentVideo(rootDocument) {
+    const videos = [...(rootDocument?.querySelectorAll?.('video') || [])];
+    const candidates = videos
+      .map((video) => {
+        const rect = video.getBoundingClientRect();
+        const style = video.ownerDocument?.defaultView?.getComputedStyle(video);
+        const visible = rect.width > 120
+          && rect.height > 80
+          && style?.display !== 'none'
+          && style?.visibility !== 'hidden'
+          && Number(style?.opacity || 1) > 0;
+        return { video, area: visible ? rect.width * rect.height : 0 };
+      })
+      .filter((item) => item.area > 0 && item.video.videoWidth > 0 && item.video.videoHeight > 0)
+      .sort((a, b) => b.area - a.area);
+    return candidates[0]?.video
+      || videos.find((video) => video.readyState >= 1 && video.videoWidth > 0)
+      || null;
+  }
+
+  function getLiveIdentity(rootDocument = document) {
+    const pathname = rootDocument.defaultView?.location?.pathname || '';
+    const roomId = extractLiveRoomId(pathname) || '直播间';
+    const ownerElement = rootDocument.querySelector('.room-owner-username');
+    const titleParts = String(rootDocument.title || '').split(' - ').map((part) => part.trim()).filter(Boolean);
+    const titleOwner = titleParts.length >= 3 ? titleParts[titleParts.length - 2] : '';
+    return {
+      streamerName: String(ownerElement?.textContent || titleOwner || '主播').trim(),
+      roomId,
+    };
+  }
+
+  function describeLiveFrameVideo(video) {
+    if (!video?.videoWidth || !video.videoHeight) return null;
+    const rect = video.getBoundingClientRect();
+    const style = video.ownerDocument.defaultView.getComputedStyle(video);
+    return {
+      videoWidth: video.videoWidth,
+      videoHeight: video.videoHeight,
+      rect: {
+        left: rect.left,
+        top: rect.top,
+        width: rect.width,
+        height: rect.height,
+      },
+      viewportWidth: video.ownerDocument.defaultView.innerWidth,
+      viewportHeight: video.ownerDocument.defaultView.innerHeight,
+      objectFit: style.objectFit || 'fill',
+      objectPosition: style.objectPosition || '50% 50%',
+    };
+  }
+
+  function installLiveFrameAgent(collector) {
+    if (!collector || window.top === window) return null;
+    const expectedOrigin = location.origin;
+    let activeVideo = null;
+    let enabled = initialLiveCaptureMode === 'rewind';
+    let observer = null;
+    let recording = null;
+    const frameId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const bound = (value, min, max) => Math.min(max, Math.max(min, value));
+
+    const post = (message, transfer = []) => {
+      window.parent.postMessage({
+        channel: LIVE_FRAME_CHANNEL,
+        version: 1,
+        ...message,
+      }, expectedOrigin, transfer);
+    };
+
+    const refreshVideo = () => {
+      const video = scanDocumentVideo(document);
+      if (video) {
+        activeVideo = video;
+        collector.setActiveVideo(video);
+      }
+      return activeVideo;
+    };
+
+    const postReady = () => {
+      const video = refreshVideo();
+      post({
+        kind: 'ready',
+        frameId,
+        roomId: extractLiveRoomId(location.pathname),
+        hasVideo: Boolean(video),
+        video: describeLiveFrameVideo(video),
+      });
+    };
+
+    const cleanupRecording = (session) => {
+      if (!session) return;
+      if (session.rafId) cancelAnimationFrame(session.rafId);
+      if (session.maxTimerId) clearTimeout(session.maxTimerId);
+      try { session.stream?.getTracks().forEach((track) => track.stop()); } catch (_) { }
+    };
+
+    const stopRecordingLoop = (session) => {
+      if (!session) return;
+      if (session.rafId) cancelAnimationFrame(session.rafId);
+      if (session.maxTimerId) clearTimeout(session.maxTimerId);
+      session.rafId = 0;
+      session.maxTimerId = 0;
+    };
+
+    const completeRecording = async (session) => {
+      if (recording !== session || session.completed) return;
+      session.completed = true;
+      cleanupRecording(session);
+      try { session.video.playbackRate = session.playbackRate; } catch (_) { }
+      try { session.video.pause(); } catch (_) { }
+      recording = null;
+
+      const measuredDuration = Math.max(0, (performance.now() - session.startedAt) / 1000);
+      if (session.error || measuredDuration < 0.2 || !session.chunks.length) {
+        post({
+          kind: 'recording-complete',
+          recordingId: session.id,
+          error: String(session.error?.message || session.error || '片段太短，至少需要 0.2 秒。'),
+        });
+        return;
+      }
+      const blob = new Blob(session.chunks, { type: session.mimeType });
+      const bytes = await blob.arrayBuffer();
+      post({
+        kind: 'recording-complete',
+        recordingId: session.id,
+        result: {
+          bytes,
+          mimeType: session.mimeType,
+          measuredDuration,
+          sourceStart: session.sourceStart,
+          sourceEnd: Number(session.video.currentTime) || session.sourceStart + measuredDuration,
+          captureWidth: session.captureWidth,
+          captureHeight: session.captureHeight,
+          liveWallClockStartMs: session.liveWallClockStartMs,
+          liveIdentity: getLiveIdentity(document),
+          stopReason: session.stopReason,
+        },
+      }, [bytes]);
+    };
+
+    const stopFrameRecording = (reason = 'manual') => {
+      const session = recording;
+      if (!session || session.stopping) return;
+      session.stopping = true;
+      session.stopReason = reason;
+      try { session.video.pause(); } catch (_) { }
+      stopRecordingLoop(session);
+      try {
+        if (session.recorder.state !== 'inactive') {
+          try { session.recorder.requestData(); } catch (_) { }
+          session.recorder.stop();
+        } else {
+          void completeRecording(session);
+        }
+      } catch (error) {
+        session.error = error;
+        void completeRecording(session);
+      }
+    };
+
+    const startFrameRecording = async (data) => {
+      if (recording) throw new Error('已有录制任务正在进行。');
+      const video = refreshVideo();
+      if (!video?.videoWidth || !video.videoHeight) throw new Error('未找到可录制的视频。');
+      if (typeof MediaRecorder === 'undefined') throw new Error('当前浏览器不支持录制。');
+      const captureStream = HTMLCanvasElement.prototype.captureStream
+        || HTMLCanvasElement.prototype.mozCaptureStream;
+      if (typeof captureStream !== 'function') throw new Error('当前浏览器不支持画布录制。');
+
+      const selection = data.selection || {};
+      const sx = bound(Number(selection.x) || 0, 0, 1) * video.videoWidth;
+      const sy = bound(Number(selection.y) || 0, 0, 1) * video.videoHeight;
+      const sw = bound(Number(selection.w) || 0, 0, 1) * video.videoWidth;
+      const sh = bound(Number(selection.h) || 0, 0, 1) * video.videoHeight;
+      if (sw < 2 || sh < 2) throw new Error('选区太小，请重新框选。');
+      const maxWidth = Math.max(2, Number(data.maxWidth) || 720);
+      const fps = Math.max(1, Number(data.fps) || 24);
+      const captureWidth = Math.max(2, Math.round(Math.min(maxWidth, sw) / 2) * 2);
+      const captureHeight = Math.max(2, Math.round((captureWidth / (sw / sh)) / 2) * 2);
+      const canvas = document.createElement('canvas');
+      canvas.width = captureWidth;
+      canvas.height = captureHeight;
+      const ctx = canvas.getContext('2d', { alpha: false, willReadFrequently: false });
+      if (!ctx) throw new Error('无法创建录制画布。');
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      const draw = () => {
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, captureWidth, captureHeight);
+        ctx.drawImage(video, sx, sy, sw, sh, 0, 0, captureWidth, captureHeight);
+      };
+
+      const candidates = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'];
+      const mimeType = candidates.find((type) => MediaRecorder.isTypeSupported?.(type)) || '';
+      const stream = captureStream.call(canvas, fps);
+      const options = { videoBitsPerSecond: captureWidth >= 640 ? 6_000_000 : 4_000_000 };
+      if (mimeType) options.mimeType = mimeType;
+      const recorder = new MediaRecorder(stream, options);
+      const session = {
+        id: String(data.recordingId || ''),
+        video,
+        recorder,
+        stream,
+        chunks: [],
+        mimeType: recorder.mimeType || mimeType || 'video/webm',
+        playbackRate: video.playbackRate,
+        sourceStart: Number(video.currentTime) || 0,
+        captureWidth,
+        captureHeight,
+        liveWallClockStartMs: Date.now(),
+        startedAt: performance.now(),
+        lastDrawAt: 0,
+        rafId: 0,
+        maxTimerId: 0,
+        stopping: false,
+        completed: false,
+        stopReason: '',
+        error: null,
+      };
+      recording = session;
+      recorder.addEventListener('dataavailable', (event) => {
+        if (event.data?.size > 0) session.chunks.push(event.data);
+      });
+      recorder.addEventListener('error', (event) => {
+        session.error = event.error || new Error('录制失败。');
+        stopFrameRecording('error');
+      });
+      recorder.addEventListener('stop', () => { void completeRecording(session); }, { once: true });
+
+      const drawLoop = (now) => {
+        if (recording !== session || session.stopping) return;
+        if (now - session.lastDrawAt >= (1000 / fps) - 1) {
+          try {
+            draw();
+            session.lastDrawAt = now;
+          } catch (error) {
+            session.error = error;
+            stopFrameRecording('error');
+            return;
+          }
+        }
+        session.rafId = requestAnimationFrame(drawLoop);
+      };
+      try {
+        video.pause();
+        video.playbackRate = 1;
+        draw();
+        recorder.start(250);
+        session.rafId = requestAnimationFrame(drawLoop);
+        session.maxTimerId = setTimeout(
+          () => stopFrameRecording('limit'),
+          Math.max(1, Number(data.maxSeconds) || 60) * 1000,
+        );
+        await video.play();
+      } catch (error) {
+        session.error = error instanceof Error ? error : new Error(String(error));
+        stopFrameRecording('error');
+        throw session.error;
+      }
+      return {
+        recordingId: session.id,
+        captureWidth,
+        captureHeight,
+        sourceStart: session.sourceStart,
+        liveWallClockStartMs: session.liveWallClockStartMs,
+        liveIdentity: getLiveIdentity(document),
+      };
+    };
+
+    const handleMessage = (event) => {
+      if (!isLiveFrameMessage(event, expectedOrigin, window.parent) || event.data.kind !== 'request') return;
+      const { action, requestId } = event.data;
+      if (action === 'ping') {
+        postReady();
+        return;
+      }
+      if (action === 'set-enabled') {
+        enabled = Boolean(event.data.enabled);
+        collector.setEnabled(enabled);
+        post({ kind: 'status', status: collector.getStatus(refreshVideo()) });
+        return;
+      }
+      if (action === 'get-status') {
+        post({ kind: 'response', requestId, status: collector.getStatus(refreshVideo()) });
+        return;
+      }
+      if (action === 'start-recording') {
+        startFrameRecording(event.data).then(
+          (result) => post({ kind: 'response', requestId, result }),
+          (error) => post({ kind: 'response', requestId, error: String(error?.message || error) }),
+        );
+        return;
+      }
+      if (action === 'stop-recording') {
+        stopFrameRecording(event.data.reason || 'manual');
+        post({ kind: 'response', requestId, result: { accepted: true } });
+        return;
+      }
+      if (action !== 'get-snapshot') return;
+
+      const video = refreshVideo();
+      const snapshot = collector.getSnapshot(video);
+      if (!snapshot) {
+        post({
+          kind: 'response',
+          requestId,
+          snapshot: null,
+          status: collector.getStatus(video),
+        });
+        return;
+      }
+      const parts = snapshot.parts;
+      post({
+        kind: 'response',
+        requestId,
+        snapshot: {
+          ...snapshot,
+          parts,
+          captureWidth: video?.videoWidth || 0,
+          captureHeight: video?.videoHeight || 0,
+          liveIdentity: getLiveIdentity(document),
+        },
+      }, parts.map((part) => part.buffer));
+    };
+
+    window.addEventListener('message', handleMessage);
+    collector.setStatusListener((status) => post({ kind: 'status', status }));
+    collector.setEnabled(enabled);
+
+    const startObserving = () => {
+      refreshVideo();
+      observer = new MutationObserver((records) => {
+        const changed = records.some((record) => {
+          if (record.type === 'attributes') {
+            return record.target instanceof HTMLVideoElement || record.target instanceof HTMLSourceElement;
+          }
+          return [...record.addedNodes, ...record.removedNodes].some((node) => (
+            node instanceof HTMLVideoElement
+            || node instanceof HTMLSourceElement
+            || node.querySelector?.('video, source')
+          ));
+        });
+        if (!changed) return;
+        refreshVideo();
+        postReady();
+      });
+      observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['src'] });
+      document.addEventListener('loadedmetadata', postReady, true);
+      document.addEventListener('emptied', postReady, true);
+      postReady();
+    };
+    if (document.documentElement) startObserving();
+    else document.addEventListener('DOMContentLoaded', startObserving, { once: true });
+
+    const dispose = () => {
+      if (recording) {
+        recording.completed = true;
+        cleanupRecording(recording);
+        try { recording.recorder.stop(); } catch (_) { }
+        recording = null;
+      }
+      observer?.disconnect();
+      window.removeEventListener('message', handleMessage);
+      document.removeEventListener('loadedmetadata', postReady, true);
+      document.removeEventListener('emptied', postReady, true);
+      collector.dispose();
+    };
+    window.addEventListener('beforeunload', dispose, { once: true });
+    return { dispose };
+  }
+
+  function createLiveFrameClient({ onReady, onStatus, onRecordingComplete } = {}) {
+    const expectedOrigin = location.origin;
+    const peers = new Map();
+    const pending = new Map();
+    let nextRequestId = 1;
+    let enabled = initialLiveCaptureMode === 'rewind';
+
+    const post = (target, message) => target?.postMessage?.({
+      channel: LIVE_FRAME_CHANNEL,
+      version: 1,
+      kind: 'request',
+      ...message,
+    }, expectedOrigin);
+
+    const findFrameElement = (target, rootDocument = document) => {
+      for (const frame of rootDocument.querySelectorAll('iframe')) {
+        try {
+          if (frame.contentWindow === target) return frame;
+          if (frame.contentDocument) {
+            const nested = findFrameElement(target, frame.contentDocument);
+            if (nested) return nested;
+          }
+        } catch (_) { }
+      }
+      return null;
+    };
+
+    const createVideoProxy = (source, frameId) => ({
+      __liveFrameVideo: true,
+      __liveFrameSource: source,
+      get isConnected() {
+        const peer = peers.get(source);
+        return Boolean(peer?.frameId === frameId && peer.frame?.isConnected);
+      },
+      get videoWidth() { return Number(peers.get(source)?.video?.videoWidth) || 0; },
+      get videoHeight() { return Number(peers.get(source)?.video?.videoHeight) || 0; },
+    });
+
+    const register = (source, data) => {
+      const current = peers.get(source) || {};
+      const frame = current.frame || findFrameElement(source);
+      if (!frame) return;
+      peers.set(source, {
+        ...current,
+        frame,
+        frameId: data.frameId || current.frameId || '',
+        roomId: data.roomId || current.roomId || '',
+        video: data.video || current.video || null,
+        proxy: current.proxy && current.frameId === (data.frameId || current.frameId || '')
+          ? current.proxy
+          : createVideoProxy(source, data.frameId || current.frameId || ''),
+      });
+      post(source, { action: 'set-enabled', enabled });
+      onReady?.(source);
+    };
+
+    const handleMessage = (event) => {
+      if (!isLiveFrameMessage(event, expectedOrigin)) return;
+      const { data, source } = event;
+      if (data.kind === 'ready') {
+        if (!findFrameElement(source)) return;
+        register(source, data);
+        return;
+      }
+      if (!peers.has(source)) return;
+      if (data.kind === 'recording-complete') {
+        onRecordingComplete?.(data, peers.get(source)?.proxy || null);
+        return;
+      }
+      if (data.kind === 'status') {
+        peers.set(source, { ...peers.get(source), status: data.status || null });
+        onStatus?.(data.status || null, source);
+        return;
+      }
+      if (data.kind !== 'response' || !pending.has(data.requestId)) return;
+      const request = pending.get(data.requestId);
+      if (request.source !== source) return;
+      pending.delete(data.requestId);
+      clearTimeout(request.timer);
+      if (data.status) {
+        peers.set(source, { ...peers.get(source), status: data.status });
+        onStatus?.(data.status, source);
+      }
+      if (data.error) request.reject(new Error(data.error));
+      else request.resolve(data);
+    };
+
+    const request = (source, action, payload = {}) => new Promise((resolve, reject) => {
+      if (!source || source === window) {
+        reject(new Error('未找到活动直播播放器。'));
+        return;
+      }
+      const requestId = nextRequestId++;
+      const timer = window.setTimeout(() => {
+        pending.delete(requestId);
+        reject(new Error('活动直播播放器响应超时。'));
+      }, 5_000);
+      pending.set(requestId, { source, resolve, reject, timer });
+      post(source, { ...payload, action, requestId });
+    });
+
+    const pingDocumentFrames = (rootDocument = document) => {
+      for (const frame of rootDocument.querySelectorAll('iframe')) {
+        try {
+          post(frame.contentWindow, { action: 'ping' });
+          if (frame.contentDocument) pingDocumentFrames(frame.contentDocument);
+        } catch (_) { }
+      }
+    };
+
+    window.addEventListener('message', handleMessage);
+    pingDocumentFrames();
+    return {
+      getVideos() {
+        return [...peers.values()]
+          .filter((peer) => peer.frame?.isConnected && peer.video?.videoWidth > 0 && peer.video?.videoHeight > 0)
+          .map((peer) => peer.proxy);
+      },
+      getVideoDescriptor(video) {
+        return peers.get(video?.__liveFrameSource)?.video || null;
+      },
+      getFrameElement(video) {
+        return peers.get(video?.__liveFrameSource)?.frame || null;
+      },
+      getStatus(video) {
+        const source = video?.__liveFrameSource || video?.ownerDocument?.defaultView;
+        return peers.get(source)?.status || null;
+      },
+      async getSnapshot(video) {
+        const source = video?.__liveFrameSource || video?.ownerDocument?.defaultView;
+        const response = await request(source, 'get-snapshot');
+        return response.snapshot || null;
+      },
+      async startRecording(video, options) {
+        const source = video?.__liveFrameSource;
+        const response = await request(source, 'start-recording', options);
+        return response.result;
+      },
+      async stopRecording(video, options) {
+        const source = video?.__liveFrameSource;
+        const response = await request(source, 'stop-recording', options);
+        return response.result;
+      },
+      setEnabled(nextEnabled) {
+        enabled = Boolean(nextEnabled);
+        for (const source of peers.keys()) post(source, { action: 'set-enabled', enabled });
+        pingDocumentFrames();
+      },
+      ping: pingDocumentFrames,
+      dispose() {
+        window.removeEventListener('message', handleMessage);
+        for (const requestState of pending.values()) {
+          clearTimeout(requestState.timer);
+          requestState.reject(new Error('活动直播播放器已关闭。'));
+        }
+        pending.clear();
+        peers.clear();
+      },
+    };
+  }
+
   const liveRewindTestApi = {
     LiveRewindTrack,
     parseLiveInit,
@@ -1128,6 +1686,9 @@
     filterLiveMediaToTrack,
     toVideoOnlyMimeType,
     installLiveMediaCollector,
+    extractLiveRoomId,
+    isLiveFrameMessage,
+    mapLiveFrameVideoRect,
     GIF_QUALITY_PRESETS,
     buildGifsicleCommand,
     normalizeGifDelay,
@@ -1167,6 +1728,7 @@
   }
 
   const IS_LIVE_PAGE = location.hostname === 'live.bilibili.com';
+  const IS_TOP_WINDOW = window.top === window;
   const pageWindow = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
   let initialLiveCaptureMode = 'rewind';
   if (IS_LIVE_PAGE) {
@@ -1174,8 +1736,76 @@
       initialLiveCaptureMode = localStorage.getItem(LIVE_CAPTURE_MODE_KEY) === 'forward' ? 'forward' : 'rewind';
     } catch (_) { }
   }
-  const liveMediaCollector = IS_LIVE_PAGE
+  const localLiveMediaCollector = IS_LIVE_PAGE
     ? installLiveMediaCollector(pageWindow, initialLiveCaptureMode === 'rewind')
+    : null;
+
+  if (!IS_TOP_WINDOW) {
+    if (IS_LIVE_PAGE) installLiveFrameAgent(localLiveMediaCollector);
+    return;
+  }
+
+  let frameReadyListener = null;
+  let frameStatusListener = null;
+  let frameRecordingCompleteListener = null;
+  const liveFrameClient = IS_LIVE_PAGE ? createLiveFrameClient({
+    onReady: () => frameReadyListener?.(),
+    onStatus: (status) => frameStatusListener?.(status),
+    onRecordingComplete: (data, video) => frameRecordingCompleteListener?.(data, video),
+  }) : null;
+  const liveMediaCollector = IS_LIVE_PAGE
+    ? {
+      getFrameVideos() {
+        return liveFrameClient?.getVideos?.() || [];
+      },
+      getVideoDescriptor(video) {
+        return liveFrameClient?.getVideoDescriptor?.(video) || null;
+      },
+      getFrameElement(video) {
+        return liveFrameClient?.getFrameElement?.(video) || null;
+      },
+      setEnabled(enabled) {
+        localLiveMediaCollector?.setEnabled(enabled);
+        liveFrameClient?.setEnabled(enabled);
+      },
+      setActiveVideo(video) {
+        if (video?.ownerDocument === document) localLiveMediaCollector?.setActiveVideo(video);
+      },
+      getSnapshot(video) {
+        if (video?.__liveFrameVideo) return liveFrameClient?.getSnapshot(video) || null;
+        return localLiveMediaCollector?.getSnapshot(video) || null;
+      },
+      startRecording(video, options) {
+        return liveFrameClient?.startRecording?.(video, options);
+      },
+      stopRecording(video, options) {
+        return liveFrameClient?.stopRecording?.(video, options);
+      },
+      getStatus(video) {
+        if (video?.__liveFrameVideo) return liveFrameClient?.getStatus(video) || null;
+        return localLiveMediaCollector?.getStatus(video) || null;
+      },
+      setStatusListener(listener) {
+        frameStatusListener = typeof listener === 'function' ? listener : null;
+        localLiveMediaCollector?.setStatusListener(listener);
+      },
+      setFrameReadyListener(listener) {
+        frameReadyListener = typeof listener === 'function' ? listener : null;
+      },
+      setRecordingCompleteListener(listener) {
+        frameRecordingCompleteListener = typeof listener === 'function' ? listener : null;
+      },
+      ping() {
+        liveFrameClient?.ping();
+      },
+      dispose() {
+        frameReadyListener = null;
+        frameStatusListener = null;
+        frameRecordingCompleteListener = null;
+        localLiveMediaCollector?.dispose();
+        liveFrameClient?.dispose();
+      },
+    }
     : null;
 
   function startApp() {
@@ -2782,12 +3412,59 @@
     return 0.5;
   }
 
+  function getVideoViewportRect(video) {
+    if (!video) return null;
+    if (video.__liveFrameVideo) {
+      const descriptor = liveMediaCollector?.getVideoDescriptor(video);
+      const frame = liveMediaCollector?.getFrameElement(video);
+      if (!descriptor?.rect || !frame?.isConnected) return null;
+      const frameRect = frame.getBoundingClientRect();
+      return mapLiveFrameVideoRect(frameRect, descriptor);
+    }
+    const localRect = video.getBoundingClientRect();
+    if (video.ownerDocument === document) return localRect;
+    let ownerDocument = video.ownerDocument;
+    let left = localRect.left;
+    let top = localRect.top;
+    while (ownerDocument && ownerDocument !== document) {
+      let frame = null;
+      try { frame = ownerDocument.defaultView?.frameElement || null; } catch (_) { }
+      if (!frame) return null;
+      const frameRect = frame.getBoundingClientRect();
+      left += frameRect.left;
+      top += frameRect.top;
+      ownerDocument = frame.ownerDocument;
+    }
+    return {
+      left,
+      top,
+      right: left + localRect.width,
+      bottom: top + localRect.height,
+      width: localRect.width,
+      height: localRect.height,
+    };
+  }
+
+  function getVideoComputedStyle(video) {
+    if (video?.__liveFrameVideo) {
+      const descriptor = liveMediaCollector?.getVideoDescriptor(video);
+      return {
+        display: 'block',
+        visibility: 'visible',
+        opacity: '1',
+        objectFit: descriptor?.objectFit || 'fill',
+        objectPosition: descriptor?.objectPosition || '50% 50%',
+      };
+    }
+    return video?.ownerDocument?.defaultView?.getComputedStyle(video) || getComputedStyle(video);
+  }
+
   function getMediaMapping(video) {
     if (!video || !video.isConnected || !video.videoWidth || !video.videoHeight) return null;
-    const rect = video.getBoundingClientRect();
-    if (rect.width <= 1 || rect.height <= 1) return null;
+    const rect = getVideoViewportRect(video);
+    if (!rect || rect.width <= 1 || rect.height <= 1) return null;
 
-    const style = getComputedStyle(video);
+    const style = getVideoComputedStyle(video);
     const fit = style.objectFit || 'fill';
     const posTokens = String(style.objectPosition || '50% 50%').trim().split(/\s+/);
     const posX = parseObjectPositionToken(posTokens[0], 'x');
@@ -2860,13 +3537,26 @@
   }
 
   function scanMainVideo() {
-    const videos = [...document.querySelectorAll('video')];
+    const videos = [];
+    const collectVideos = (rootDocument) => {
+      videos.push(...rootDocument.querySelectorAll('video'));
+      for (const frame of rootDocument.querySelectorAll('iframe')) {
+        try { if (frame.contentDocument) collectVideos(frame.contentDocument); } catch (_) { }
+      }
+    };
+    collectVideos(document);
+    const frameVideos = liveMediaCollector?.getFrameVideos?.() || [];
+    if (frameVideos.length) {
+      videos.length = 0;
+      videos.push(...frameVideos);
+    }
     if (!videos.length) return null;
 
     const candidates = videos
       .map((video) => {
-        const rect = video.getBoundingClientRect();
-        const style = getComputedStyle(video);
+        const rect = getVideoViewportRect(video);
+        if (!rect) return { video, area: 0 };
+        const style = getVideoComputedStyle(video);
         const visible = rect.width > 120
           && rect.height > 80
           && style.display !== 'none'
@@ -2889,13 +3579,19 @@
   }
 
   function invalidateMainVideo() {
+    const previousVideo = state.mainVideo;
     state.mainVideo = null;
+    if (state.recording?.remote && previousVideo && !previousVideo.isConnected) {
+      state.recording.error = new Error('活动直播播放器已重建，录制已停止。');
+      void finalizeRecording(state.recording);
+    }
     if (state.videoScanQueued) return;
     state.videoScanQueued = true;
     queueMicrotask(() => {
       state.videoScanQueued = false;
       const video = getMainVideo();
       liveMediaCollector?.setActiveVideo(video);
+      liveMediaCollector?.ping?.();
       updateLiveRewindTitle();
     });
   }
@@ -2906,7 +3602,7 @@
   }
 
   function getLiveRoomIdentity() {
-    const roomId = location.pathname.match(/^\/(\d+)/)?.[1] || '直播间';
+    const roomId = extractLiveRoomId(location.pathname) || '直播间';
     const ownerElement = document.querySelector('.room-owner-username');
     const titleParts = document.title.split(' - ').map((part) => part.trim()).filter(Boolean);
     const titleOwner = titleParts.length >= 3 ? titleParts[titleParts.length - 2] : '';
@@ -3922,29 +4618,28 @@
       return;
     }
     liveMediaCollector.setActiveVideo(sourceVideo);
-    const snapshot = liveMediaCollector.getSnapshot(sourceVideo);
-    if (!snapshot) {
-      showToast(liveWarmupMessage(sourceVideo));
-      return;
-    }
-
     state.busy = true;
     stopTrimPreview();
     updateModeUi();
     try {
+      const snapshot = await Promise.resolve(liveMediaCollector.getSnapshot(sourceVideo));
+      if (!snapshot) {
+        showToast(liveWarmupMessage(sourceVideo));
+        return;
+      }
       const snapshotBytes = snapshot.parts.reduce((sum, part) => sum + part.byteLength, 0);
       if (snapshotBytes < 1024) throw new Error('回溯片段尚未准备好。');
       await loadLiveRewindClip(snapshot, {
         measuredDuration: snapshot.duration,
         sourceStart: snapshot.sourceStart,
         sourceEnd: snapshot.sourceEnd,
-        captureWidth: sourceVideo.videoWidth,
-        captureHeight: sourceVideo.videoHeight,
+        captureWidth: snapshot.captureWidth || sourceVideo.videoWidth,
+        captureHeight: snapshot.captureHeight || sourceVideo.videoHeight,
         initialTrimStart: snapshot.trimStart,
         initialTrimEnd: snapshot.trimEnd,
         clipKind: 'live-rewind',
         liveWallClockStartMs: snapshot.liveWallClockStartMs,
-        liveIdentity: getLiveRoomIdentity(),
+        liveIdentity: snapshot.liveIdentity || getLiveRoomIdentity(),
       });
       state.mode = 'edit';
       el.panel.classList.remove('hidden');
@@ -4353,6 +5048,77 @@
     try { recording.stream?.getTracks().forEach((track) => track.stop()); } catch (_) { }
   }
 
+  async function startRemoteRecording(video) {
+    const recordingId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const recordingSelection = { ...state.pageSelection };
+    const sourceWidth = Math.max(2, Number(video.videoWidth) || 2);
+    const sourceHeight = Math.max(2, Number(video.videoHeight) || 2);
+    const source = normalizedSelectionToSource(recordingSelection, {
+      videoWidth: sourceWidth,
+      videoHeight: sourceHeight,
+    });
+    const captureWidth = Math.max(2, Math.round(Math.min(RECORD_MAX_WIDTH, source.sw) / 2) * 2);
+    const captureHeight = Math.max(2, Math.round((captureWidth / (source.sw / source.sh)) / 2) * 2);
+    const recording = {
+      id: recordingId,
+      remote: true,
+      video,
+      chunks: [],
+      mimeType: 'video/webm',
+      selection: recordingSelection,
+      captureWidth,
+      captureHeight,
+      snapshot: { sourceStart: 0, playbackRate: 1, paused: false },
+      liveWallClockStartMs: Date.now(),
+      liveIdentity: getLiveRoomIdentity(),
+      startedAt: performance.now(),
+      timerId: 0,
+      maxTimerId: 0,
+      stopping: false,
+      stopReason: '',
+      error: null,
+    };
+
+    state.busy = true;
+    setStatus('正在连接活动直播播放器……');
+    try {
+      const result = await liveMediaCollector.startRecording(video, {
+        recordingId,
+        selection: recordingSelection,
+        maxWidth: RECORD_MAX_WIDTH,
+        fps: RECORD_FPS,
+        maxSeconds: MAX_RECORD_SECONDS,
+      });
+      if (!result) throw new Error('活动直播播放器未响应。');
+      recording.snapshot.sourceStart = Number(result.sourceStart) || 0;
+      recording.captureWidth = Number(result.captureWidth) || recording.captureWidth;
+      recording.captureHeight = Number(result.captureHeight) || recording.captureHeight;
+      recording.liveWallClockStartMs = Number(result.liveWallClockStartMs) || recording.liveWallClockStartMs;
+      recording.liveIdentity = result.liveIdentity || recording.liveIdentity;
+      state.recording = recording;
+      state.mode = 'recording';
+      state.busy = false;
+      el.panel.classList.add('hidden');
+      updateModeUi();
+      setStatus('');
+      recording.timerId = setInterval(() => {
+        const seconds = (performance.now() - recording.startedAt) / 1000;
+        const timeText = formatRecordTime(seconds);
+        el.recordTimer.textContent = timeText;
+        el.selectionTimer.textContent = timeText;
+        const liveMapping = getMediaMapping(recording.video);
+        if (liveMapping) positionSelectionToolbar(selectionToScreenRect(recording.selection, liveMapping));
+      }, 80);
+      recording.maxTimerId = setTimeout(() => stopRecording('limit'), MAX_RECORD_SECONDS * 1000);
+    } catch (error) {
+      state.busy = false;
+      state.recording = null;
+      state.mode = 'capture';
+      updateModeUi();
+      setStatus(friendlyError(error), 'error');
+    }
+  }
+
   async function startRecording() {
     if (state.mode === 'recording') {
       stopRecording('manual');
@@ -4367,6 +5133,10 @@
     const video = getMainVideo();
     if (!video || !video.videoWidth || !video.videoHeight) {
       setStatus('未找到可录制的视频。', 'error');
+      return;
+    }
+    if (video.__liveFrameVideo) {
+      void startRemoteRecording(video);
       return;
     }
     if (typeof MediaRecorder === 'undefined') {
@@ -4502,6 +5272,14 @@
     if (!recording || recording.stopping) return;
     recording.stopping = true;
     recording.stopReason = reason;
+    if (recording.remote) {
+      void liveMediaCollector.stopRecording(recording.video, { reason }).catch((error) => {
+        recording.error = error;
+        void finalizeRecording(recording);
+      });
+      updateModeUi();
+      return;
+    }
     try { recording.video.pause(); } catch (_) { }
     if (recording.rafId) cancelAnimationFrame(recording.rafId);
     if (recording.timerId) clearInterval(recording.timerId);
@@ -4626,8 +5404,12 @@
     try { recording.video.playbackRate = recording.snapshot.playbackRate; } catch (_) { }
     try { recording.video.pause(); } catch (_) { }
 
-    const measuredDuration = Math.max(0, (performance.now() - recording.startedAt) / 1000);
-    const sourceEnd = Number(recording.video.currentTime) || recording.snapshot.sourceStart + measuredDuration;
+    const measuredDuration = Number.isFinite(recording.measuredDuration)
+      ? Math.max(0, recording.measuredDuration)
+      : Math.max(0, (performance.now() - recording.startedAt) / 1000);
+    const sourceEnd = Number(recording.sourceEnd)
+      || Number(recording.video.currentTime)
+      || recording.snapshot.sourceStart + measuredDuration;
     state.recording = null;
     el.recordTimer.textContent = '00:00.0';
     el.selectionTimer.textContent = '00:00.0';
@@ -6894,7 +7676,9 @@
         return record.target instanceof HTMLVideoElement || record.target instanceof HTMLSourceElement;
       }
       return [...record.addedNodes, ...record.removedNodes].some((node) => (
-        node instanceof HTMLVideoElement || node.querySelector?.('video')
+        node instanceof HTMLVideoElement
+        || node instanceof HTMLIFrameElement
+        || node.querySelector?.('video, iframe')
       ));
     });
     if (changed) invalidateMainVideo();
@@ -7082,6 +7866,25 @@
   state.preferredPanelGeometry = readSavedPanelGeometry();
   liveMediaCollector?.setEnabled(state.liveCaptureMode === 'rewind');
   liveMediaCollector?.setStatusListener((status) => updateLiveRewindTitle(status));
+  liveMediaCollector?.setFrameReadyListener?.(invalidateMainVideo);
+  liveMediaCollector?.setRecordingCompleteListener?.((message) => {
+    const recording = state.recording;
+    if (!recording?.remote || recording.id !== message.recordingId) return;
+    if (message.error) {
+      recording.error = new Error(message.error);
+    } else if (message.result) {
+      recording.chunks = [new Uint8Array(message.result.bytes || 0)];
+      recording.mimeType = message.result.mimeType || recording.mimeType;
+      recording.measuredDuration = Number(message.result.measuredDuration) || 0;
+      recording.sourceEnd = Number(message.result.sourceEnd) || 0;
+      recording.captureWidth = Number(message.result.captureWidth) || recording.captureWidth;
+      recording.captureHeight = Number(message.result.captureHeight) || recording.captureHeight;
+      recording.liveWallClockStartMs = Number(message.result.liveWallClockStartMs) || recording.liveWallClockStartMs;
+      recording.liveIdentity = message.result.liveIdentity || recording.liveIdentity;
+      recording.stopReason = message.result.stopReason || recording.stopReason;
+    }
+    void finalizeRecording(recording);
+  });
   restoreLauncherPosition();
   renderTextLayerTabs();
   renderTextLayers();

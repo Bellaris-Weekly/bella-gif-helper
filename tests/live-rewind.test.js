@@ -4,15 +4,49 @@ const assert = require('node:assert/strict');
 const {
   LiveRewindTrack,
   calculateLiveFirstFrameTime,
+  extractLiveRoomId,
   filterLiveInitToTrack,
   filterLiveMediaToTrack,
   formatGifFileName,
   installLiveMediaCollector,
+  isLiveFrameMessage,
+  mapLiveFrameVideoRect,
   parseLiveInit,
   parseLiveMedia,
   readIsoBoxes,
   toVideoOnlyMimeType,
 } = require('../bella-gif-helper.user.js');
+
+test('活动直播房间和轻量播放器路径使用同一房间识别规则', () => {
+  assert.equal(extractLiveRoomId('/21919321'), '21919321');
+  assert.equal(extractLiveRoomId('/blanc/21919321'), '21919321');
+  assert.equal(extractLiveRoomId('/blanc/21919321/'), '21919321');
+  assert.equal(extractLiveRoomId('/blackboard/era/example'), '');
+});
+
+test('跨 iframe 消息只接受同源、同通道和指定发送窗口', () => {
+  const source = {};
+  const base = {
+    origin: 'https://live.bilibili.com',
+    source,
+    data: { channel: 'bella-gif-helper-live-frame-v1', version: 1, kind: 'ready' },
+  };
+  assert.equal(isLiveFrameMessage(base, 'https://live.bilibili.com', source), true);
+  assert.equal(isLiveFrameMessage({ ...base, origin: 'https://evil.example' }, 'https://live.bilibili.com', source), false);
+  assert.equal(isLiveFrameMessage({ ...base, source: {} }, 'https://live.bilibili.com', source), false);
+  assert.equal(isLiveFrameMessage({ ...base, data: { ...base.data, version: 2 } }, 'https://live.bilibili.com', source), false);
+});
+
+test('活动播放器坐标按 iframe 视口比例映射到顶层页面', () => {
+  assert.deepEqual(
+    mapLiveFrameVideoRect(
+      { left: 100, top: 50, width: 560, height: 315 },
+      { viewportWidth: 1120, viewportHeight: 630, rect: { left: 0, top: 0, width: 1120, height: 630 } },
+    ),
+    { left: 100, top: 50, right: 660, bottom: 365, width: 560, height: 315 },
+  );
+  assert.equal(mapLiveFrameVideoRect(null, {}), null);
+});
 
 function concat(parts) {
   const size = parts.reduce((sum, part) => sum + part.byteLength, 0);
