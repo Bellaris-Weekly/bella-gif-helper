@@ -43,6 +43,17 @@ test('compact editor keeps visual feedback inside the existing workspace', () =>
   assert.match(css, /\.grid-2\.export-options\s*\{[\s\S]*?repeat\(3, minmax\(0, 1fr\)\)/);
 });
 
+test('shortcut settings use the existing header without changing panel flow', () => {
+  assert.match(source, /class="header-actions"[\s\S]*?class="shortcut-setting"[\s\S]*?id="shortcutInput"[\s\S]*?id="closeBtn"/);
+  assert.match(source, /id="shortcutInput"[^>]+readonly[^>]+value="Ctrl\+Z"/);
+  assert.match(css, /\.shortcut-setting\s*\{[\s\S]*?display:\s*flex/);
+  assert.match(css, /#shortcutInput\s*\{[\s\S]*?width:\s*84px/);
+  assert.match(css, /\.header-actions\s*\{[\s\S]*?display:\s*flex/);
+  assert.match(source, /SHORTCUT_KEY\s*=\s*'biliGifMakerShortcutV1'/);
+  assert.match(source, /GM_getValue\(SHORTCUT_KEY/);
+  assert.match(source, /GM_setValue\(SHORTCUT_KEY/);
+});
+
 test('page capture chrome is removed for every editor and export state', () => {
   assert.match(source, /const pageSelectionVisible = state\.mode === 'capture' \|\| recording/);
   assert.match(source, /if \(!pageSelectionVisible\) \{\s*el\.pageSelectionMarker\.classList\.add\('hidden'\);\s*el\.selectionToolbar\.classList\.add\('hidden'\);/);

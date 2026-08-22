@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         贝报 GIF 助手
 // @namespace    https://www.bk0717.com/
-// @version      1.4.1
+// @version      1.4.2
 // @description  B站直播回溯、视频框选录制与 GIF 编辑
 // @author       贝极星周报
 // @homepageURL  https://github.com/Bellaris-Weekly/bella-gif-helper
@@ -57,6 +57,77 @@
     bei: Object.freeze({ maxColors: 255, dither: null, lossy: 25 }),
     ran: Object.freeze({ maxColors: 192, dither: null, lossy: 50 }),
   });
+  const DEFAULT_SHORTCUT = Object.freeze({
+    code: 'KeyZ',
+    ctrlKey: true,
+    altKey: false,
+    shiftKey: false,
+    metaKey: false,
+  });
+
+  function normalizeShortcut(value) {
+    const code = String(value?.code || '').trim();
+    const ctrlKey = Boolean(value?.ctrlKey);
+    const altKey = Boolean(value?.altKey);
+    const shiftKey = Boolean(value?.shiftKey);
+    const metaKey = Boolean(value?.metaKey);
+    if (!code || /^(Control|Alt|Shift|Meta|OS)(Left|Right)?$/i.test(code) || /^Fn$/i.test(code)) return null;
+    if (!ctrlKey && !altKey && !metaKey) return null;
+    return Object.freeze({ code, ctrlKey, altKey, shiftKey, metaKey });
+  }
+
+  function formatShortcut(shortcut) {
+    const normalized = normalizeShortcut(shortcut) || DEFAULT_SHORTCUT;
+    const parts = [];
+    if (normalized.ctrlKey) parts.push('Ctrl');
+    if (normalized.altKey) parts.push('Alt');
+    if (normalized.shiftKey) parts.push('Shift');
+    if (normalized.metaKey) parts.push('Meta');
+    const key = normalized.code
+      .replace(/^Key/, '')
+      .replace(/^Digit/, '')
+      .replace(/^Numpad/, 'Num ')
+      .replace(/^Arrow/, 'Arrow ')
+      .replace(/^([A-Z])$/, '$1');
+    parts.push(key || normalized.code);
+    return parts.join('+');
+  }
+
+  function shortcutFromKeyboardEvent(event) {
+    if (!event || event.isComposing) return null;
+    return normalizeShortcut({
+      code: event.code,
+      ctrlKey: event.ctrlKey,
+      altKey: event.altKey,
+      shiftKey: event.shiftKey,
+      metaKey: event.metaKey,
+    });
+  }
+
+  function matchesShortcut(event, shortcut) {
+    const normalized = normalizeShortcut(shortcut);
+    if (!normalized || !event || event.repeat || event.isComposing) return false;
+    return event.code === normalized.code
+      && Boolean(event.ctrlKey) === normalized.ctrlKey
+      && Boolean(event.altKey) === normalized.altKey
+      && Boolean(event.shiftKey) === normalized.shiftKey
+      && Boolean(event.metaKey) === normalized.metaKey;
+  }
+
+  function isEditableShortcutTarget(target) {
+    if (!target) return false;
+    const tagName = String(target.tagName || '').toLowerCase();
+    return tagName === 'input'
+      || tagName === 'textarea'
+      || tagName === 'select'
+      || Boolean(target.isContentEditable)
+      || String(target.contentEditable || '').toLowerCase() === 'true';
+  }
+
+  function isEditableShortcutEvent(event) {
+    const path = typeof event?.composedPath === 'function' ? event.composedPath() : [];
+    return [event?.target, ...path].some(isEditableShortcutTarget);
+  }
 
   function buildGifsicleCommand(preset) {
     const lossy = preset.lossy > 0 ? ` --lossy=${preset.lossy}` : '';
@@ -1083,6 +1154,12 @@
     formatGifFileName,
     mergeEditorBackgroundIntent,
     sanitizeFileNamePart,
+    DEFAULT_SHORTCUT,
+    normalizeShortcut,
+    formatShortcut,
+    shortcutFromKeyboardEvent,
+    matchesShortcut,
+    isEditableShortcutEvent,
   };
   if (typeof module === 'object' && module.exports && typeof document === 'undefined') {
     module.exports = liveRewindTestApi;
@@ -1117,6 +1194,7 @@
   const LAUNCHER_POSITION_KEY = 'biliGifMakerLauncherPositionV1';
   const PANEL_GEOMETRY_KEY = 'biliGifMakerPanelGeometry';
   const EXPORT_PREFERENCES_KEY = 'biliGifMakerExportPreferencesV1';
+  const SHORTCUT_KEY = 'biliGifMakerShortcutV1';
   const UI_SAFE_MARGIN = 14;
     const state = {
     mode: 'capture',
@@ -1153,6 +1231,8 @@
     panelResize: null,
     panelLayoutRaf: 0,
     preferredPanelGeometry: null,
+    shortcut: DEFAULT_SHORTCUT,
+    shortcutRecording: false,
     suppressLauncherClick: false,
     textLayers: [],
     activeTextId: null,
@@ -1375,6 +1455,25 @@
       }
       .title-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
       .title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 700; font-size: 15px; }
+      .header-actions { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; }
+      .shortcut-setting { display: flex; align-items: center; gap: 5px; }
+      .shortcut-setting label { color: var(--color-text-muted); font-size: 11px; white-space: nowrap; }
+      #shortcutInput {
+        width: 84px;
+        height: 30px;
+        padding: 0 6px;
+        border: 1px solid var(--color-border-strong);
+        border-radius: var(--radius-compact);
+        outline: none;
+        background: var(--color-surface-raised);
+        color: var(--color-text);
+        font-size: 11px;
+        font-weight: 700;
+        text-align: center;
+        cursor: pointer;
+      }
+      #shortcutInput:hover { background: var(--color-surface-hover); }
+      #shortcutInput.recording { border-color: var(--color-brand-hover); box-shadow: 0 0 0 3px var(--color-brand-soft); }
       #stageBadge {
         flex: 0 0 auto;
         padding: 3px 8px;
@@ -2217,7 +2316,13 @@
           <div class="title">贝报GIF助手</div>
           <span id="stageBadge">编辑</span>
         </div>
-        <button id="closeBtn" class="icon-btn" title="关闭">✕</button>
+        <div class="header-actions">
+          <div class="shortcut-setting">
+            <label for="shortcutInput">快捷键</label>
+            <input id="shortcutInput" class="shortcut-input" type="text" readonly aria-label="启动快捷键" title="点击后按下新快捷键" value="Ctrl+Z">
+          </div>
+          <button id="closeBtn" class="icon-btn" type="button" title="关闭">✕</button>
+        </div>
       </div>
 
       <div class="body">
@@ -2431,6 +2536,7 @@
     panel: $('#panel'),
     panelResizeHandles: $$('.panel-resize-handle'),
     header: $('.header'),
+    shortcutInput: $('#shortcutInput'),
     closeBtn: $('#closeBtn'),
     stageBadge: $('#stageBadge'),
     captureStage: $('#captureStage'),
@@ -2574,6 +2680,61 @@
         el.cornerRadiusSelect.value = String(saved.cornerRadius);
       }
     } catch (_) { }
+  }
+
+  function restoreShortcutPreference() {
+    try {
+      state.shortcut = normalizeShortcut(GM_getValue(SHORTCUT_KEY, null)) || DEFAULT_SHORTCUT;
+    } catch (_) {
+      state.shortcut = DEFAULT_SHORTCUT;
+    }
+  }
+
+  function saveShortcutPreference() {
+    try { GM_setValue(SHORTCUT_KEY, state.shortcut); } catch (_) { }
+  }
+
+  function renderShortcutSetting() {
+    const label = formatShortcut(state.shortcut);
+    el.shortcutInput.value = state.shortcutRecording ? '按组合键' : label;
+    el.shortcutInput.classList.toggle('recording', state.shortcutRecording);
+  }
+
+  function beginShortcutRecording() {
+    state.shortcutRecording = true;
+    renderShortcutSetting();
+  }
+
+  function endShortcutRecording() {
+    state.shortcutRecording = false;
+    renderShortcutSetting();
+  }
+
+  function handleShortcutInputKeyDown(event) {
+    if (!state.shortcutRecording) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.key === 'Escape') {
+      endShortcutRecording();
+      return;
+    }
+    const shortcut = shortcutFromKeyboardEvent(event);
+    if (!shortcut) {
+      showToast('快捷键必须包含 Ctrl、Alt 或 Meta，并带一个主键。', 'error');
+      return;
+    }
+    state.shortcut = shortcut;
+    saveShortcutPreference();
+    endShortcutRecording();
+  }
+
+  function handleGlobalShortcutKeyDown(event) {
+    if (state.shortcutRecording || event.repeat || event.isComposing) return;
+    if (isEditableShortcutEvent(event)) return;
+    if (!matchesShortcut(event, state.shortcut)) return;
+    event.preventDefault();
+    event.stopImmediatePropagation?.();
+    handleLauncherAction();
   }
 
   function saveExportPreference(input) {
@@ -6754,6 +6915,11 @@
     }
   });
 
+  el.shortcutInput.addEventListener('focus', beginShortcutRecording);
+  el.shortcutInput.addEventListener('click', beginShortcutRecording);
+  el.shortcutInput.addEventListener('blur', endShortcutRecording);
+  el.shortcutInput.addEventListener('keydown', handleShortcutInputKeyDown);
+
   el.header.addEventListener('pointerdown', handlePanelHeaderPointerDown);
   el.header.addEventListener('pointermove', handlePanelHeaderPointerMove);
   el.header.addEventListener('pointerup', finishPanelHeaderDrag);
@@ -6866,6 +7032,7 @@
   $$('.export-input').forEach((input) => input.addEventListener('input', handleExportInputChange));
   $$('.export-input').forEach((input) => input.addEventListener('change', handleExportInputChange));
 
+  document.addEventListener('keydown', handleGlobalShortcutKeyDown, true);
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {
       if (state.pageSelectionSession) {
@@ -6910,6 +7077,8 @@
   });
 
   restoreExportPreferences();
+  restoreShortcutPreference();
+  renderShortcutSetting();
   state.preferredPanelGeometry = readSavedPanelGeometry();
   liveMediaCollector?.setEnabled(state.liveCaptureMode === 'rewind');
   liveMediaCollector?.setStatusListener((status) => updateLiveRewindTitle(status));
