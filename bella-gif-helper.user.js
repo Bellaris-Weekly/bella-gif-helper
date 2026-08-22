@@ -44,9 +44,9 @@
   const PREVIEW_CACHE_MIN_EDGE = 256;
   const ESTIMATE_WINDOW_FRAMES = 8;
   const ESTIMATE_WINDOW_COUNT = 3;
-  const PANEL_MIN_WIDTH = 360;
+  const PANEL_MIN_WIDTH = 160;
   const PANEL_MAX_WIDTH = 720;
-  const PANEL_MIN_HEIGHT = 560;
+  const PANEL_MIN_HEIGHT = 360;
   const EXPORT_PHASE_RANGES = Object.freeze({
     palette: Object.freeze([0, 12]),
     extracting: Object.freeze([12, 68]),
@@ -2255,16 +2255,16 @@
       #aspectSquareBtn {
         position: absolute;
         top: 10px;
-        right: 10px;
+        right: 16px;
         z-index: 12;
-        min-width: 46px;
-        height: 32px;
-        padding: 0 11px;
+        min-width: 40px;
+        height: 28px;
+        padding: 0 8px;
         border: 1px solid var(--color-border-strong);
         border-radius: var(--radius-control);
         background: rgba(21, 22, 25, .86);
         color: var(--color-text);
-        font-size: 12px;
+        font-size: 11px;
         font-weight: 800;
         cursor: pointer;
         backdrop-filter: blur(10px);

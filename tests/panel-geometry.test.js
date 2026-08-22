@@ -69,7 +69,19 @@ test('north-west resize handles a minimum width and top safe boundary together',
     1200,
     900,
   );
-  assert.deepEqual(resized, { left: 240, top: 14, width: 360, height: 836 });
+  assert.deepEqual(resized, { left: 440, top: 14, width: 160, height: 836 });
+});
+
+test('south-east resize reaches the reduced minimum width and height', () => {
+  const resized = calculatePanelResize(
+    { left: 200, top: 100, width: 400, height: 650 },
+    'se',
+    -1000,
+    -1000,
+    1200,
+    900,
+  );
+  assert.deepEqual(resized, { left: 200, top: 100, width: 160, height: 360 });
 });
 
 test('temporary viewport constraints do not mutate the preferred geometry', () => {
