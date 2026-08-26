@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         贝报 GIF 助手
 // @namespace    https://www.bk0717.com/
-// @version      1.4.3
+// @version      1.4.4
 // @description  B站直播回溯、视频框选录制与 GIF 编辑
 // @author       贝极星周报
 // @homepageURL  https://github.com/Bellaris-Weekly/bella-gif-helper
@@ -19,6 +19,7 @@
 // @resource     MODERN_PALETTE_MODULE https://cdn.jsdelivr.net/npm/modern-palette@2.0.0/dist/index.mjs
 // @resource     GIFENC_MODULE https://cdn.jsdelivr.net/npm/gifenc@1.0.3/dist/gifenc.esm.js
 // @resource     GIFSICLE_MODULE https://cdn.jsdelivr.net/npm/gifsicle-wasm-browser@1.5.19/dist/gifsicle.min.js
+// @resource     MEDIABUNNY_MODULE https://cdn.jsdelivr.net/npm/mediabunny@1.55.3/+esm
 // @grant        GM_getResourceText
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -28,6 +29,7 @@
 
 // GIF 调色使用 modern-palette 2.0.0，编码使用 gifenc 1.0.3（MIT License）。
 // GIF 后压缩使用 Gifsicle WASM（Gifsicle GPL-2.0-or-later）。
+// 媒体解复用与解码调度使用 Mediabunny 1.55.3（MPL-2.0 License）。
 
 (() => {
   'use strict';
@@ -134,34 +136,12 @@
     return `-O1 -Okeep-empty${lossy} input.gif -o /out/output.gif`;
   }
 
-  function calculateEncoderWorkerCount(hardwareConcurrency, outputLongestEdge = 720, decoderCount = 0) {
+  function calculateEncoderWorkerCount(hardwareConcurrency, outputLongestEdge = 720) {
     const cores = Math.max(1, Math.floor(Number(hardwareConcurrency) || 4));
-    const decoders = Math.max(0, Math.floor(Number(decoderCount) || 0));
-    const available = Math.max(2, cores - decoders - 1);
+    const available = Math.max(1, cores - 2);
     const edge = Math.max(1, Number(outputLongestEdge) || 720);
     const sizeLimit = edge <= 480 ? 10 : edge <= 720 ? 8 : 6;
     return Math.min(sizeLimit, available);
-  }
-
-  function calculateExportDecoderCount(hardwareConcurrency, frameCount, outputLongestEdge = 720) {
-    const cores = Math.max(1, Math.floor(Number(hardwareConcurrency) || 4));
-    const frames = Math.max(0, Math.floor(Number(frameCount) || 0));
-    const edge = Math.max(1, Number(outputLongestEdge) || 720);
-    const coreLimit = cores >= 10 ? 3 : cores >= 6 ? 2 : 1;
-    const workLimit = frames >= 180 ? 3 : frames >= 60 ? 2 : 1;
-    const sizeLimit = edge > 1080 ? 2 : 3;
-    return Math.min(coreLimit, workLimit, sizeLimit);
-  }
-
-  function partitionFrameRanges(frameTimes, count) {
-    const times = Array.from(frameTimes || []);
-    if (!times.length) return Object.freeze([]);
-    const rangeCount = Math.min(times.length, Math.max(1, Math.floor(Number(count) || 1)));
-    return Object.freeze(Array.from({ length: rangeCount }, (_, index) => {
-      const offset = Math.floor(index * times.length / rangeCount);
-      const end = Math.floor((index + 1) * times.length / rangeCount);
-      return Object.freeze({ offset, times: Object.freeze(times.slice(offset, end)) });
-    }));
   }
 
   function selectEncoderWorker(inFlightCounts, maxInFlight = 2) {
@@ -171,10 +151,6 @@
       if (inFlightCounts[index] < inFlightCounts[selected]) selected = index;
     }
     return inFlightCounts[selected] < maxInFlight ? selected : -1;
-  }
-
-  function calculateExtractionPlaybackRate(fps) {
-    return Math.min(6, Math.max(2, 48 / Math.max(1, Number(fps) || 1)));
   }
 
   function calculateExportFrameCount(duration, fps) {
@@ -1890,6 +1866,111 @@
     };
   }
 
+  class CancelledError extends Error {
+    constructor(message = '用户取消了导出。') {
+      super(message);
+      this.name = 'CancelledError';
+    }
+  }
+
+  function createExportClipBlob(clip) {
+    if (clip?.kind === 'blob' && clip.blob instanceof Blob) return clip.blob;
+    if (clip?.kind === 'media-source' && Array.isArray(clip.parts) && clip.parts.length) {
+      return new Blob(clip.parts, { type: clip.mimeType || 'video/mp4' });
+    }
+    throw new Error('导出片段的媒体数据无效。');
+  }
+
+  function normalizeFrameTargetTimes(targetTimes) {
+    const times = Array.from(targetTimes || [], (time) => Number(time));
+    for (let index = 0; index < times.length; index += 1) {
+      if (!Number.isFinite(times[index]) || times[index] < 0) {
+        throw new Error('导出帧时间无效。');
+      }
+      if (index > 0 && times[index] < times[index - 1]) {
+        throw new Error('导出帧时间必须按顺序排列。');
+      }
+    }
+    return times;
+  }
+
+  async function createExportFrameSourceFromMediaApi(clip, mediaApi) {
+    const { BlobSource, Input, MP4, VideoSampleSink, WEBM } = mediaApi || {};
+    if (![BlobSource, Input, MP4, VideoSampleSink, WEBM].every(Boolean)) {
+      throw new Error('媒体解码组件接口不完整。');
+    }
+
+    const input = new Input({
+      source: new BlobSource(createExportClipBlob(clip)),
+      formats: [MP4, WEBM],
+    });
+    let disposed = false;
+    let reading = false;
+    try {
+      const videoTrack = await input.getPrimaryVideoTrack();
+      if (!videoTrack) throw new Error('导出片段中没有可用的视频轨道。');
+      if (!await videoTrack.canDecode()) {
+        throw new Error('当前视频编码无法通过 WebCodecs 解码。');
+      }
+      const firstTimestamp = Number(await videoTrack.getFirstTimestamp()) || 0;
+      const sink = new VideoSampleSink(videoTrack);
+
+      return Object.freeze({
+        async *framesAt(targetTimes, { signal = null } = {}) {
+          if (disposed) throw new Error('导出帧源已释放。');
+          if (reading) throw new Error('导出帧源不允许并发读取。');
+          const times = normalizeFrameTargetTimes(targetTimes);
+          if (!times.length) return;
+          if (signal?.aborted) throw new CancelledError();
+
+          reading = true;
+          const abort = () => {
+            disposed = true;
+            try { input.dispose(); } catch (_) { }
+          };
+          signal?.addEventListener('abort', abort, { once: true });
+          let index = 0;
+          try {
+            const mediaTimes = times.map((time) => time + firstTimestamp);
+            for await (const sample of sink.samplesAtTimestamps(mediaTimes)) {
+              if (signal?.aborted) throw new CancelledError();
+              if (index >= times.length) {
+                try { sample?.close(); } catch (_) { }
+                throw new Error('媒体解码组件返回了多余画面。');
+              }
+              if (!sample) throw new Error(`无法解码 ${times[index].toFixed(3)} 秒的画面。`);
+              let frame;
+              try {
+                frame = sample.toVideoFrame();
+              } finally {
+                try { sample.close(); } catch (_) { }
+              }
+              yield Object.freeze({ index, targetTime: times[index], frame });
+              index += 1;
+            }
+            if (index !== times.length) {
+              throw new Error(`视频解码中断（${index}/${times.length} 帧）。`);
+            }
+          } catch (error) {
+            if (signal?.aborted) throw new CancelledError();
+            throw error;
+          } finally {
+            reading = false;
+            signal?.removeEventListener('abort', abort);
+          }
+        },
+        dispose() {
+          if (disposed) return;
+          disposed = true;
+          try { input.dispose(); } catch (_) { }
+        },
+      });
+    } catch (error) {
+      try { input.dispose(); } catch (_) { }
+      throw error;
+    }
+  }
+
   const IS_LIVE_PAGE = location.hostname === 'live.bilibili.com';
   const IS_TOP_WINDOW = window.top === window;
   const pageWindow = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
@@ -2025,7 +2106,7 @@
     trimPreviewCleanup: null,
     exportEncodingSession: null,
     exportAbortController: null,
-    exportVideos: [],
+    exportFrameSource: null,
     cancelExportPreparation: null,
     launcherDrag: null,
     panelDrag: null,
@@ -2041,6 +2122,7 @@
     nextTextLayerId: 1,
     toastTimer: 0,
     encodingResourceTexts: null,
+    mediaModulePromise: null,
     previewSnapshot: null,
       liveCaptureMode: initialLiveCaptureMode,
       mainVideo: null,
@@ -3350,13 +3432,6 @@
     toast: $('#toast'),
   };
 
-  class CancelledError extends Error {
-    constructor(message = '用户取消了导出。') {
-      super(message);
-      this.name = 'CancelledError';
-    }
-  }
-
   function formatTime(seconds) {
     if (!Number.isFinite(seconds)) return '--:--.---';
     const safe = Math.max(0, seconds);
@@ -4496,152 +4571,9 @@
     return video;
   }
 
-  async function createDetachedClipVideos(clip, count) {
-    const results = await Promise.allSettled(
-      Array.from({ length: Math.max(1, count) }, () => createDetachedClipVideo(clip)),
-    );
-    const videos = results
-      .filter((result) => result.status === 'fulfilled')
-      .map((result) => result.value);
-    const failure = results.find((result) => result.status === 'rejected');
-    if (failure) {
-      for (const video of videos) releaseDetachedClipVideo(clip, video);
-      throw failure.reason;
-    }
-    return videos;
-  }
-
   function releaseDetachedClipVideo(clip, video) {
     if (!video) return;
     cleanupClipAttachment(clip, video);
-  }
-
-  async function extractFramesContinuously(video, frameTimes, clip, {
-    fps = 12,
-    signal = null,
-    onFrame,
-  } = {}) {
-    const times = Array.from(frameTimes || []);
-    if (!times.length) return;
-    if (typeof onFrame !== 'function') throw new Error('取帧回调无效。');
-
-    const ensureActive = () => {
-      if (signal?.aborted) throw new CancelledError();
-    };
-    const extractPrecisely = async (startIndex) => {
-      video.pause();
-      for (let index = startIndex; index < times.length; index += 1) {
-        ensureActive();
-        await seekVideo(video, times[index], clip.duration, signal);
-        ensureActive();
-        await onFrame(index, times[index]);
-        ensureActive();
-      }
-    };
-
-    await seekVideo(video, times[0], clip.duration, signal);
-    ensureActive();
-    await onFrame(0, times[0]);
-    ensureActive();
-    if (times.length === 1) return;
-    if (typeof video.requestVideoFrameCallback !== 'function') {
-      await extractPrecisely(1);
-      return;
-    }
-
-    const extractionPlaybackRate = calculateExtractionPlaybackRate(fps);
-    const frameTolerance = 0.5 / Math.max(1, Number(fps) || 1);
-    const endTime = Number.isFinite(clip.duration) ? clip.duration : times[times.length - 1] + 1;
-    let extractedFrames = 1;
-    video.playbackRate = extractionPlaybackRate;
-
-    await new Promise((resolve, reject) => {
-      let settled = false;
-      let callbackId = 0;
-      let timeoutId = 0;
-
-      const cleanup = () => {
-        clearTimeout(timeoutId);
-        if (callbackId && typeof video.cancelVideoFrameCallback === 'function') {
-          try { video.cancelVideoFrameCallback(callbackId); } catch (_) { }
-        }
-        video.removeEventListener('error', onError);
-        video.removeEventListener('ended', onEnded);
-        signal?.removeEventListener('abort', onAbort);
-        try { video.pause(); } catch (_) { }
-      };
-      const finish = () => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        resolve();
-      };
-      const fail = (error) => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        reject(error instanceof Error ? error : new Error(String(error)));
-      };
-      const onError = () => fail(new Error('视频解码失败。'));
-      const onAbort = () => fail(new CancelledError());
-      const onEnded = async () => {
-        try {
-          clearTimeout(timeoutId);
-          timeoutId = 0;
-          await extractPrecisely(extractedFrames);
-          finish();
-        } catch (error) {
-          fail(error);
-        }
-      };
-      const onVideoFrame = async (_now, metadata) => {
-        if (settled) return;
-        try {
-          ensureActive();
-          if (extractedFrames >= times.length) {
-            finish();
-            return;
-          }
-          const mediaTime = Number(metadata?.mediaTime);
-          const currentTime = Number.isFinite(mediaTime) ? mediaTime : Number(video.currentTime) || 0;
-          const target = times[extractedFrames];
-          if (currentTime > target + frameTolerance || currentTime >= endTime) {
-            clearTimeout(timeoutId);
-            timeoutId = 0;
-            await extractPrecisely(extractedFrames);
-            finish();
-            return;
-          }
-          if (currentTime + frameTolerance < target) {
-            callbackId = video.requestVideoFrameCallback(onVideoFrame);
-            return;
-          }
-          await onFrame(extractedFrames, target);
-          if (settled) return;
-          ensureActive();
-          extractedFrames += 1;
-          if (extractedFrames >= times.length) {
-            finish();
-            return;
-          }
-          if (video.paused) await video.play();
-          callbackId = video.requestVideoFrameCallback(onVideoFrame);
-        } catch (error) {
-          fail(error);
-        }
-      };
-
-      const expectedMs = ((times[times.length - 1] - times[0]) / extractionPlaybackRate) * 1000;
-      timeoutId = window.setTimeout(
-        () => fail(new Error('取帧超时，请重试。')),
-        Math.max(15_000, expectedMs + 12_000),
-      );
-      video.addEventListener('error', onError, { once: true });
-      video.addEventListener('ended', onEnded, { once: true });
-      signal?.addEventListener('abort', onAbort, { once: true });
-      callbackId = video.requestVideoFrameCallback(onVideoFrame);
-      video.play().catch((error) => fail(new Error(`无法启动取帧：${error.message || error}`)));
-    });
   }
 
   function closeImageBitmaps(frames) {
@@ -4650,57 +4582,44 @@
     }
   }
 
-  async function capturePaletteFrames(videos, windows, clip, settings, { fps = 12, signal = null } = {}) {
-    const sources = (Array.isArray(videos) ? videos : [videos]).filter(Boolean);
-    if (!sources.length) throw new Error('没有可用于调色板的解码源。');
-    const sourceWidth = Math.max(2, sources[0].videoWidth || clip.width);
-    const sourceHeight = Math.max(2, sources[0].videoHeight || clip.height);
-    const crop = settings.crop;
-    const sx = Math.round(clamp(crop.x, 0, 1) * sourceWidth);
-    const sy = Math.round(clamp(crop.y, 0, 1) * sourceHeight);
-    const sw = Math.max(2, Math.min(sourceWidth - sx, Math.round(crop.w * sourceWidth)));
-    const sh = Math.max(2, Math.min(sourceHeight - sy, Math.round(crop.h * sourceHeight)));
-    const scale = Math.min(1, PALETTE_SAMPLE_MAX_EDGE / Math.max(sw, sh));
-    const resizeWidth = Math.max(2, Math.round(sw * scale));
-    const resizeHeight = Math.max(2, Math.round(sh * scale));
-    const jobs = sources.map(async (video, sourceIndex) => {
-      const samples = [];
-      try {
-        for (let windowIndex = sourceIndex; windowIndex < windows.length; windowIndex += sources.length) {
-          await extractFramesContinuously(video, windows[windowIndex], clip, {
-            fps,
-            signal,
-            onFrame: async (indexInWindow, time) => {
-              samples.push({
-                bitmap: await createImageBitmap(video, sx, sy, sw, sh, {
-                  resizeWidth,
-                  resizeHeight,
-                  resizeQuality: 'medium',
-                }),
-                indexInWindow,
-                time,
-                windowIndex,
-              });
-            },
+  async function capturePaletteFrames(frameSource, windows, clip, settings, { signal = null } = {}) {
+    if (!frameSource) throw new Error('没有可用于调色板的解码源。');
+    const targets = windows.flatMap((times, windowIndex) => times.map((time, indexInWindow) => ({
+      indexInWindow,
+      time,
+      windowIndex,
+    })));
+    const samples = [];
+    try {
+      for await (const decoded of frameSource.framesAt(targets.map((target) => target.time), { signal })) {
+        const target = targets[decoded.index];
+        const frame = decoded.frame;
+        try {
+          const sourceWidth = Math.max(2, frame.displayWidth || clip.width);
+          const sourceHeight = Math.max(2, frame.displayHeight || clip.height);
+          const crop = settings.crop;
+          const sx = Math.round(clamp(crop.x, 0, 1) * sourceWidth);
+          const sy = Math.round(clamp(crop.y, 0, 1) * sourceHeight);
+          const sw = Math.max(2, Math.min(sourceWidth - sx, Math.round(crop.w * sourceWidth)));
+          const sh = Math.max(2, Math.min(sourceHeight - sy, Math.round(crop.h * sourceHeight)));
+          const scale = Math.min(1, PALETTE_SAMPLE_MAX_EDGE / Math.max(sw, sh));
+          samples.push({
+            bitmap: await createImageBitmap(frame, sx, sy, sw, sh, {
+              resizeWidth: Math.max(2, Math.round(sw * scale)),
+              resizeHeight: Math.max(2, Math.round(sh * scale)),
+              resizeQuality: 'medium',
+            }),
+            ...target,
           });
+        } finally {
+          try { frame.close(); } catch (_) { }
         }
-      } catch (error) {
-        closeImageBitmaps(samples.map((sample) => sample.bitmap));
-        throw error;
       }
       return samples;
-    });
-    const results = await Promise.allSettled(jobs);
-    const samples = results
-      .filter((result) => result.status === 'fulfilled')
-      .flatMap((result) => result.value)
-      .sort((a, b) => a.windowIndex - b.windowIndex || a.indexInWindow - b.indexInWindow);
-    const failure = results.find((result) => result.status === 'rejected');
-    if (failure) {
+    } catch (error) {
       closeImageBitmaps(samples.map((sample) => sample.bitmap));
-      throw failure.reason;
+      throw error;
     }
-    return samples;
   }
 
   async function buildTimelineThumbnails(clip) {
@@ -4842,8 +4761,8 @@
   }
 
   function disposeClip() {
-    for (const video of state.exportVideos) releaseDetachedClipVideo(state.clip, video);
-    state.exportVideos = [];
+    state.exportFrameSource?.dispose();
+    state.exportFrameSource = null;
     discardEditorBackgroundIntent();
     clearEditorViewportAnimation();
     cancelEditorPreviewRender();
@@ -6258,6 +6177,32 @@
     return '';
   }
 
+  async function loadExportMediaApi() {
+    if (typeof VideoDecoder !== 'function' || typeof VideoFrame !== 'function') {
+      throw new Error('当前浏览器不支持 WebCodecs 视频解码。');
+    }
+    if (!state.mediaModulePromise) {
+      state.mediaModulePromise = (async () => {
+        const source = await readUserscriptResource('MEDIABUNNY_MODULE');
+        if (!source) throw new Error('媒体解码组件加载失败。');
+        const url = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
+        try {
+          return await import(url);
+        } finally {
+          URL.revokeObjectURL(url);
+        }
+      })().catch((error) => {
+        state.mediaModulePromise = null;
+        throw error;
+      });
+    }
+    return state.mediaModulePromise;
+  }
+
+  async function createExportFrameSource(clip) {
+    return createExportFrameSourceFromMediaApi(clip, await loadExportMediaApi());
+  }
+
   async function loadEncodingResourceTexts() {
     if (state.encodingResourceTexts) return state.encodingResourceTexts;
     const [modernPalette, gifenc, gifsicle] = await Promise.all([
@@ -6548,7 +6493,6 @@
   async function createGifEncodingSession(settings, {
     sampleFrames = [],
     preparedPalette = null,
-    decoderCount = 0,
     timeoutMs = ENCODE_TIMEOUT_MS,
   } = {}) {
     const resources = await loadEncodingResourceTexts();
@@ -6566,7 +6510,6 @@
     const workerCount = calculateEncoderWorkerCount(
       navigator.hardwareConcurrency,
       settings.outputLongestEdge,
-      decoderCount,
     );
     const workers = [];
     const activeTasks = new Map();
@@ -6959,8 +6902,7 @@
     let fileName;
     let encodingSession = null;
     let exportController = null;
-    let exportVideos = [];
-    let exportClip = null;
+    let frameSource = null;
     let pendingPaletteFrames = [];
     const lastUiUpdateAt = { extracting: 0, encoding: 0 };
     const reportExportProgress = (phase, completed, total) => {
@@ -6986,21 +6928,15 @@
       setStatus('正在准备选区色彩……');
 
       const clip = state.clip;
-      exportClip = clip;
-      const decoderCount = calculateExportDecoderCount(
-        navigator.hardwareConcurrency,
-        settings.finalFrames,
-        settings.outputLongestEdge,
-      );
-      exportVideos = await createDetachedClipVideos(clip, decoderCount);
-      state.exportVideos = exportVideos;
+      frameSource = await createExportFrameSource(clip);
+      state.exportFrameSource = frameSource;
       let paletteFrames = [];
       const samples = await capturePaletteFrames(
-        exportVideos,
+        frameSource,
         createPaletteSampleWindows(settings.frameTimes),
         clip,
         settings,
-        { fps: settings.fps, signal: exportController.signal },
+        { signal: exportController.signal },
       );
       paletteFrames = samples.map((sample) => sample.bitmap);
       pendingPaletteFrames = paletteFrames;
@@ -7019,7 +6955,6 @@
         },
       }, {
         sampleFrames: paletteFrames,
-        decoderCount,
       });
       paletteFrames = [];
       pendingPaletteFrames = [];
@@ -7027,31 +6962,17 @@
       if (exportController.signal.aborted) throw new CancelledError();
 
       let extractedFrames = 0;
-      const ranges = partitionFrameRanges(settings.frameTimes, exportVideos.length);
-      let extractionError = null;
-      const extractionResults = await Promise.allSettled(ranges.map((range, rangeIndex) => {
-        const video = exportVideos[rangeIndex];
-        return extractFramesContinuously(video, range.times, clip, {
-          fps: settings.fps,
-          signal: exportController.signal,
-          onFrame: async (indexInRange, time) => {
-            const index = range.offset + indexInRange;
-            const frame = new VideoFrame(video, {
-              timestamp: Math.round(time * 1_000_000),
-            });
-            await encodingSession.addFrame(frame, index, settings.frameDelays[index], video);
-            extractedFrames += 1;
-            reportExportProgress('extracting', extractedFrames, settings.baseFrames);
-          },
-        }).catch((error) => {
-          extractionError ||= error;
-          exportController.abort();
-          throw error;
-        });
-      }));
-      if (extractionError) throw extractionError;
-      const failedExtraction = extractionResults.find((result) => result.status === 'rejected');
-      if (failedExtraction) throw failedExtraction.reason;
+      for await (const decoded of frameSource.framesAt(settings.frameTimes, {
+        signal: exportController.signal,
+      })) {
+        await encodingSession.addFrame(
+          decoded.frame,
+          decoded.index,
+          settings.frameDelays[decoded.index],
+        );
+        extractedFrames += 1;
+        reportExportProgress('extracting', extractedFrames, settings.baseFrames);
+      }
 
       if (exportController.signal.aborted) throw new CancelledError();
       setProgress(calculateExportProgress('encoding', 0, settings.baseFrames));
@@ -7073,8 +6994,8 @@
       }
       if (state.exportEncodingSession === encodingSession) state.exportEncodingSession = null;
       if (state.exportAbortController === exportController) state.exportAbortController = null;
-      for (const video of exportVideos) releaseDetachedClipVideo(exportClip, video);
-      if (state.exportVideos === exportVideos) state.exportVideos = [];
+      frameSource?.dispose();
+      if (state.exportFrameSource === frameSource) state.exportFrameSource = null;
       state.busy = false;
       state.mode = state.clip ? 'edit' : 'capture';
       updateModeUi();
@@ -7087,9 +7008,7 @@
     if (state.mode !== 'exporting' || !state.busy) return;
     state.exportAbortController?.abort();
     setStatus('正在取消导出…');
-    for (const video of state.exportVideos) {
-      try { video.pause(); } catch (_) { }
-    }
+    state.exportFrameSource?.dispose();
     state.cancelExportPreparation?.();
     state.exportEncodingSession?.cancel(new CancelledError());
   }
@@ -7102,6 +7021,9 @@
     }
     if (/GIF is not defined|编码库/i.test(message)) {
       return 'GIF 编码组件加载失败，请刷新页面重试。';
+    }
+    if (/WebCodecs|媒体解码组件|视频编码无法/i.test(message)) {
+      return `${message} 请使用最新版 Chromium，或切换直播画质后重试。`;
     }
     if (/Worker|Content Security Policy|CSP|blob:/i.test(message)) {
       return '编码组件启动失败，请刷新页面重试。';
@@ -7341,7 +7263,7 @@
     cleanupRecordingResources(state.recording);
     state.exportAbortController?.abort();
     state.exportEncodingSession?.destroy();
-    for (const video of state.exportVideos) releaseDetachedClipVideo(state.clip, video);
+    state.exportFrameSource?.dispose();
     state.cancelExportPreparation?.();
     if (state.clip?.attachments) {
       for (const video of [...state.clip.attachments.keys()]) cleanupClipAttachment(state.clip, video);

@@ -97,17 +97,19 @@ test('crop-aware preview centers an off-axis crop instead of the whole video', (
   assert.equal(cropRight, 324);
 });
 
-test('userscript uses pinned parallel encoder resources and sRGB canvases', () => {
+test('userscript uses pinned unified decoder resources and sRGB canvases', () => {
   const source = fs.readFileSync(userscriptPath, 'utf8');
-  assert.match(source, /@version\s+1\.4\.3/);
+  assert.match(source, /@version\s+1\.4\.4/);
   assert.match(source, /modern-palette@2\.0\.0\/dist\/index\.mjs/);
   assert.match(source, /gifenc@1\.0\.3\/dist\/gifenc\.esm\.js/);
   assert.match(source, /gifsicle-wasm-browser@1\.5\.19\/dist\/gifsicle\.min\.js/);
+  assert.match(source, /mediabunny@1\.55\.3\/\+esm/);
   assert.match(source, /colorSpace: 'srgb'/);
-  assert.match(source, /new VideoFrame\(video/);
+  assert.match(source, /samplesAtTimestamps\(mediaTimes\)/);
   assert.match(source, /source\.displayWidth \|\| source\.width/);
   assert.match(source, /selectEncoderWorker\(\s*workers\.map/);
   assert.match(source, /calculateEncoderWorkerCount\(\s*navigator\.hardwareConcurrency,/);
+  assert.doesNotMatch(source, /calculateExportDecoderCount|extractFramesContinuously|partitionFrameRanges/);
   assert.match(source, /navigation\?\.addEventListener\('currententrychange'/);
   assert.doesNotMatch(source, /@noframes/);
   assert.match(source, /bella-gif-helper-live-frame-v1/);

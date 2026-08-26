@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>统一帧源浏览器测试</title>
+  <style>
+    body { margin: 32px; background: #101114; color: #fff; font: 15px/1.6 system-ui, sans-serif; }
+    table { border-collapse: collapse; min-width: 680px; }
+    th, td { padding: 8px 12px; border: 1px solid #3b3e45; text-align: left; }
+    .pass { color: #72d69c; }
+    .fail { color: #ff8585; }
+  </style>
+</head>
+<body>
+  <h1>统一帧源浏览器测试</h1>
+  <table>
+    <thead><tr><th>样本</th><th>容器</th><th>帧数</th><th>耗时</th><th>结果</th></tr></thead>
+    <tbody id="results"><tr><td colspan="5">正在解码……</td></tr></tbody>
+  </table>
+  <script type="module">
+    const fixtureCases = [
+      { name: 'AVC B-frames', file: 'fixtures/avc-bframes-fragmented.mp4', kind: 'media-source', type: 'video/mp4' },
+      { name: 'VP9 recording', file: 'fixtures/vp9-recording.webm', kind: 'blob', type: 'video/webm' },
+      { name: 'AV1 fMP4', file: 'fixtures/av1-fragmented.mp4', kind: 'media-source', type: 'video/mp4' },
+    ];
+    const targetTimes = Array.from({ length: 40 }, (_, index) => index / 20);
+    const userscript = await fetch('../bella-gif-helper.user.js').then((response) => response.text());
+    const marker = "\n  const IS_LIVE_PAGE = location.hostname === 'live.bilibili.com';";
+    const injected = userscript.replace(
+      marker,
+      `\n  globalThis.__bellaFrameSourceTestApi = { createExportFrameSourceFromMediaApi };\n  return;${marker}`,
+    );
+    (0, eval)(injected);
+    const mediaApi = await import('https://cdn.jsdelivr.net/npm/mediabunny@1.55.3/+esm');
+    const rows = [];
+
+    for (const fixture of fixtureCases) {
+      let source = null;
+      const startedAt = performance.now();
+      try {
+        const bytes = new Uint8Array(await fetch(fixture.file).then((response) => response.arrayBuffer()));
+        const clip = fixture.kind === 'blob'
+          ? { kind: 'blob', blob: new Blob([bytes], { type: fixture.type }) }
+          : { kind: 'media-source', mimeType: fixture.type, parts: [bytes] };
+        source = await globalThis.__bellaFrameSourceTestApi.createExportFrameSourceFromMediaApi(clip, mediaApi);
+        const timestamps = [];
+        for await (const item of source.framesAt(targetTimes)) {
+          timestamps.push(item.frame.timestamp);
+          item.frame.close();
+        }
+        if (timestamps.length !== targetTimes.length) throw new Error(`帧数 ${timestamps.length}/${targetTimes.length}`);
+        if (timestamps.some((timestamp, index) => index && timestamp < timestamps[index - 1])) {
+          throw new Error('展示时间顺序错误');
+        }
+        rows.push({ ...fixture, count: timestamps.length, elapsed: performance.now() - startedAt, pass: true });
+      } catch (error) {
+        rows.push({ ...fixture, count: 0, elapsed: performance.now() - startedAt, pass: false, error });
+      } finally {
+        source?.dispose();
+      }
+    }
+
+    document.querySelector('#results').innerHTML = rows.map((row) => `
+      <tr>
+        <td>${row.name}</td>
+        <td>${row.type}</td>
+        <td>${row.count}</td>
+        <td>${row.elapsed.toFixed(1)} ms</td>
+        <td class="${row.pass ? 'pass' : 'fail'}">${row.pass ? '通过' : row.error.message}</td>
+      </tr>
+    `).join('');
+    document.documentElement.dataset.status = rows.every((row) => row.pass) ? 'pass' : 'fail';
+    document.documentElement.dataset.report = JSON.stringify(rows.map(({ name, count, elapsed, pass, error }) => ({
+      name, count, elapsed, pass, error: error?.message || '',
+    })));
+    delete globalThis.__bellaFrameSourceTestApi;
+  </script>
+</body>
+</html>

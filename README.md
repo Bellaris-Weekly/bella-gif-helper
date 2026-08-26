@@ -1,6 +1,6 @@
 # 贝报 GIF 助手
 
-在哔哩哔哩直播或视频页面中截取画面、编辑片段并导出 GIF 的用户脚本。当前版本为 `1.4.2`。
+在哔哩哔哩直播或视频页面中截取画面、编辑片段并导出 GIF 的用户脚本。当前版本为 `1.4.4`。
 
 ## 功能
 
@@ -48,9 +48,9 @@
 - `贝 · 均衡`：255 色和轻度有损压缩，默认选择。
 - `然 · 体积优先`：192 色和更高压缩强度。
 
-浏览器需要允许用户脚本在 B 站页面运行，并允许脚本加载 jsDelivr 上的 modern-palette、gifenc 和 Gifsicle WASM 依赖。运行基线为支持 `VideoFrame`、`OffscreenCanvas` 和模块 Worker 的现代 Chromium。
+浏览器需要允许用户脚本在 B 站页面运行，并允许脚本加载 jsDelivr 上的 Mediabunny、modern-palette、gifenc 和 Gifsicle WASM 依赖。运行基线为支持 `VideoDecoder`、`VideoFrame`、`OffscreenCanvas` 和模块 Worker 的现代 Chromium。
 
-导出时会使用独立视频源并行取帧，只处理时间选区内的目标帧，再按设备核心数和输出尺寸动态分配编码 Worker。编码队列满时暂停对应取帧源，避免越过裁剪终点。文件大小通过选区内连续画面的真实编码与压缩结果估算；后台时间轴预览缓存固定在 32 MB 预算内，仅服务编辑预览。
+导出时，录制得到的 WebM 和直播回溯得到的 fMP4 都通过同一套 Mediabunny + WebCodecs 帧源顺序解码。导出不会操作播放进度或依赖屏幕刷新率；编辑预览仍使用 MediaSource。单路解码与并行编码 Worker 之间使用背压限制在途帧数，并为主线程和解码各保留一个处理核心。文件大小通过选区内连续画面的真实编码与压缩结果估算；后台时间轴预览缓存固定在 32 MB 预算内，仅服务编辑预览。
 
 直播回溯只缓存视频，不缓存音频，也不会调用 B 站私有剪辑接口。75 秒缓存按直播码率占用内存：2 Mbps 约 19 MB，8 Mbps 约 75 MB。
 
@@ -81,8 +81,9 @@ python3 tests/check_gif_transparency.py output.gif --radius-ratio 0.04 --expecte
 python3 tests/check_gif_color.py reference.png output.gif
 ```
 
-## 第三方编码组件
+## 第三方媒体组件
 
+- `Mediabunny 1.55.3`：MPL-2.0 License。
 - `modern-palette 2.0.0`：MIT License。
 - `gifenc 1.0.3`：MIT License。
 - `gifsicle-wasm-browser 1.5.19`：封装层为 MIT License，内含的 Gifsicle 压缩核心为 GPL-2.0-or-later。
