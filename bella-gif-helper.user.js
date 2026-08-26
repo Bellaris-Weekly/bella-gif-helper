@@ -184,6 +184,36 @@
     return type === 'playhead' ? Number(target) : Number(trimStart);
   }
 
+  function calculateTimelineViewport(start, end, duration) {
+    const clipDuration = Math.max(0.001, Number(duration) || 0.001);
+    const viewStart = clamp(Number(start) || 0, 0, clipDuration);
+    const viewEnd = clamp(Number(end) || clipDuration, viewStart, clipDuration);
+    if (viewEnd - viewStart < 0.001) return Object.freeze({ start: 0, end: clipDuration });
+    return Object.freeze({ start: viewStart, end: viewEnd });
+  }
+
+  function calculateTimelinePosition(time, viewStart, viewEnd) {
+    const duration = Math.max(0.001, Number(viewEnd) - Number(viewStart));
+    return (Number(time) - Number(viewStart)) / duration;
+  }
+
+  function calculateTimelineTime(position, width, viewStart, viewEnd) {
+    const ratio = clamp(Number(position) / Math.max(1, Number(width) || 1), 0, 1);
+    return Number(viewStart) + ratio * Math.max(0.001, Number(viewEnd) - Number(viewStart));
+  }
+
+  function calculateTimelineEdgeExpansion(type, start, end, duration, elapsedSeconds, heldSeconds = 0) {
+    const clipDuration = Math.max(0.001, Number(duration) || 0.001);
+    const current = calculateTimelineViewport(start, end, clipDuration);
+    const range = current.end - current.start;
+    const acceleration = 1 + Math.min(3, Math.max(0, Number(heldSeconds) || 0) / 0.7);
+    const amount = Math.max(clipDuration / 8, range * 1.5)
+      * Math.max(0, Number(elapsedSeconds) || 0) * acceleration;
+    return type === 'start'
+      ? calculateTimelineViewport(current.start - amount, current.end, clipDuration)
+      : calculateTimelineViewport(current.start, current.end + amount, clipDuration);
+  }
+
   function createTimelineSeekGate() {
     let revision = 0;
     let controller = null;
@@ -2067,6 +2097,9 @@
   const EDITOR_VIEWPORT_MOTION_MS = 260;
   const EDITOR_VIEWPORT_EASING = 'cubic-bezier(0.33, 1, 0.68, 1)';
   const EDITOR_BACKGROUND_RESUME_DELAY_MS = 320;
+  const TIMELINE_VIEWPORT_MOTION_MS = 220;
+  const TIMELINE_THUMBNAIL_REFRESH_DELAY_MS = 1_000;
+  const TIMELINE_EDGE_ZONE_PX = 2;
   const LAUNCHER_POSITION_KEY = 'biliGifMakerLauncherPositionV1';
   const PANEL_GEOMETRY_KEY = 'biliGifMakerPanelGeometry';
   const EXPORT_PREFERENCES_KEY = 'biliGifMakerExportPreferencesV1';
@@ -2093,7 +2126,13 @@
     timelineSeekGate: createTimelineSeekGate(),
     timelineThumbnailToken: 0,
     timelineThumbnailJob: null,
+    timelineThumbnailRefreshTimer: 0,
     timelineThumbnails: null,
+    timelineAnalysis: null,
+    timelineViewStart: 0,
+    timelineViewEnd: 0,
+    timelineViewportTimer: 0,
+    timelineEdgeRaf: 0,
     timelineSettleToken: 0,
     timelineResumePlayback: false,
     recording: null,
@@ -2628,7 +2667,9 @@
         border-radius: 6px;
         background: var(--color-surface-raised);
         pointer-events: none;
+        transition: opacity 160ms ease;
       }
+      #timelineTrack.timeline-refreshing #timelineFilmstrip { opacity: .72; }
       #timelineFilmstrip canvas {
         display: block;
         width: 100%;
@@ -2684,6 +2725,13 @@
         box-shadow: 0 3px 10px rgba(0,0,0,.42);
         cursor: ew-resize;
         touch-action: none;
+      }
+      #timelineTrack.timeline-refitting .timeline-handle,
+      #timelineTrack.timeline-refitting #timelineSelected,
+      #timelineTrack.timeline-refitting #timelinePlayhead {
+        transition-property: left, width;
+        transition-duration: 220ms;
+        transition-timing-function: cubic-bezier(0.33, 1, 0.68, 1);
       }
       .timeline-labels {
         display: grid;
@@ -3128,6 +3176,10 @@
         input { transition-duration: 0.01ms !important; }
         #launcher.recording,
         #pageSelectionMarker.recording { animation: none !important; }
+        #timelineFilmstrip,
+        #timelineTrack.timeline-refitting .timeline-handle,
+        #timelineTrack.timeline-refitting #timelineSelected,
+        #timelineTrack.timeline-refitting #timelinePlayhead { transition-duration: 0.01ms !important; }
       }
 
       @media (max-width: 540px) {
@@ -4418,26 +4470,39 @@
   }
 
   function releaseTimelineThumbnails() {
-    state.timelineThumbnailToken += 1;
-    state.timelineThumbnailJob?.controller.abort();
-    state.timelineThumbnailJob = null;
+    cancelTimelineThumbnailRefresh();
     state.timelineThumbnails = null;
+    state.timelineAnalysis = null;
     if (!el.timelineFilmstrip) return;
-    el.timelineFilmstrip.removeAttribute('aria-busy');
     el.timelineFilmstrip.replaceChildren();
   }
 
+  function cancelTimelineThumbnailRefresh() {
+    clearTimeout(state.timelineThumbnailRefreshTimer);
+    state.timelineThumbnailRefreshTimer = 0;
+    state.timelineThumbnailToken += 1;
+    state.timelineThumbnailJob?.controller.abort();
+    state.timelineThumbnailJob = null;
+    el.timelineTrack?.classList.remove('timeline-refreshing');
+    el.timelineFilmstrip?.removeAttribute('aria-busy');
+  }
+
+  function scheduleTimelineThumbnailRefresh(clip, view) {
+    cancelTimelineThumbnailRefresh();
+    state.timelineThumbnailRefreshTimer = window.setTimeout(() => {
+      state.timelineThumbnailRefreshTimer = 0;
+      if (state.clip !== clip) return;
+      void buildTimelineThumbnails(clip, view);
+    }, TIMELINE_THUMBNAIL_REFRESH_DELAY_MS);
+  }
+
   function createTimelineThumbnailCanvases() {
-    const fragment = document.createDocumentFragment();
-    const canvases = Array.from({ length: TIMELINE_THUMBNAIL_COUNT }, () => {
+    return Array.from({ length: TIMELINE_THUMBNAIL_COUNT }, () => {
       const canvas = document.createElement('canvas');
       canvas.width = TIMELINE_THUMBNAIL_WIDTH;
       canvas.height = TIMELINE_THUMBNAIL_HEIGHT;
-      fragment.appendChild(canvas);
       return canvas;
     });
-    el.timelineFilmstrip.appendChild(fragment);
-    return canvases;
   }
 
   function drawTimelineThumbnail(video, canvas) {
@@ -4622,15 +4687,18 @@
     }
   }
 
-  async function buildTimelineThumbnails(clip) {
+  async function buildTimelineThumbnails(clip, view = null, { captureAnalysis = false } = {}) {
     if (!clip) return;
-    releaseTimelineThumbnails();
+    state.timelineThumbnailToken += 1;
+    state.timelineThumbnailJob?.controller.abort();
     const token = state.timelineThumbnailToken;
     const controller = new AbortController();
     const canvases = createTimelineThumbnailCanvases();
     const job = { controller };
+    const range = calculateTimelineViewport(view?.start, view?.end, clip.duration);
     state.timelineThumbnailJob = job;
     el.timelineFilmstrip?.setAttribute('aria-busy', 'true');
+    el.timelineTrack?.classList.add('timeline-refreshing');
     let video = null;
     try {
       video = await createDetachedClipVideo(clip);
@@ -4639,17 +4707,22 @@
         if (controller.signal.aborted || state.clip !== clip || token !== state.timelineThumbnailToken) {
           throw new CancelledError();
         }
-        const time = clip.duration * index / Math.max(1, canvases.length - 1);
+        const time = range.start
+          + (range.end - range.start) * index / Math.max(1, canvases.length - 1);
         await seekVideo(video, Math.min(time, Math.max(0, clip.duration - 0.001)), clip.duration, controller.signal);
         const image = drawTimelineThumbnail(video, canvases[index]);
         if (image) images.push(image);
       }
       if (controller.signal.aborted || state.timelineThumbnailJob !== job) throw new CancelledError();
+      el.timelineFilmstrip.replaceChildren(...canvases);
       state.timelineThumbnails = Object.freeze({
         canvases: Object.freeze(canvases),
-        analysis: calculateTimelineThumbnailAnalysis(images),
+        range,
         ready: true,
       });
+      if (captureAnalysis || !state.timelineAnalysis) {
+        state.timelineAnalysis = calculateTimelineThumbnailAnalysis(images);
+      }
       updateEstimatedFileSize();
     } catch (error) {
       if (!(error instanceof CancelledError)) el.timelineFilmstrip?.removeAttribute('aria-busy');
@@ -4657,6 +4730,7 @@
       if (video) releaseDetachedClipVideo(clip, video);
       if (state.timelineThumbnailJob === job) {
         state.timelineThumbnailJob = null;
+        el.timelineTrack?.classList.remove('timeline-refreshing');
         el.timelineFilmstrip?.removeAttribute('aria-busy');
       }
     }
@@ -4767,6 +4841,10 @@
     clearEditorViewportAnimation();
     cancelEditorPreviewRender();
     stopTrimPreview();
+    cancelTimelineEdgeExpansion();
+    clearTimeout(state.timelineViewportTimer);
+    state.timelineViewportTimer = 0;
+    el.timelineTrack?.classList.remove('timeline-refitting');
     releaseTimelineThumbnails();
     const clip = state.clip;
     if (clip?.attachments) {
@@ -5368,6 +5446,8 @@
     try { el.clipVideo.currentTime = 0; } catch (_) { }
     state.textLayers = [];
     state.activeTextId = null;
+    state.timelineViewStart = 0;
+    state.timelineViewEnd = state.clip.duration;
     renderTextLayerTabs();
     renderTextLayers();
     updateAspectSquareButton();
@@ -5375,7 +5455,7 @@
     fitEditorLayout();
     updateResolutionOptions();
     updateEstimatedFileSize();
-    void buildTimelineThumbnails(state.clip);
+    void buildTimelineThumbnails(state.clip, null, { captureAnalysis: true });
   }
 
   function getEditorMapping() {
@@ -5531,7 +5611,10 @@
     if (!state.clip) return;
     const duration = Math.max(0.001, state.clip.duration);
     const current = clamp(Number(el.clipVideo.currentTime) || 0, 0, duration);
-    const pct = (current / duration) * 100;
+    const view = calculateTimelineViewport(state.timelineViewStart, state.timelineViewEnd, duration);
+    const position = calculateTimelinePosition(current, view.start, view.end);
+    const pct = clamp(position, 0, 1) * 100;
+    el.timelinePlayhead.style.visibility = position >= 0 && position <= 1 ? 'visible' : 'hidden';
     el.timelinePlayhead.style.left = `${pct}%`;
   }
 
@@ -5542,8 +5625,11 @@
     state.trimStart = clamp(Number(state.trimStart) || 0, 0, Math.max(0, duration - minGap));
     state.trimEnd = clamp(Number(state.trimEnd) || duration, state.trimStart + minGap, duration);
 
-    const startPct = (state.trimStart / duration) * 100;
-    const endPct = (state.trimEnd / duration) * 100;
+    const view = calculateTimelineViewport(state.timelineViewStart, state.timelineViewEnd, duration);
+    state.timelineViewStart = view.start;
+    state.timelineViewEnd = view.end;
+    const startPct = clamp(calculateTimelinePosition(state.trimStart, view.start, view.end), 0, 1) * 100;
+    const endPct = clamp(calculateTimelinePosition(state.trimEnd, view.start, view.end), 0, 1) * 100;
     el.timelineStartHandle.style.left = `${startPct}%`;
     el.timelineEndHandle.style.left = `${endPct}%`;
     el.timelineSelected.style.left = `${startPct}%`;
@@ -5561,8 +5647,88 @@
   function timelineTimeFromClientX(clientX) {
     if (!state.clip) return 0;
     const rect = el.timelineTrack.getBoundingClientRect();
-    const ratio = clamp((clientX - rect.left) / Math.max(1, rect.width), 0, 1);
-    return ratio * state.clip.duration;
+    const dragView = state.timelineDrag?.view;
+    const pointerOffsetX = Number(state.timelineDrag?.pointerOffsetX) || 0;
+    const view = dragView || calculateTimelineViewport(
+      state.timelineViewStart,
+      state.timelineViewEnd,
+      state.clip.duration,
+    );
+    return calculateTimelineTime(clientX - pointerOffsetX - rect.left, rect.width, view.start, view.end);
+  }
+
+  function refitTimelineToSelection() {
+    if (!state.clip) return;
+    const next = calculateTimelineViewport(state.trimStart, state.trimEnd, state.clip.duration);
+    const changed = Math.abs(next.start - state.timelineViewStart) > 0.0005
+      || Math.abs(next.end - state.timelineViewEnd) > 0.0005;
+    if (changed) {
+      el.timelineTrack.classList.add('timeline-refitting');
+      void el.timelineTrack.offsetWidth;
+      state.timelineViewStart = next.start;
+      state.timelineViewEnd = next.end;
+      updateTrimUi();
+      clearTimeout(state.timelineViewportTimer);
+      state.timelineViewportTimer = window.setTimeout(() => {
+        state.timelineViewportTimer = 0;
+        el.timelineTrack.classList.remove('timeline-refitting');
+      }, TIMELINE_VIEWPORT_MOTION_MS);
+    }
+    scheduleTimelineThumbnailRefresh(state.clip, next);
+  }
+
+  function settleTimelineRefit() {
+    clearTimeout(state.timelineViewportTimer);
+    state.timelineViewportTimer = 0;
+    el.timelineTrack?.classList.remove('timeline-refitting');
+  }
+
+  function cancelTimelineEdgeExpansion() {
+    if (state.timelineEdgeRaf) cancelAnimationFrame(state.timelineEdgeRaf);
+    state.timelineEdgeRaf = 0;
+    if (state.timelineDrag) state.timelineDrag.edge = null;
+  }
+
+  function startTimelineEdgeExpansion(type) {
+    const drag = state.timelineDrag;
+    if (!drag || (type !== 'start' && type !== 'end')) return;
+    if (drag.edge?.type === type) return;
+    cancelTimelineEdgeExpansion();
+    drag.edge = { type, lastAt: performance.now(), heldSeconds: 0 };
+    const expand = (now) => {
+      const activeDrag = state.timelineDrag;
+      const edge = activeDrag?.edge;
+      if (!activeDrag || !edge || edge.type !== type || !state.clip) {
+        state.timelineEdgeRaf = 0;
+        return;
+      }
+      const elapsedSeconds = Math.min(0.05, Math.max(0, now - edge.lastAt) / 1000);
+      edge.lastAt = now;
+      edge.heldSeconds += elapsedSeconds;
+      const expanded = calculateTimelineEdgeExpansion(
+        type,
+        state.trimStart,
+        state.trimEnd,
+        state.clip.duration,
+        elapsedSeconds,
+        edge.heldSeconds,
+      );
+      state.trimStart = expanded.start;
+      state.trimEnd = expanded.end;
+      state.timelineViewStart = expanded.start;
+      state.timelineViewEnd = expanded.end;
+      activeDrag.view = expanded;
+      updateTrimUi();
+      queueTimelinePreview(type === 'start' ? state.trimStart : state.trimEnd, 'handle');
+      const boundaryReached = type === 'start' ? expanded.start <= 0 : expanded.end >= state.clip.duration;
+      if (boundaryReached) {
+        state.timelineEdgeRaf = 0;
+        activeDrag.edge = null;
+        return;
+      }
+      state.timelineEdgeRaf = requestAnimationFrame(expand);
+    };
+    state.timelineEdgeRaf = requestAnimationFrame(expand);
   }
 
   function showTimelineHandlePreview(time) {
@@ -5632,9 +5798,22 @@
     settle().catch(() => { });
   }
 
-  function applyTimelineDrag(event) {
+  function applyTimelineDrag(event, movementX = 0) {
     const drag = state.timelineDrag;
     if (!drag || !state.clip) return;
+    const rect = el.timelineTrack.getBoundingClientRect();
+    const pointerX = event.clientX - drag.pointerOffsetX;
+    const atStartEdge = pointerX <= rect.left + TIMELINE_EDGE_ZONE_PX;
+    const atEndEdge = pointerX >= rect.right - TIMELINE_EDGE_ZONE_PX;
+    if (drag.type === 'start' && atStartEdge && movementX < 0 && state.trimStart > 0) {
+      startTimelineEdgeExpansion('start');
+      return;
+    }
+    if (drag.type === 'end' && atEndEdge && movementX > 0 && state.trimEnd < state.clip.duration) {
+      startTimelineEdgeExpansion('end');
+      return;
+    }
+    cancelTimelineEdgeExpansion();
     const target = timelineTimeFromClientX(event.clientX);
     const minGap = Math.min(0.1, state.clip.duration / 2);
     if (drag.type === 'start') {
@@ -5647,21 +5826,33 @@
       queueTimelinePreview(state.trimEnd, 'handle');
     } else {
       queueTimelinePreview(target, 'playhead');
-      el.timelinePlayhead.style.left = `${(target / Math.max(0.001, state.clip.duration)) * 100}%`;
+      const view = drag.view;
+      el.timelinePlayhead.style.visibility = 'visible';
+      el.timelinePlayhead.style.left = `${clamp(calculateTimelinePosition(target, view.start, view.end), 0, 1) * 100}%`;
     }
   }
 
   function handleTimelinePointerDown(event) {
     if (event.button !== 0 || state.mode !== 'edit' || !state.clip) return;
+    settleTimelineRefit();
     state.timelineResumePlayback = Boolean(state.trimPreviewCleanup && !el.clipVideo.paused);
     stopTrimPreview();
     cancelTimelinePreview();
     try { el.scrubVideo.pause(); } catch (_) { }
     state.timelineSettleToken += 1;
     const handleType = event.target?.dataset?.timelineHandle;
+    if (handleType === 'start' || handleType === 'end') cancelTimelineThumbnailRefresh();
+    const view = calculateTimelineViewport(state.timelineViewStart, state.timelineViewEnd, state.clip.duration);
+    const handleRect = handleType === 'start' || handleType === 'end'
+      ? event.target.getBoundingClientRect()
+      : null;
     state.timelineDrag = {
       pointerId: event.pointerId,
       type: handleType === 'start' || handleType === 'end' ? handleType : 'playhead',
+      lastClientX: event.clientX,
+      pointerOffsetX: handleRect ? event.clientX - (handleRect.left + handleRect.width / 2) : 0,
+      view,
+      edge: null,
     };
     if (state.timelineDrag.type === 'start') showTimelineHandlePreview(state.trimStart);
     if (state.timelineDrag.type === 'end') showTimelineHandlePreview(state.trimEnd);
@@ -5672,8 +5863,10 @@
 
   function handleTimelinePointerMove(event) {
     if (!state.timelineDrag || state.timelineDrag.pointerId !== event.pointerId) return;
+    const movementX = event.clientX - state.timelineDrag.lastClientX;
+    state.timelineDrag.lastClientX = event.clientX;
     event.preventDefault();
-    applyTimelineDrag(event);
+    applyTimelineDrag(event, movementX);
   }
 
   function finishTimelineDrag(event) {
@@ -5681,6 +5874,7 @@
     if (!drag || (event && drag.pointerId !== event.pointerId)) return;
     const target = state.timelinePreviewTarget;
     const shouldResumePlayback = state.timelineResumePlayback;
+    cancelTimelineEdgeExpansion();
     state.timelineResumePlayback = false;
     state.timelineDrag = null;
     try { el.timelineTrack.releasePointerCapture?.(drag.pointerId); } catch (_) { }
@@ -5695,6 +5889,7 @@
       hideTimelineHandlePreview();
     }
     updateTrimUi();
+    if (drag.type === 'start' || drag.type === 'end') refitTimelineToSelection();
     updateEstimatedFileSize();
   }
 
@@ -6854,7 +7049,7 @@
       setEstimatedSizeText('预计 --');
       return;
     }
-    const analysis = state.timelineThumbnails?.analysis || {
+    const analysis = state.timelineAnalysis || {
       colorComplexity: 0.55,
       motionComplexity: 0.25,
     };

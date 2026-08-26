@@ -43,6 +43,14 @@ test('compact editor keeps visual feedback inside the existing workspace', () =>
   assert.match(css, /\.grid-2\.export-options\s*\{[\s\S]*?repeat\(3, minmax\(0, 1fr\)\)/);
 });
 
+test('timeline refits the selected range without adding another track', () => {
+  assert.equal((source.match(/id="timelineTrack"/g) || []).length, 1);
+  assert.match(source, /function refitTimelineToSelection\(\)/);
+  assert.match(source, /state\.timelineViewStart = next\.start;[\s\S]*?state\.timelineViewEnd = next\.end;/);
+  assert.match(css, /#timelineTrack\.timeline-refitting \.timeline-handle/);
+  assert.match(source, /TIMELINE_THUMBNAIL_REFRESH_DELAY_MS\s*=\s*1_000/);
+});
+
 test('shortcut settings use the existing header without changing panel flow', () => {
   assert.match(source, /class="header-actions"[\s\S]*?class="shortcut-setting"[\s\S]*?id="shortcutInput"[\s\S]*?id="closeBtn"/);
   assert.match(source, /id="shortcutInput"[^>]+readonly[^>]+value="Ctrl\+Z"/);
