@@ -8,6 +8,7 @@ const {
   filterLiveInitToTrack,
   filterLiveMediaToTrack,
   formatGifFileName,
+  formatLiveGifFileName,
   installLiveMediaCollector,
   isLiveFrameMessage,
   mapLiveFrameVideoRect,
@@ -291,14 +292,17 @@ test('关键帧预留不改变默认的最近 60 秒范围', () => {
   );
 });
 
-test('直播录制按最终裁剪首帧计算文件时间并清理来源名称', () => {
+test('直播录制按最终裁剪首帧计算文件时间且不带房间号', () => {
   const recordingStart = new Date(2026, 7, 20, 14, 5, 9).getTime();
   const firstFrameTime = calculateLiveFirstFrameTime(recordingStart, 4.25);
 
   assert.equal(firstFrameTime, recordingStart + 4250);
   assert.equal(
-    formatGifFileName(firstFrameTime, '主播 名/测试_1700657229'),
-    '贝报gif_0820_140513_主播_名_测试_1700657229.gif',
+    formatLiveGifFileName(firstFrameTime, {
+      streamerName: '主播 名/测试',
+      roomId: '1700657229',
+    }),
+    '贝报gif_0820_140513_主播_名_测试.gif',
   );
   assert.throws(() => formatGifFileName(null, '主播_1700657229'), /无法确定 GIF 首帧时间/);
 });

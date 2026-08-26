@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         贝报 GIF 助手
 // @namespace    https://www.bk0717.com/
-// @version      1.4.6
+// @version      1.4.7
 // @description  B站直播回溯、视频框选录制与 GIF 编辑
 // @author       贝极星周报
 // @homepageURL  https://github.com/Bellaris-Weekly/bella-gif-helper
@@ -422,6 +422,10 @@
     const source = sanitizeFileNamePart(sourceLabel, '视频');
     const nameParts = sourcePosition === 'before-timestamp' ? [source, dateTime] : [dateTime, source];
     return `贝报gif_${nameParts.join('_')}.gif`;
+  }
+
+  function formatLiveGifFileName(dateValue, liveIdentity) {
+    return formatGifFileName(dateValue, liveIdentity.streamerName);
   }
 
   function asBytes(value, copy = false) {
@@ -7072,9 +7076,8 @@
   function makeFileName(settings) {
     if (IS_LIVE_PAGE) {
       const identity = state.clip.liveIdentity;
-      const sourceLabel = `${identity.streamerName}_${identity.roomId}`;
       const firstFrameTime = calculateLiveFirstFrameTime(state.clip.liveWallClockStartMs, settings.start);
-      return formatGifFileName(firstFrameTime, sourceLabel);
+      return formatLiveGifFileName(firstFrameTime, identity);
     }
     const bvid = location.pathname.match(/\/(BV[\w]+)/i)?.[1] || '视频';
     return formatGifFileName(Date.now(), bvid, { sourcePosition: 'before-timestamp' });

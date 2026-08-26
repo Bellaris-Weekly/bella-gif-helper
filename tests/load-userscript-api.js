@@ -32,6 +32,7 @@ const exportNames = [
   'filterLiveInitToTrack',
   'filterLiveMediaToTrack',
   'formatGifFileName',
+  'formatLiveGifFileName',
   'formatShortcut',
   'installLiveMediaCollector',
   'isEditableShortcutEvent',
