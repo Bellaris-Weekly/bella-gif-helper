@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         贝报 GIF 助手
 // @namespace    https://www.bk0717.com/
-// @version      1.4.7
+// @version      1.4.8
 // @description  B站直播回溯、视频框选录制与 GIF 编辑
 // @author       贝极星周报
 // @homepageURL  https://github.com/Bellaris-Weekly/bella-gif-helper
@@ -192,6 +192,26 @@
     return Object.freeze({ start: viewStart, end: viewEnd });
   }
 
+  function calculateTimelineSelectionViewport(start, end, duration, contextRatio = 0.06) {
+    const clipDuration = Math.max(0.001, Number(duration) || 0.001);
+    const selection = calculateTimelineViewport(start, end, clipDuration);
+    const context = (selection.end - selection.start) * Math.max(0, Number(contextRatio) || 0);
+    const targetSpan = Math.min(clipDuration, selection.end - selection.start + context * 2);
+    let viewStart = selection.start - context;
+    let viewEnd = selection.end + context;
+    if (viewStart < 0) {
+      viewEnd -= viewStart;
+      viewStart = 0;
+    }
+    if (viewEnd > clipDuration) {
+      viewStart -= viewEnd - clipDuration;
+      viewEnd = clipDuration;
+    }
+    viewStart = Math.max(0, viewStart);
+    viewEnd = Math.min(clipDuration, Math.max(viewEnd, viewStart + targetSpan));
+    return calculateTimelineViewport(viewStart, viewEnd, clipDuration);
+  }
+
   function calculateTimelinePosition(time, viewStart, viewEnd) {
     const duration = Math.max(0.001, Number(viewEnd) - Number(viewStart));
     return (Number(time) - Number(viewStart)) / duration;
@@ -202,16 +222,22 @@
     return Number(viewStart) + ratio * Math.max(0.001, Number(viewEnd) - Number(viewStart));
   }
 
-  function calculateTimelineEdgeExpansion(type, start, end, duration, elapsedSeconds, heldSeconds = 0) {
+  function calculateTimelineDragTime(anchorTime, deltaPx, width, viewStart, viewEnd, duration) {
     const clipDuration = Math.max(0.001, Number(duration) || 0.001);
-    const current = calculateTimelineViewport(start, end, clipDuration);
-    const range = current.end - current.start;
-    const acceleration = 1 + Math.min(3, Math.max(0, Number(heldSeconds) || 0) / 0.7);
-    const amount = Math.max(clipDuration / 8, range * 1.5)
-      * Math.max(0, Number(elapsedSeconds) || 0) * acceleration;
-    return type === 'start'
-      ? calculateTimelineViewport(current.start - amount, current.end, clipDuration)
-      : calculateTimelineViewport(current.start, current.end + amount, clipDuration);
+    const viewSpan = Math.max(0.001, Number(viewEnd) - Number(viewStart));
+    const deltaTime = Number(deltaPx) / Math.max(1, Number(width) || 1) * viewSpan;
+    return clamp(Number(anchorTime) + deltaTime, 0, clipDuration);
+  }
+
+  function calculateTimelineDraggedViewport(type, target, viewStart, viewEnd, duration) {
+    const current = calculateTimelineViewport(viewStart, viewEnd, duration);
+    if (type === 'start' && target < current.start) {
+      return calculateTimelineViewport(target, current.end, duration);
+    }
+    if (type === 'end' && target > current.end) {
+      return calculateTimelineViewport(current.start, target, duration);
+    }
+    return current;
   }
 
   function createTimelineSeekGate() {
@@ -2105,7 +2131,6 @@
   const EDITOR_BACKGROUND_RESUME_DELAY_MS = 320;
   const TIMELINE_VIEWPORT_MOTION_MS = 220;
   const TIMELINE_THUMBNAIL_REFRESH_DELAY_MS = 1_000;
-  const TIMELINE_EDGE_ZONE_PX = 2;
   const LAUNCHER_POSITION_KEY = 'biliGifMakerLauncherPositionV1';
   const PANEL_GEOMETRY_KEY = 'biliGifMakerPanelGeometry';
   const EXPORT_PREFERENCES_KEY = 'biliGifMakerExportPreferencesV1';
@@ -2138,7 +2163,6 @@
     timelineViewStart: 0,
     timelineViewEnd: 0,
     timelineViewportTimer: 0,
-    timelineEdgeRaf: 0,
     timelineSettleToken: 0,
     timelineResumePlayback: false,
     recording: null,
@@ -4847,7 +4871,6 @@
     clearEditorViewportAnimation();
     cancelEditorPreviewRender();
     stopTrimPreview();
-    cancelTimelineEdgeExpansion();
     clearTimeout(state.timelineViewportTimer);
     state.timelineViewportTimer = 0;
     el.timelineTrack?.classList.remove('timeline-refitting');
@@ -5665,7 +5688,7 @@
 
   function refitTimelineToSelection() {
     if (!state.clip) return;
-    const next = calculateTimelineViewport(state.trimStart, state.trimEnd, state.clip.duration);
+    const next = calculateTimelineSelectionViewport(state.trimStart, state.trimEnd, state.clip.duration);
     const changed = Math.abs(next.start - state.timelineViewStart) > 0.0005
       || Math.abs(next.end - state.timelineViewEnd) > 0.0005;
     if (changed) {
@@ -5687,54 +5710,6 @@
     clearTimeout(state.timelineViewportTimer);
     state.timelineViewportTimer = 0;
     el.timelineTrack?.classList.remove('timeline-refitting');
-  }
-
-  function cancelTimelineEdgeExpansion() {
-    if (state.timelineEdgeRaf) cancelAnimationFrame(state.timelineEdgeRaf);
-    state.timelineEdgeRaf = 0;
-    if (state.timelineDrag) state.timelineDrag.edge = null;
-  }
-
-  function startTimelineEdgeExpansion(type) {
-    const drag = state.timelineDrag;
-    if (!drag || (type !== 'start' && type !== 'end')) return;
-    if (drag.edge?.type === type) return;
-    cancelTimelineEdgeExpansion();
-    drag.edge = { type, lastAt: performance.now(), heldSeconds: 0 };
-    const expand = (now) => {
-      const activeDrag = state.timelineDrag;
-      const edge = activeDrag?.edge;
-      if (!activeDrag || !edge || edge.type !== type || !state.clip) {
-        state.timelineEdgeRaf = 0;
-        return;
-      }
-      const elapsedSeconds = Math.min(0.05, Math.max(0, now - edge.lastAt) / 1000);
-      edge.lastAt = now;
-      edge.heldSeconds += elapsedSeconds;
-      const expanded = calculateTimelineEdgeExpansion(
-        type,
-        state.trimStart,
-        state.trimEnd,
-        state.clip.duration,
-        elapsedSeconds,
-        edge.heldSeconds,
-      );
-      state.trimStart = expanded.start;
-      state.trimEnd = expanded.end;
-      state.timelineViewStart = expanded.start;
-      state.timelineViewEnd = expanded.end;
-      activeDrag.view = expanded;
-      updateTrimUi();
-      queueTimelinePreview(type === 'start' ? state.trimStart : state.trimEnd, 'handle');
-      const boundaryReached = type === 'start' ? expanded.start <= 0 : expanded.end >= state.clip.duration;
-      if (boundaryReached) {
-        state.timelineEdgeRaf = 0;
-        activeDrag.edge = null;
-        return;
-      }
-      state.timelineEdgeRaf = requestAnimationFrame(expand);
-    };
-    state.timelineEdgeRaf = requestAnimationFrame(expand);
   }
 
   function showTimelineHandlePreview(time) {
@@ -5804,33 +5779,47 @@
     settle().catch(() => { });
   }
 
-  function applyTimelineDrag(event, movementX = 0) {
+  function applyTimelineDrag(event) {
     const drag = state.timelineDrag;
     if (!drag || !state.clip) return;
     const rect = el.timelineTrack.getBoundingClientRect();
-    const pointerX = event.clientX - drag.pointerOffsetX;
-    const atStartEdge = pointerX <= rect.left + TIMELINE_EDGE_ZONE_PX;
-    const atEndEdge = pointerX >= rect.right - TIMELINE_EDGE_ZONE_PX;
-    if (drag.type === 'start' && atStartEdge && movementX < 0 && state.trimStart > 0) {
-      startTimelineEdgeExpansion('start');
-      return;
-    }
-    if (drag.type === 'end' && atEndEdge && movementX > 0 && state.trimEnd < state.clip.duration) {
-      startTimelineEdgeExpansion('end');
-      return;
-    }
-    cancelTimelineEdgeExpansion();
-    const target = timelineTimeFromClientX(event.clientX);
     const minGap = Math.min(0.1, state.clip.duration / 2);
     if (drag.type === 'start') {
+      const target = calculateTimelineDragTime(
+        drag.anchorTime,
+        event.clientX - drag.pointerOffsetX - drag.pointerStartX,
+        rect.width,
+        drag.view.start,
+        drag.view.end,
+        state.clip.duration,
+      );
       state.trimStart = Math.min(target, state.trimEnd - minGap);
+      const nextView = calculateTimelineDraggedViewport(
+        'start', state.trimStart, state.timelineViewStart, state.timelineViewEnd, state.clip.duration,
+      );
+      state.timelineViewStart = nextView.start;
+      state.timelineViewEnd = nextView.end;
       updateTrimUi();
       queueTimelinePreview(state.trimStart, 'handle');
     } else if (drag.type === 'end') {
+      const target = calculateTimelineDragTime(
+        drag.anchorTime,
+        event.clientX - drag.pointerOffsetX - drag.pointerStartX,
+        rect.width,
+        drag.view.start,
+        drag.view.end,
+        state.clip.duration,
+      );
       state.trimEnd = Math.max(target, state.trimStart + minGap);
+      const nextView = calculateTimelineDraggedViewport(
+        'end', state.trimEnd, state.timelineViewStart, state.timelineViewEnd, state.clip.duration,
+      );
+      state.timelineViewStart = nextView.start;
+      state.timelineViewEnd = nextView.end;
       updateTrimUi();
       queueTimelinePreview(state.trimEnd, 'handle');
     } else {
+      const target = timelineTimeFromClientX(event.clientX);
       queueTimelinePreview(target, 'playhead');
       const view = drag.view;
       el.timelinePlayhead.style.visibility = 'visible';
@@ -5852,13 +5841,15 @@
     const handleRect = handleType === 'start' || handleType === 'end'
       ? event.target.getBoundingClientRect()
       : null;
+    const pointerOffsetX = handleRect ? event.clientX - (handleRect.left + handleRect.width / 2) : 0;
+    const type = handleType === 'start' || handleType === 'end' ? handleType : 'playhead';
     state.timelineDrag = {
       pointerId: event.pointerId,
-      type: handleType === 'start' || handleType === 'end' ? handleType : 'playhead',
-      lastClientX: event.clientX,
-      pointerOffsetX: handleRect ? event.clientX - (handleRect.left + handleRect.width / 2) : 0,
+      type,
+      pointerOffsetX,
+      pointerStartX: event.clientX - pointerOffsetX,
+      anchorTime: type === 'start' ? state.trimStart : state.trimEnd,
       view,
-      edge: null,
     };
     if (state.timelineDrag.type === 'start') showTimelineHandlePreview(state.trimStart);
     if (state.timelineDrag.type === 'end') showTimelineHandlePreview(state.trimEnd);
@@ -5869,10 +5860,8 @@
 
   function handleTimelinePointerMove(event) {
     if (!state.timelineDrag || state.timelineDrag.pointerId !== event.pointerId) return;
-    const movementX = event.clientX - state.timelineDrag.lastClientX;
-    state.timelineDrag.lastClientX = event.clientX;
     event.preventDefault();
-    applyTimelineDrag(event, movementX);
+    applyTimelineDrag(event);
   }
 
   function finishTimelineDrag(event) {
@@ -5880,7 +5869,6 @@
     if (!drag || (event && drag.pointerId !== event.pointerId)) return;
     const target = state.timelinePreviewTarget;
     const shouldResumePlayback = state.timelineResumePlayback;
-    cancelTimelineEdgeExpansion();
     state.timelineResumePlayback = false;
     state.timelineDrag = null;
     try { el.timelineTrack.releasePointerCapture?.(drag.pointerId); } catch (_) { }

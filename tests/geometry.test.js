@@ -7,8 +7,10 @@ const {
   calculateCropViewport,
   calculateInnerOverlayPosition,
   calculatePanelResize,
-  calculateTimelineEdgeExpansion,
+  calculateTimelineDraggedViewport,
+  calculateTimelineDragTime,
   calculateTimelinePosition,
+  calculateTimelineSelectionViewport,
   calculateTimelineTime,
   calculateTimelineViewport,
   calculateViewportTransitionTransform,
@@ -133,33 +135,53 @@ test('panel resizing and viewport constraints enforce shared boundaries', () => 
   assert.deepEqual(constrainPanelGeometry(preferred, 1600, 1100), preferred);
 });
 
-test('timeline coordinates depend on the visible selection', () => {
-  const longClip = calculateTimelineViewport(41, 44, 60);
-  const shortClip = calculateTimelineViewport(2, 5, 8);
+test('timeline coordinates keep equal precision and short context around equal selections', () => {
+  const longClip = calculateTimelineSelectionViewport(41, 44, 60);
+  const shortClip = calculateTimelineSelectionViewport(2, 5, 8);
   const width = 400;
   const longStep = calculateTimelineTime(1, width, longClip.start, longClip.end) - longClip.start;
   const shortStep = calculateTimelineTime(1, width, shortClip.start, shortClip.end) - shortClip.start;
 
   assert.ok(Math.abs(longStep - shortStep) < 1e-12);
+  assert.ok(longClip.start < 41);
+  assert.ok(longClip.end > 44);
   assert.equal(calculateTimelinePosition(42.5, longClip.start, longClip.end), 0.5);
-  assert.equal(calculateTimelinePosition(shortClip.start, shortClip.start, shortClip.end), 0);
-  assert.equal(calculateTimelinePosition(shortClip.end, shortClip.start, shortClip.end), 1);
+  assert.ok(calculateTimelinePosition(2, shortClip.start, shortClip.end) > 0);
+  assert.ok(calculateTimelinePosition(5, shortClip.start, shortClip.end) < 1);
 });
 
-test('timeline edge expansion reveals time without leaving the clip', () => {
-  const earlier = calculateTimelineEdgeExpansion('start', 20, 24, 60, 0.5);
-  const later = calculateTimelineEdgeExpansion('end', 20, 24, 60, 0.5);
+test('selection context stays inside the clip and shifts at source boundaries', () => {
+  const atStart = calculateTimelineSelectionViewport(0, 3, 60);
+  const atEnd = calculateTimelineSelectionViewport(57, 60, 60);
+  assert.equal(atStart.start, 0);
+  assert.ok(Math.abs(atStart.end - 3.36) < 1e-12);
+  assert.ok(Math.abs(atEnd.start - 56.64) < 1e-12);
+  assert.equal(atEnd.end, 60);
+  assert.deepEqual(calculateTimelineSelectionViewport(0, 60, 60), { start: 0, end: 60 });
+});
 
-  assert.ok(earlier.start < 20);
-  assert.equal(earlier.end, 24);
-  assert.equal(later.start, 20);
-  assert.ok(later.end > 24);
+test('outward handle dragging is linear at the scale captured on pointer down', () => {
+  const view = calculateTimelineSelectionViewport(20, 24, 60);
+  const oneStep = calculateTimelineDragTime(20, -30, 300, view.start, view.end, 60);
+  const twoSteps = calculateTimelineDragTime(20, -60, 300, view.start, view.end, 60);
+  assert.ok(Math.abs((20 - twoSteps) - (20 - oneStep) * 2) < 1e-12);
+
+  const otherView = calculateTimelineSelectionViewport(12.5, 17.5, 45);
+  assert.equal(
+    calculateTimelineDragTime(17.5, 120, 600, otherView.start, otherView.end, 45),
+    18.62,
+  );
+});
+
+test('dragged viewport reveals only the distance crossed beyond its current edge', () => {
+  const view = calculateTimelineSelectionViewport(20, 24, 60);
   assert.deepEqual(
-    calculateTimelineEdgeExpansion('start', 0.1, 3, 60, 10),
-    { start: 0, end: 3 },
+    calculateTimelineDraggedViewport('start', view.start - 0.2, view.start, view.end, 60),
+    { start: view.start - 0.2, end: view.end },
   );
   assert.deepEqual(
-    calculateTimelineEdgeExpansion('end', 57, 59.9, 60, 10),
-    { start: 57, end: 60 },
+    calculateTimelineDraggedViewport('end', view.end + 0.35, view.start, view.end, 60),
+    { start: view.start, end: view.end + 0.35 },
   );
+  assert.deepEqual(calculateTimelineDraggedViewport('start', 21, view.start, view.end, 60), view);
 });
