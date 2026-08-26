@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         贝报 GIF 助手
 // @namespace    https://www.bk0717.com/
-// @version      1.4.5
+// @version      1.4.6
 // @description  B站直播回溯、视频框选录制与 GIF 编辑
 // @author       贝极星周报
 // @homepageURL  https://github.com/Bellaris-Weekly/bella-gif-helper
@@ -413,13 +413,15 @@
     return { left, top, right: left + width, bottom: top + height, width, height };
   }
 
-  function formatGifFileName(dateValue, sourceLabel) {
+  function formatGifFileName(dateValue, sourceLabel, { sourcePosition = 'after-timestamp' } = {}) {
     const timestamp = dateValue instanceof Date ? dateValue.getTime() : Number(dateValue);
     if (!Number.isFinite(timestamp) || dateValue === null) throw new Error('无法确定 GIF 首帧时间。');
     const date = new Date(timestamp);
     const pad = (value) => String(value).padStart(2, '0');
-    const timeDate = `${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}_${pad(date.getMonth() + 1)}${pad(date.getDate())}`;
-    return `贝报gif_${timeDate}_${sanitizeFileNamePart(sourceLabel, '视频')}.gif`;
+    const dateTime = `${pad(date.getMonth() + 1)}${pad(date.getDate())}_${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
+    const source = sanitizeFileNamePart(sourceLabel, '视频');
+    const nameParts = sourcePosition === 'before-timestamp' ? [source, dateTime] : [dateTime, source];
+    return `贝报gif_${nameParts.join('_')}.gif`;
   }
 
   function asBytes(value, copy = false) {
@@ -7075,7 +7077,7 @@
       return formatGifFileName(firstFrameTime, sourceLabel);
     }
     const bvid = location.pathname.match(/\/(BV[\w]+)/i)?.[1] || '视频';
-    return formatGifFileName(Date.now(), bvid);
+    return formatGifFileName(Date.now(), bvid, { sourcePosition: 'before-timestamp' });
   }
 
 

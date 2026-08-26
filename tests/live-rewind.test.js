@@ -298,9 +298,22 @@ test('直播录制按最终裁剪首帧计算文件时间并清理来源名称',
   assert.equal(firstFrameTime, recordingStart + 4250);
   assert.equal(
     formatGifFileName(firstFrameTime, '主播 名/测试_1700657229'),
-    '贝报gif_140513_0820_主播_名_测试_1700657229.gif',
+    '贝报gif_0820_140513_主播_名_测试_1700657229.gif',
   );
   assert.throws(() => formatGifFileName(null, '主播_1700657229'), /无法确定 GIF 首帧时间/);
+});
+
+test('视频导出将 BV 号放在日期和时间之前', () => {
+  const exportedAt = new Date(2026, 10, 3, 9, 8, 7);
+
+  assert.equal(
+    formatGifFileName(exportedAt, 'BV1Ab411c7De', { sourcePosition: 'before-timestamp' }),
+    '贝报gif_BV1Ab411c7De_1103_090807.gif',
+  );
+  assert.equal(
+    formatGifFileName(exportedAt, 'BV1Xx411c7Yz', { sourcePosition: 'before-timestamp' }),
+    '贝报gif_BV1Xx411c7Yz_1103_090807.gif',
+  );
 });
 
 test('2 Mbps 与 8 Mbps 都按时间而不是字节数清理', () => {
