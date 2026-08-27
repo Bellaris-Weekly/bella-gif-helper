@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         贝报 GIF 助手
 // @namespace    https://www.bk0717.com/
-// @version      1.4.9
+// @version      1.4.12
 // @description  B站直播回溯、视频框选录制与 GIF 编辑
 // @author       贝极星周报
 // @homepageURL  https://github.com/Bellaris-Weekly/bella-gif-helper
@@ -1943,6 +1943,82 @@
     }
   }
 
+  const EXPORT_DIAGNOSTIC_PREFIX = '[贝报GIF诊断]';
+
+  function createExportDiagnosticSession(settings) {
+    const startedAt = performance.now();
+    const events = [];
+    let currentStage = 'created';
+    let finished = false;
+    const record = (event, details = {}) => {
+      const now = performance.now();
+      const entry = {
+        ...details,
+        elapsedMs: Math.round(now - startedAt),
+        event,
+      };
+      events.push(entry);
+      return entry;
+    };
+    const stage = (name, details = {}) => {
+      currentStage = name;
+      record('stage', { stage: name, ...details });
+    };
+    const finish = (outcome, details = {}) => {
+      if (finished) return null;
+      finished = true;
+      record('export-finish', { outcome, stage: currentStage, ...details });
+      const report = {
+        diagnosticVersion: 2,
+        scriptVersion: typeof GM_info === 'undefined' ? null : GM_info.script?.version || null,
+        browser: typeof navigator === 'undefined' ? null : {
+          userAgent: navigator.userAgent,
+          hardwareConcurrency: navigator.hardwareConcurrency || null,
+        },
+        settings: {
+          start: settings.start,
+          end: settings.end,
+          fps: settings.fps,
+          speed: settings.speed,
+          baseFrames: settings.baseFrames,
+          outputWidth: settings.outputWidth,
+          outputHeight: settings.outputHeight,
+          firstTarget: settings.frameTimes[0] ?? null,
+          lastTarget: settings.frameTimes.at(-1) ?? null,
+        },
+        events: [...events],
+      };
+      pageWindow.__BELLA_GIF_LAST_DIAGNOSTIC__ = report;
+      const output = `${EXPORT_DIAGNOSTIC_PREFIX}报告 ${JSON.stringify(report)}`;
+      if (outcome === 'error') console.error(output);
+      else console.info(output);
+      return report;
+    };
+    record('export-start');
+    return Object.freeze({ finish, record, stage });
+  }
+
+  async function recordExportTrackDiagnostics(videoTrack, decodable, diagnostics) {
+    if (!diagnostics) return;
+    const reads = [
+      ['firstTimestamp', () => videoTrack.getFirstTimestamp()],
+      ['metadataDuration', () => videoTrack.getDurationFromMetadata({ skipLiveWait: true })],
+      ['codec', () => videoTrack.getCodecParameterString()],
+      ['timeResolution', () => videoTrack.getTimeResolution()],
+      ['codedWidth', () => videoTrack.getCodedWidth()],
+      ['codedHeight', () => videoTrack.getCodedHeight()],
+    ];
+    const settled = await Promise.allSettled(reads.map(([, read]) => Promise.resolve().then(read)));
+    const metadata = { decodable };
+    settled.forEach((result, index) => {
+      const key = reads[index][0];
+      metadata[key] = result.status === 'fulfilled'
+        ? result.value
+        : { error: String(result.reason?.message || result.reason) };
+    });
+    diagnostics.record('frame-source-track', metadata);
+  }
+
   function createExportClipBlob(clip) {
     if (clip?.kind === 'blob' && clip.blob instanceof Blob) return clip.blob;
     if (clip?.kind === 'media-source' && Array.isArray(clip.parts) && clip.parts.length) {
@@ -1964,28 +2040,38 @@
     return times;
   }
 
-  async function createExportFrameSourceFromMediaApi(clip, mediaApi) {
+  async function createExportFrameSourceFromMediaApi(clip, mediaApi, diagnostics = null) {
     const { BlobSource, Input, MP4, VideoSampleSink, WEBM } = mediaApi || {};
     if (![BlobSource, Input, MP4, VideoSampleSink, WEBM].every(Boolean)) {
       throw new Error('媒体解码组件接口不完整。');
     }
 
+    const blob = createExportClipBlob(clip);
+    diagnostics?.record('frame-source-input', {
+      bytes: blob.size,
+      kind: clip?.kind || null,
+      mimeType: blob.type || null,
+      partCount: Array.isArray(clip?.parts) ? clip.parts.length : null,
+    });
     const input = new Input({
-      source: new BlobSource(createExportClipBlob(clip)),
+      source: new BlobSource(blob),
       formats: [MP4, WEBM],
     });
     let disposed = false;
     let reading = false;
+    let readId = 0;
     try {
       const videoTrack = await input.getPrimaryVideoTrack();
       if (!videoTrack) throw new Error('导出片段中没有可用的视频轨道。');
-      if (!await videoTrack.canDecode()) {
+      const decodable = await videoTrack.canDecode();
+      await recordExportTrackDiagnostics(videoTrack, decodable, diagnostics);
+      if (!decodable) {
         throw new Error('当前视频编码无法通过 WebCodecs 解码。');
       }
       const sink = new VideoSampleSink(videoTrack);
 
       return Object.freeze({
-        async *framesAt(targetTimes, { signal = null } = {}) {
+        async *framesAt(targetTimes, { signal = null, purpose = 'frames' } = {}) {
           if (disposed) throw new Error('导出帧源已释放。');
           if (reading) throw new Error('导出帧源不允许并发读取。');
           const times = normalizeFrameTargetTimes(targetTimes);
@@ -1993,36 +2079,108 @@
           if (signal?.aborted) throw new CancelledError();
 
           reading = true;
+          const currentReadId = ++readId;
+          diagnostics?.record('frame-read-start', {
+            readId: currentReadId,
+            purpose,
+            targetCount: times.length,
+            firstTarget: times[0],
+            lastTarget: times.at(-1),
+          });
           const abort = () => {
             disposed = true;
             try { input.dispose(); } catch (_) { }
           };
           signal?.addEventListener('abort', abort, { once: true });
           let index = 0;
+          let decodedSamples = 0;
+          let heldSample = null;
+          const startedAt = performance.now();
+          const makeFrame = (sample) => {
+            const frame = sample.toVideoFrame();
+            if (index === 0 || index === times.length - 1 || index % 20 === 0) {
+              diagnostics?.record('frame-read-progress', {
+                readId: currentReadId,
+                purpose,
+                index,
+                target: times[index],
+                sampleTimestamp: Number(sample.timestamp),
+                decodedSamples,
+              });
+            }
+            return frame;
+          };
           try {
-            for await (const sample of sink.samplesAtTimestamps(times)) {
-              if (signal?.aborted) throw new CancelledError();
-              if (index >= times.length) {
-                try { sample?.close(); } catch (_) { }
-                throw new Error('媒体解码组件返回了多余画面。');
-              }
-              if (!sample) throw new Error(`无法解码 ${times[index].toFixed(3)} 秒的画面。`);
-              let frame;
+            for await (const sample of sink.samples(undefined, undefined, { skipLiveWait: true })) {
+              let sampleHeld = false;
               try {
-                frame = sample.toVideoFrame();
+                if (signal?.aborted) throw new CancelledError();
+                decodedSamples += 1;
+                if (!Number.isFinite(sample.timestamp)) {
+                  throw new Error('媒体解码组件返回了无效的画面时间。');
+                }
+                if (heldSample && sample.timestamp + 1e-10 < heldSample.timestamp) {
+                  throw new Error('媒体解码组件没有按展示时间输出画面。');
+                }
+
+                while (index < times.length && sample.timestamp - times[index] > 1e-10) {
+                  if (!heldSample) {
+                    throw new Error(`无法解码 ${times[index].toFixed(3)} 秒的画面。`);
+                  }
+                  if (signal?.aborted) throw new CancelledError();
+                  const frame = makeFrame(heldSample);
+                  yield Object.freeze({ index, targetTime: times[index], frame });
+                  index += 1;
+                }
+
+                if (index >= times.length) break;
+                try { heldSample?.close(); } catch (_) { }
+                heldSample = sample;
+                sampleHeld = true;
               } finally {
-                try { sample.close(); } catch (_) { }
+                if (!sampleHeld) {
+                  try { sample.close(); } catch (_) { }
+                }
               }
+            }
+
+            while (index < times.length) {
+              if (signal?.aborted) throw new CancelledError();
+              const sampleEnd = heldSample
+                ? heldSample.timestamp + Number(heldSample.duration)
+                : Number.NaN;
+              if (
+                !heldSample
+                || times[index] + 1e-10 < heldSample.timestamp
+                || !Number.isFinite(sampleEnd)
+                || times[index] >= sampleEnd - 1e-10
+              ) {
+                throw new Error(`无法解码 ${times[index].toFixed(3)} 秒的画面。`);
+              }
+              const frame = makeFrame(heldSample);
               yield Object.freeze({ index, targetTime: times[index], frame });
               index += 1;
             }
-            if (index !== times.length) {
-              throw new Error(`视频解码中断（${index}/${times.length} 帧）。`);
-            }
+            diagnostics?.record('frame-read-complete', {
+              readId: currentReadId,
+              purpose,
+              frameCount: index,
+              decodedSamples,
+              decodeElapsedMs: Math.round(performance.now() - startedAt),
+            });
           } catch (error) {
+            diagnostics?.record('frame-read-error', {
+              readId: currentReadId,
+              purpose,
+              index,
+              target: times[index] ?? null,
+              name: error?.name || null,
+              message: String(error?.message || error),
+            });
             if (signal?.aborted) throw new CancelledError();
             throw error;
           } finally {
+            try { heldSample?.close(); } catch (_) { }
             reading = false;
             signal?.removeEventListener('abort', abort);
           }
@@ -4692,7 +4850,10 @@
     })));
     const samples = [];
     try {
-      for await (const decoded of frameSource.framesAt(targets.map((target) => target.time), { signal })) {
+      for await (const decoded of frameSource.framesAt(targets.map((target) => target.time), {
+        signal,
+        purpose: 'palette',
+      })) {
         const target = targets[decoded.index];
         const frame = decoded.frame;
         try {
@@ -6394,8 +6555,8 @@
     return state.mediaModulePromise;
   }
 
-  async function createExportFrameSource(clip) {
-    return createExportFrameSourceFromMediaApi(clip, await loadExportMediaApi());
+  async function createExportFrameSource(clip, diagnostics = null) {
+    return createExportFrameSourceFromMediaApi(clip, await loadExportMediaApi(), diagnostics);
   }
 
   async function loadEncodingResourceTexts() {
@@ -7097,6 +7258,9 @@
     let encodingSession = null;
     let exportController = null;
     let frameSource = null;
+    let diagnostics = null;
+    let diagnosticOutcome = 'cancelled';
+    let diagnosticError = null;
     let pendingPaletteFrames = [];
     const lastUiUpdateAt = { extracting: 0, encoding: 0 };
     const reportExportProgress = (phase, completed, total) => {
@@ -7111,6 +7275,7 @@
     try {
       settings = readExportSettings();
       fileName = makeFileName(settings);
+      diagnostics = createExportDiagnosticSession(settings);
 
       stopTrimPreview();
       state.busy = true;
@@ -7122,9 +7287,11 @@
       setStatus('正在准备选区色彩……');
 
       const clip = state.clip;
-      frameSource = await createExportFrameSource(clip);
+      diagnostics.stage('frame-source-create');
+      frameSource = await createExportFrameSource(clip, diagnostics);
       state.exportFrameSource = frameSource;
       let paletteFrames = [];
+      diagnostics.stage('palette-decode');
       const samples = await capturePaletteFrames(
         frameSource,
         createPaletteSampleWindows(settings.frameTimes),
@@ -7135,6 +7302,7 @@
       paletteFrames = samples.map((sample) => sample.bitmap);
       pendingPaletteFrames = paletteFrames;
 
+      diagnostics.stage('encoder-create', { paletteFrames: paletteFrames.length });
       encodingSession = await createGifEncodingSession({
         ...settings,
         onPhase: (phase) => {
@@ -7156,8 +7324,10 @@
       if (exportController.signal.aborted) throw new CancelledError();
 
       let extractedFrames = 0;
+      diagnostics.stage('full-frame-decode', { targetCount: settings.frameTimes.length });
       for await (const decoded of frameSource.framesAt(settings.frameTimes, {
         signal: exportController.signal,
+        purpose: 'export',
       })) {
         await encodingSession.addFrame(
           decoded.frame,
@@ -7171,6 +7341,7 @@
       if (exportController.signal.aborted) throw new CancelledError();
       setProgress(calculateExportProgress('encoding', 0, settings.baseFrames));
       setStatus('正在并行编码……');
+      diagnostics.stage('encoding-finish');
       const blob = await encodingSession.finish();
       if (exportController.signal.aborted) throw new CancelledError();
 
@@ -7179,7 +7350,15 @@
       downloadBlob(blob, fileName);
       setStatus(`已导出并下载 · ${formatFileSize(blob.size)}`, 'success');
       showToast(`下载完成 · ${formatFileSize(blob.size)}`, 'success');
+      diagnosticOutcome = 'success';
     } catch (error) {
+      diagnosticOutcome = error instanceof CancelledError ? 'cancelled' : 'error';
+      diagnosticError = {
+        name: error?.name || null,
+        message: String(error?.message || error),
+        stack: String(error?.stack || '').split('\n').slice(0, 8),
+      };
+      diagnostics?.record('export-error', diagnosticError);
       setStatus(friendlyError(error), error instanceof CancelledError ? '' : 'error');
     } finally {
       encodingSession?.destroy();
@@ -7194,6 +7373,7 @@
       state.mode = state.clip ? 'edit' : 'capture';
       updateModeUi();
       if (state.mode === 'edit') updateEditorCropBox();
+      diagnostics?.finish(diagnosticOutcome, diagnosticError ? { error: diagnosticError } : {});
 
     }
   }

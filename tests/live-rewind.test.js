@@ -230,6 +230,18 @@ test('fMP4 关键帧使用展示时间而不是解码时间', () => {
   assert.deepEqual(signedOffsets.keyframes, [14.4]);
 });
 
+test('长 GOP 直播样本跨多个短分片且只有首分片包含关键帧', () => {
+  const bytes = new Uint8Array(fs.readFileSync(path.join(
+    __dirname,
+    'fixtures/avc-multi-fragment-long-gop.mp4',
+  )));
+  const parsed = parseLiveMedia(bytes, parseLiveInit(bytes));
+
+  assert.equal(readIsoBoxes(bytes).filter((boxInfo) => boxInfo.type === 'moof').length, 8);
+  assert.deepEqual(parsed.keyframes, [1 / 15]);
+  assert.equal(parsed.end, 2);
+});
+
 test('中途接入长 GOP 时选区从首个实际展示的关键帧开始', () => {
   const bytes = new Uint8Array(fs.readFileSync(path.join(
     __dirname,
