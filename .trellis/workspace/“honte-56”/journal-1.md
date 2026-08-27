@@ -77,3 +77,41 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 3: Preserve Full GIF Palette
+
+**Date**: 2026-08-28
+**Task**: Preserve Full GIF Palette
+**Branch**: `main`
+
+### Summary
+
+将“然 · 体积优先”的可见颜色上限从 192 提升至 255，使三档均使用包含透明索引的 256 项 GIF 调色板；增加全档位回归测试、同步 README，并将 userscript 版本升级至 1.4.14。
+
+### Main Changes
+
+- Unified all quality presets at 255 visible colors plus the reserved transparent index.
+- Kept dithering and lossy compression as the only quality-level differences.
+- Added a regression test for the shared palette-capacity rule and updated the README.
+- Bumped the userscript version from 1.4.13 to 1.4.14.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `469ba2e` | (see git log) |
+
+### Testing
+
+- [OK] `node --check bella-gif-helper.user.js`
+- [OK] `node --test tests/*.test.js` (47/47 passed)
+- [OK] `git diff --check`
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
