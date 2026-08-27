@@ -1,0 +1,53 @@
+#!/bin/sh
+set -eu
+
+message_file=$1
+
+fail() {
+  printf '%s\n' "commit-msg: $*" >&2
+  exit 1
+}
+
+message=$(sed '/^#/d' "$message_file")
+title=$(printf '%s\n' "$message" | sed -n '1p')
+body=$(printf '%s\n' "$message" | sed '1d')
+body_line_count=$(printf '%s\n' "$body" | sed '/^[[:space:]]*$/d' | wc -l | tr -d ' ')
+
+[ -n "$title" ] || fail "commit title is required"
+
+printf '%s\n' "$title" | LC_ALL=C grep -Eq \
+  '^(fix|feat|refactor|docs|test)(\([A-Za-z0-9._-]+\))?: [ -~]+$' ||
+  fail "title must be English and start with fix:, feat:, refactor:, docs:, or test:"
+
+printf '%s\n' "$message" | grep -q '\\n' &&
+  fail "message contains literal \\n; use real line breaks instead"
+
+if [ "$body_line_count" -gt 0 ]; then
+  printf '%s\n' "$body" | grep -q '^说明：' ||
+    fail "body must include a 说明： section"
+  printf '%s\n' "$body" | grep -q '^主要变化：' ||
+    fail "body must include a 主要变化： section"
+  printf '%s\n' "$body" | grep -q '^验证：' ||
+    fail "body must include a 验证： section"
+fi
+
+staged_stats=$(git diff --cached --numstat 2>/dev/null || true)
+staged_file_count=$(printf '%s\n' "$staged_stats" | sed '/^[[:space:]]*$/d' | wc -l | tr -d ' ')
+staged_line_count=$(
+  printf '%s\n' "$staged_stats" |
+    awk '
+      NF >= 2 {
+        if ($1 == "-" || $2 == "-") {
+          total += 100
+        } else {
+          total += $1 + $2
+        }
+      }
+      END { print total + 0 }
+    '
+)
+
+if [ "$body_line_count" -eq 0 ] &&
+  { [ "$staged_file_count" -gt 1 ] || [ "$staged_line_count" -ge 20 ]; }; then
+  fail "large commits need a Chinese body with 说明：, 主要变化：, and 验证："
+fi

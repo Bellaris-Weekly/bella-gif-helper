@@ -38,7 +38,9 @@ function createFakeMediaApi(presentationTimes, { decodable = true } = {}) {
     async getPrimaryVideoTrack() {
       return {
         canDecode: async () => decodable,
-        getFirstTimestamp: async () => sortedTimes[0] ?? 0,
+        getFirstTimestamp: async () => {
+          throw new Error('frame source must not shift the clip presentation timeline');
+        },
       };
     }
 
@@ -144,13 +146,14 @@ test('target FPS preserves count and selects the frame displayed at each target 
   }
 });
 
-test('local export times are mapped from a non-zero first presentation timestamp', async () => {
+test('target times remain on the clip presentation timeline', async () => {
   const fake = createFakeMediaApi([0.08, 0.12, 0.16]);
   const source = await createExportFrameSourceFromMediaApi(
     { kind: 'media-source', mimeType: 'video/mp4', parts: [Uint8Array.of(1)] },
     fake.api,
   );
-  const frames = await readFrames(source, [0, 0.04, 0.08]);
+  await assert.rejects(readFrames(source, [0]), /无法解码/);
+  const frames = await readFrames(source, [0.08, 0.12, 0.16]);
 
   assert.deepEqual(frames.map((item) => item.frame.timestamp), [80000, 120000, 160000]);
   frames.forEach((item) => item.frame.close());

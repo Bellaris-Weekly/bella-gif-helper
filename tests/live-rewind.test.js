@@ -1,5 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const {
   LiveRewindTrack,
@@ -148,16 +150,23 @@ function makeMedia({
   base = 0,
   durations = [500, 500],
   keyframes = [0],
+  compositionOffsets = [],
+  trunVersion = 0,
   payloadBytes = 16,
 } = {}) {
   const defaultFlags = 0x01010000;
   const tfhd = fullBox('tfhd', 0, 0x000008 | 0x000020, u32(trackId), u32(durations[0]), u32(defaultFlags));
   const tfdt = fullBox('tfdt', 1, 0, u64(base));
-  const samples = durations.flatMap((duration, index) => [
-    u32(duration),
-    u32(keyframes.includes(index) ? 0x02000000 : 0x01010000),
-  ]);
-  const trun = fullBox('trun', 0, 0x000100 | 0x000400, u32(durations.length), ...samples);
+  const samples = durations.flatMap((duration, index) => {
+    const fields = [
+      u32(duration),
+      u32(keyframes.includes(index) ? 0x02000000 : 0x01010000),
+    ];
+    if (compositionOffsets.length) fields.push(u32(compositionOffsets[index] || 0));
+    return fields;
+  });
+  const trunFlags = 0x000100 | 0x000400 | (compositionOffsets.length ? 0x000800 : 0);
+  const trun = fullBox('trun', trunVersion, trunFlags, u32(durations.length), ...samples);
   return concat([
     box('styp', ascii('msdh'), u32(0), ascii('msdh')),
     box('moof', box('traf', tfhd, tfdt, trun)),
@@ -199,6 +208,37 @@ test('fMP4 解析能识别视频轨道、时间和关键帧', () => {
   assert.equal(parsed.start, 14.5);
   assert.equal(parsed.end, 15.5);
   assert.deepEqual(parsed.keyframes, [14.5]);
+});
+
+test('fMP4 关键帧使用展示时间而不是解码时间', () => {
+  const metadata = parseLiveInit(makeInit({ timescale: 1000, defaultDuration: 400 }));
+  const positiveOffsets = parseLiveMedia(makeMedia({
+    base: 12_000,
+    durations: [400, 600],
+    keyframes: [0],
+    compositionOffsets: [200, 0],
+  }), metadata, 2.5);
+  const signedOffsets = parseLiveMedia(makeMedia({
+    base: 12_000,
+    durations: [400, 600],
+    keyframes: [0],
+    compositionOffsets: [-100, 0],
+    trunVersion: 1,
+  }), metadata, 2.5);
+
+  assert.deepEqual(positiveOffsets.keyframes, [14.7]);
+  assert.deepEqual(signedOffsets.keyframes, [14.4]);
+});
+
+test('中途接入长 GOP 时选区从首个实际展示的关键帧开始', () => {
+  const bytes = new Uint8Array(fs.readFileSync(path.join(
+    __dirname,
+    'fixtures/avc-mid-gop-fragmented.mp4',
+  )));
+  const parsed = parseLiveMedia(bytes, parseLiveInit(bytes));
+
+  assert.equal(parsed.start, 0);
+  assert.ok(Math.abs(parsed.keyframes[0] - 2) < 0.0001);
 });
 
 test('音视频复用分片在缓存前只保留视频轨道和视频样本', () => {

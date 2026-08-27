@@ -20,11 +20,11 @@
   </table>
   <script type="module">
     const fixtureCases = [
-      { name: 'AVC B-frames', file: 'fixtures/avc-bframes-fragmented.mp4', kind: 'media-source', type: 'video/mp4' },
+      { name: 'AVC B-frames', file: 'fixtures/avc-bframes-fragmented.mp4', kind: 'media-source', type: 'video/mp4', start: 1 / 15 },
+      { name: 'AVC mid-GOP rewind', file: 'fixtures/avc-mid-gop-fragmented.mp4', kind: 'media-source', type: 'video/mp4', start: 2 },
       { name: 'VP9 recording', file: 'fixtures/vp9-recording.webm', kind: 'blob', type: 'video/webm' },
       { name: 'AV1 fMP4', file: 'fixtures/av1-fragmented.mp4', kind: 'media-source', type: 'video/mp4' },
     ];
-    const targetTimes = Array.from({ length: 40 }, (_, index) => index / 20);
     const userscript = await fetch('../bella-gif-helper.user.js').then((response) => response.text());
     const marker = "\n  const IS_LIVE_PAGE = location.hostname === 'live.bilibili.com';";
     const injected = userscript.replace(
@@ -44,6 +44,7 @@
           ? { kind: 'blob', blob: new Blob([bytes], { type: fixture.type }) }
           : { kind: 'media-source', mimeType: fixture.type, parts: [bytes] };
         source = await globalThis.__bellaFrameSourceTestApi.createExportFrameSourceFromMediaApi(clip, mediaApi);
+        const targetTimes = Array.from({ length: 40 }, (_, index) => (fixture.start || 0) + index / 20);
         const timestamps = [];
         for await (const item of source.framesAt(targetTimes)) {
           timestamps.push(item.frame.timestamp);

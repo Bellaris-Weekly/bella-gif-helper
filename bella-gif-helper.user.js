@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         贝报 GIF 助手
 // @namespace    https://www.bk0717.com/
-// @version      1.4.8
+// @version      1.4.9
 // @description  B站直播回溯、视频框选录制与 GIF 编辑
 // @author       贝极星周报
 // @homepageURL  https://github.com/Bellaris-Weekly/bella-gif-helper
@@ -784,7 +784,7 @@
     const moofs = readIsoBoxes(bytes).filter((box) => box.type === 'moof');
     let startTicks = null;
     let endTicks = null;
-    const keyframeTicks = [];
+    const keyframePresentationTicks = [];
     for (const moof of moofs) {
       for (const traf of childBoxes(bytes, moof, 'traf')) {
         const tfhdBox = childBox(bytes, traf, 'tfhd');
@@ -799,6 +799,7 @@
         if (startTicks === null || decodeTime < startTicks) startTicks = decodeTime;
         for (const trun of childBoxes(bytes, traf, 'trun')) {
           if (trun.dataStart + 8 > trun.end) continue;
+          const trunVersion = bytes[trun.dataStart];
           const flags = (bytes[trun.dataStart + 1] << 16) | (bytes[trun.dataStart + 2] << 8) | bytes[trun.dataStart + 3];
           const sampleCount = view.getUint32(trun.dataStart + 4);
           let offset = trun.dataStart + 8;
@@ -825,9 +826,16 @@
               sampleFlags = view.getUint32(offset);
               offset += 4;
             }
-            if (flags & 0x000800) offset += 4;
+            let compositionOffset = 0;
+            if (flags & 0x000800) {
+              if (offset + 4 > trun.end) break;
+              compositionOffset = trunVersion === 1 ? view.getInt32(offset) : view.getUint32(offset);
+              offset += 4;
+            }
             if (offset > trun.end || !duration) break;
-            if (isSyncSample(sampleFlags)) keyframeTicks.push(decodeTime);
+            if (isSyncSample(sampleFlags)) {
+              keyframePresentationTicks.push(decodeTime + BigInt(compositionOffset));
+            }
             decodeTime += BigInt(duration);
           }
         }
@@ -841,7 +849,7 @@
       end: Number(endTicks) / timescale + timestampOffset,
       startTicks,
       endTicks,
-      keyframes: keyframeTicks.map((ticks) => Number(ticks) / timescale + timestampOffset),
+      keyframes: keyframePresentationTicks.map((ticks) => Number(ticks) / timescale + timestampOffset),
     };
   }
 
@@ -1974,7 +1982,6 @@
       if (!await videoTrack.canDecode()) {
         throw new Error('当前视频编码无法通过 WebCodecs 解码。');
       }
-      const firstTimestamp = Number(await videoTrack.getFirstTimestamp()) || 0;
       const sink = new VideoSampleSink(videoTrack);
 
       return Object.freeze({
@@ -1993,8 +2000,7 @@
           signal?.addEventListener('abort', abort, { once: true });
           let index = 0;
           try {
-            const mediaTimes = times.map((time) => time + firstTimestamp);
-            for await (const sample of sink.samplesAtTimestamps(mediaTimes)) {
+            for await (const sample of sink.samplesAtTimestamps(times)) {
               if (signal?.aborted) throw new CancelledError();
               if (index >= times.length) {
                 try { sample?.close(); } catch (_) { }
