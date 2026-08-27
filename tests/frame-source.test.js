@@ -193,39 +193,6 @@ test('palette and full-frame reads remain sequential on one decoder source', asy
   source.dispose();
 });
 
-test('diagnostics identify palette and export reads without changing frame selection', async () => {
-  const fake = createFakeMediaApi([0, 0.1, 0.2]);
-  const events = [];
-  const diagnostics = {
-    record(event, details) {
-      events.push({ event, ...details });
-    },
-  };
-  const source = await createExportFrameSourceFromMediaApi(
-    { kind: 'media-source', mimeType: 'video/mp4', parts: [Uint8Array.of(1)] },
-    fake.api,
-    diagnostics,
-  );
-  const palette = await readFrames(source, [0, 0.2], { purpose: 'palette' });
-  palette.forEach((item) => item.frame.close());
-  const full = await readFrames(source, [0, 0.1, 0.2], { purpose: 'export' });
-  full.forEach((item) => item.frame.close());
-
-  assert.deepEqual(
-    events.filter((item) => item.event === 'frame-read-start').map((item) => item.purpose),
-    ['palette', 'export'],
-  );
-  assert.deepEqual(
-    events.filter((item) => item.event === 'frame-read-complete').map((item) => item.frameCount),
-    [2, 3],
-  );
-  assert.equal(events.filter((item) => item.event === 'key-packet-probe').length, 0);
-  assert.equal(fake.metrics.maxActiveReads, 1);
-  assert.equal(fake.metrics.sequentialReads, 2);
-  assert.equal(fake.metrics.randomReads, 0);
-  source.dispose();
-});
-
 test('sequential decoding crosses fragment boundaries without timestamp lookups', async () => {
   const fake = createFakeMediaApi([
     { timestamp: 0, duration: 1 / 30 },

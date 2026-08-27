@@ -9,7 +9,7 @@ This contract applies whenever recorded WebM or live-rewind fragmented MP4 is de
 ### 2. Signatures
 
 ```text
-framesAt(targetTimes, { signal, purpose })
+framesAt(targetTimes, { signal })
   -> AsyncIterable<{ index, targetTime, frame: VideoFrame }>
 
 dispose() -> void
@@ -23,6 +23,7 @@ dispose() -> void
 - Each target receives the last presentation-ordered source frame whose timestamp is not later than the target. A low-rate source frame may therefore be converted to several independent `VideoFrame` objects.
 - The consumer owns every yielded `VideoFrame` and must close it. The frame source owns and closes all `VideoSample` objects.
 - Palette extraction and full export run serially. Calling `framesAt` concurrently is invalid.
+- Release builds must not collect export diagnostics, publish reports on `window`, or emit diagnostic console output. Temporary instrumentation must be removed before the userscript version is released.
 
 ### 4. Validation & Error Matrix
 
@@ -46,6 +47,7 @@ dispose() -> void
 - Assert maximum decode concurrency is one across palette and export passes.
 - Assert random timestamp lookup is never called.
 - Assert cancellation and early failure close every owned sample and dispose the input.
+- Before release, scan the userscript for diagnostic globals, stage/event collectors, and diagnostic console output.
 - Browser-test AVC B-frames, VP9 WebM, AV1 fragmented MP4, mid-GOP input, and a multi-fragment AVC long-GOP fixture.
 
 ### 7. Wrong vs Correct
