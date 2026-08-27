@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         贝报 GIF 助手
 // @namespace    https://www.bk0717.com/
-// @version      1.4.13
+// @version      1.4.14
 // @description  B站直播回溯、视频框选录制与 GIF 编辑
 // @author       贝极星周报
 // @homepageURL  https://github.com/Bellaris-Weekly/bella-gif-helper
@@ -57,7 +57,7 @@
   const GIF_QUALITY_PRESETS = Object.freeze({
     nai: Object.freeze({ maxColors: 255, dither: 'floyd-steinberg', lossy: 0 }),
     bei: Object.freeze({ maxColors: 255, dither: null, lossy: 25 }),
-    ran: Object.freeze({ maxColors: 192, dither: null, lossy: 50 }),
+    ran: Object.freeze({ maxColors: 255, dither: null, lossy: 50 }),
   });
   const DEFAULT_SHORTCUT = Object.freeze({
     code: 'KeyZ',

@@ -30,6 +30,12 @@ test('quality presets only change palette and compression behavior', () => {
   }
 });
 
+test('every quality preset preserves the full 256-entry GIF palette', () => {
+  for (const preset of Object.values(GIF_QUALITY_PRESETS)) {
+    assert.equal(preset.maxColors, 255);
+  }
+});
+
 test('export timing stays inside the selection and preserves rounded duration', () => {
   const cases = [
     [0, 1.01, 12, 1],
