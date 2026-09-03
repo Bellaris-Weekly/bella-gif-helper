@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         贝报 GIF 助手
 // @namespace    https://www.bk0717.com/
-// @version      1.4.14
+// @version      1.4.15
 // @description  B站直播回溯、视频框选录制与 GIF 编辑
 // @author       贝极星周报
 // @homepageURL  https://github.com/Bellaris-Weekly/bella-gif-helper
@@ -2174,6 +2174,7 @@
   const PANEL_GEOMETRY_KEY = 'biliGifMakerPanelGeometry';
   const EXPORT_PREFERENCES_KEY = 'biliGifMakerExportPreferencesV1';
   const SHORTCUT_KEY = 'biliGifMakerShortcutV1';
+  const ASPECT_SQUARE_KEY = 'biliGifMakerAspectSquareV1';
   const UI_SAFE_MARGIN = 14;
   const frameCompositor = createFrameCompositor();
     const state = {
@@ -2207,7 +2208,7 @@
     recording: null,
     clip: null,
     editorCrop: { x: 0, y: 0, w: 1, h: 1 },
-    aspectSquare: true,
+    aspectSquare: readAspectSquarePreference(),
     trimStart: 0,
     trimEnd: 0,
     trimPreviewToken: 0,
@@ -3600,6 +3601,19 @@
     return Array.from(select?.options || []).some((option) => option.value === value);
   }
 
+  function readAspectSquarePreference() {
+    try {
+      const raw = localStorage.getItem(ASPECT_SQUARE_KEY);
+      if (raw === '0') return false;
+      if (raw === '1') return true;
+    } catch (_) { }
+    return true;
+  }
+
+  function saveAspectSquarePreference(value) {
+    try { localStorage.setItem(ASPECT_SQUARE_KEY, value ? '1' : '0'); } catch (_) { }
+  }
+
   function restoreExportPreferences() {
     try {
       const saved = JSON.parse(localStorage.getItem(EXPORT_PREFERENCES_KEY) || '{}');
@@ -4935,7 +4949,7 @@
       el.scrubVideo.load();
     } catch (_) { }
     state.editorCrop = { x: 0, y: 0, w: 1, h: 1 };
-    state.aspectSquare = true;
+    state.aspectSquare = readAspectSquarePreference();
     state.trimStart = 0;
     state.trimEnd = 0;
     state.textLayers = [];
@@ -5405,8 +5419,8 @@
     state.clip.width = el.clipVideo.videoWidth || metadata.captureWidth;
     state.clip.height = el.clipVideo.videoHeight || metadata.captureHeight;
     state.editorCrop = { x: 0, y: 0, w: 1, h: 1 };
-    state.aspectSquare = true;
-    makeCurrentCropSquare();
+    state.aspectSquare = readAspectSquarePreference();
+    if (state.aspectSquare) makeCurrentCropSquare();
     state.trimStart = clamp(Number(metadata.initialTrimStart) || 0, 0, Math.max(0, state.clip.duration - 0.05));
     state.trimEnd = clamp(
       Number.isFinite(metadata.initialTrimEnd) ? metadata.initialTrimEnd : state.clip.duration,
@@ -5566,6 +5580,7 @@
   function toggleAspectSquare() {
     if (state.mode !== 'edit' || !state.clip) return;
     state.aspectSquare = !state.aspectSquare;
+    saveAspectSquarePreference(state.aspectSquare);
     if (state.aspectSquare) makeCurrentCropSquare();
     updateAspectSquareButton();
     animateCropIntoPreview();
