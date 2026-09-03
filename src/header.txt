@@ -1,0 +1,32 @@
+// ==UserScript==
+// @name         贝报 GIF 助手
+// @namespace    https://www.bk0717.com/
+// @version      1.5.5-beta
+// @description  B站直播回溯、视频框选录制与 GIF 编辑
+// @author       贝极星周报
+// @homepageURL  https://github.com/Bellaris-Weekly/bella-gif-helper
+// @icon         https://i0.hdslb.com/bfs/garb/item/70de4619ce5e8a7b5bbe5c4124aa69353d8102e4.png
+// @license      MIT
+// @downloadURL  https://share.bellaris.fans/bella-gif-helper.user.js
+// @updateURL    https://share.bellaris.fans/bella-gif-helper.user.js
+// @match        https://www.bilibili.com/video/*
+// @match        https://www.bilibili.com/list/*
+// @match        https://www.bilibili.com/bangumi/play/*
+// @match        https://www.bilibili.com/medialist/play/*
+// @match        https://www.bilibili.com/cheese/play/*
+// @match        https://live.bilibili.com/*
+// @match        https://m.bilibili.com/video/*
+// @resource     MODERN_PALETTE_MODULE https://cdn.jsdelivr.net/npm/modern-palette@2.0.0/dist/index.mjs
+// @resource     GIFENC_MODULE https://cdn.jsdelivr.net/npm/gifenc@1.0.3/dist/gifenc.esm.js
+// @resource     GIFSICLE_MODULE https://cdn.jsdelivr.net/npm/gifsicle-wasm-browser@1.5.19/dist/gifsicle.min.js
+// @resource     MEDIABUNNY_MODULE https://cdn.jsdelivr.net/npm/mediabunny@1.55.3/+esm
+// @grant        GM_getResourceText
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        unsafeWindow
+// @run-at       document-start
+// ==/UserScript==
+
+// GIF 调色使用 modern-palette 2.0.0，编码使用 gifenc 1.0.3（MIT License）。
+// GIF 后压缩使用 Gifsicle WASM（Gifsicle GPL-2.0-or-later）。
+// 媒体解复用与解码调度使用 Mediabunny 1.55.3（MPL-2.0 License）。

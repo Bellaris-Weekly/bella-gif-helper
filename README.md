@@ -76,12 +76,14 @@ GM_setValue('biliGifMakerDebugV1', true)
 
 ## 开发验证
 
-运行语法检查与完整测试集：
+源码在 `src/` 下，`bella-gif-helper.user.js` 是构建产物（仍然提交进仓库，方便直接安装与 R2 分发）。改完源码后重新构建并跑完整检查：
 
 ```bash
-node --check bella-gif-helper.user.js
-node --test tests/*.test.js
+npm run build       # 生成 bella-gif-helper.user.js
+npm run verify      # build + node --check + 47 个测试
 ```
+
+推送到 GitHub 后，`sync-r2.yml` 会在上传 R2 前先跑一遍 `verify`，并校验产物与源码一致（防止改了源码忘了重新构建）。
 
 透明圆角 GIF 可使用 Pillow 逐帧检查：
 

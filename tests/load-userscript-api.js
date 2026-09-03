@@ -6,7 +6,10 @@ const vm = require('node:vm');
 
 const userscriptPath = path.join(__dirname, '..', 'bella-gif-helper.user.js');
 const source = fs.readFileSync(userscriptPath, 'utf8');
-const marker = "\n  const IS_LIVE_PAGE = location.hostname === 'live.bilibili.com';";
+// 产物由 esbuild 生成后不再保留源码的精确引号与 const 形态，这里用宽松匹配
+// 定位「库区 / 应用区」的分界声明。T8.1 会把纯函数拆成可 require 的模块，
+// 届时本 vm hack 会被删除。
+const marker = /\b(?:const|var) IS_LIVE_PAGE = location\.hostname === ["']live\.bilibili\.com["'];/;
 const exportNames = [
   'DEFAULT_SHORTCUT',
   'GIF_QUALITY_PRESETS',
@@ -52,10 +55,10 @@ const exportNames = [
   'toVideoOnlyMimeType',
 ];
 
-if (!source.includes(marker)) throw new Error('无法定位用户脚本测试入口。');
+if (!marker.test(source)) throw new Error('无法定位用户脚本测试入口。');
 const injected = source.replace(
   marker,
-  `\n  globalThis.__bellaGifTestApi = { ${exportNames.join(', ')} };\n  return;${marker}`,
+  (match) => `\n  globalThis.__bellaGifTestApi = { ${exportNames.join(', ')} };\n  return;${match}`,
 );
 vm.runInThisContext(injected, { filename: userscriptPath });
 module.exports = globalThis.__bellaGifTestApi;
