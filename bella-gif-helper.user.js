@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         贝报 GIF 助手
 // @namespace    https://www.bk0717.com/
-// @version      1.5.0-beta
+// @version      1.5.1-beta
 // @description  B站直播回溯、视频框选录制与 GIF 编辑
 // @author       贝极星周报
 // @homepageURL  https://github.com/Bellaris-Weekly/bella-gif-helper
@@ -36,7 +36,6 @@
 
   const LIVE_REWIND_BUFFER_SECONDS = 75;
   const LIVE_REWIND_TARGET_SECONDS = 60;
-  const LIVE_CAPTURE_MODE_KEY = 'biliGifMakerLiveCaptureModeV1';
   const LIVE_FRAME_CHANNEL = 'bella-gif-helper-live-frame-v1';
   const GIF_TRANSPARENT_INDEX = 255;
   const TIMELINE_THUMBNAIL_COUNT = 8;
@@ -2072,13 +2071,89 @@
     }
   }
 
+  const PREFS_KEY = 'biliGifMakerPrefsV1';
+  const LEGACY_PREF_KEYS = Object.freeze({
+    launcherPosition: 'biliGifMakerLauncherPositionV1',
+    exportPreferences: 'biliGifMakerExportPreferencesV1',
+    liveCaptureMode: 'biliGifMakerLiveCaptureModeV1',
+    aspectSquare: 'biliGifMakerAspectSquareV1',
+    shortcut: 'biliGifMakerShortcutV1',
+    panelGeometry: 'biliGifMakerPanelGeometry',
+  });
+  const LEGACY_LOCAL_PREF_FIELDS = Object.freeze([
+    'launcherPosition',
+    'exportPreferences',
+    'liveCaptureMode',
+    'aspectSquare',
+  ]);
+  const LEGACY_GM_PREF_FIELDS = Object.freeze(['shortcut', 'panelGeometry']);
+
+  let prefsCache = null;
+
+  function parseLegacyPref(field, raw) {
+    if (raw === null || raw === undefined || raw === '') return undefined;
+    if (field === 'aspectSquare') {
+      if (raw === '0') return false;
+      if (raw === '1') return true;
+      return undefined;
+    }
+    if (field === 'liveCaptureMode') return raw === 'forward' ? 'forward' : 'rewind';
+    if (field === 'shortcut') return typeof raw === 'object' ? raw : undefined;
+    try {
+      const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+    } catch (_) { }
+    return undefined;
+  }
+
+  function migrateLegacyPrefs() {
+    const prefs = prefsCache;
+    if (!prefs) return;
+    const patch = {};
+    for (const field of LEGACY_LOCAL_PREF_FIELDS) {
+      if (field in prefs) continue;
+      let raw = null;
+      try { raw = localStorage.getItem(LEGACY_PREF_KEYS[field]); } catch (_) { continue; }
+      const value = parseLegacyPref(field, raw);
+      if (value !== undefined) patch[field] = value;
+    }
+    for (const field of LEGACY_GM_PREF_FIELDS) {
+      if (field in prefs) continue;
+      let raw = null;
+      try { raw = GM_getValue(LEGACY_PREF_KEYS[field], null); } catch (_) { continue; }
+      const value = parseLegacyPref(field, raw);
+      if (value !== undefined) patch[field] = value;
+    }
+    if (Object.keys(patch).length) writePrefs(patch);
+  }
+
+  function readPrefs() {
+    if (prefsCache) return prefsCache;
+    let prefs = {};
+    try {
+      const stored = GM_getValue(PREFS_KEY, null);
+      if (stored && typeof stored === 'object' && !Array.isArray(stored)) prefs = stored;
+    } catch (_) { }
+    prefsCache = prefs;
+    migrateLegacyPrefs();
+    return prefsCache;
+  }
+
+  function writePrefs(patch) {
+    const prefs = prefsCache || {};
+    Object.assign(prefs, patch);
+    prefsCache = prefs;
+    try { GM_setValue(PREFS_KEY, prefs); } catch (_) { }
+    return prefs;
+  }
+
   const IS_LIVE_PAGE = location.hostname === 'live.bilibili.com';
   const IS_TOP_WINDOW = window.top === window;
   const pageWindow = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
   let initialLiveCaptureMode = 'rewind';
   if (IS_LIVE_PAGE) {
     try {
-      initialLiveCaptureMode = localStorage.getItem(LIVE_CAPTURE_MODE_KEY) === 'forward' ? 'forward' : 'rewind';
+      initialLiveCaptureMode = readPrefs().liveCaptureMode === 'forward' ? 'forward' : 'rewind';
     } catch (_) { }
   }
   const localLiveMediaCollector = IS_LIVE_PAGE
@@ -2170,11 +2245,6 @@
   const EDITOR_BACKGROUND_RESUME_DELAY_MS = 320;
   const TIMELINE_VIEWPORT_MOTION_MS = 220;
   const TIMELINE_THUMBNAIL_REFRESH_DELAY_MS = 1_000;
-  const LAUNCHER_POSITION_KEY = 'biliGifMakerLauncherPositionV1';
-  const PANEL_GEOMETRY_KEY = 'biliGifMakerPanelGeometry';
-  const EXPORT_PREFERENCES_KEY = 'biliGifMakerExportPreferencesV1';
-  const SHORTCUT_KEY = 'biliGifMakerShortcutV1';
-  const ASPECT_SQUARE_KEY = 'biliGifMakerAspectSquareV1';
   const UI_SAFE_MARGIN = 14;
   const frameCompositor = createFrameCompositor();
     const state = {
@@ -3602,39 +3672,29 @@
   }
 
   function readAspectSquarePreference() {
-    try {
-      const raw = localStorage.getItem(ASPECT_SQUARE_KEY);
-      if (raw === '0') return false;
-      if (raw === '1') return true;
-    } catch (_) { }
-    return true;
+    return readPrefs().aspectSquare !== false;
   }
 
   function saveAspectSquarePreference(value) {
-    try { localStorage.setItem(ASPECT_SQUARE_KEY, value ? '1' : '0'); } catch (_) { }
+    writePrefs({ aspectSquare: Boolean(value) });
   }
 
   function restoreExportPreferences() {
-    try {
-      const saved = JSON.parse(localStorage.getItem(EXPORT_PREFERENCES_KEY) || '{}');
-      if (hasSelectValue(el.fpsSelect, String(saved.fps))) el.fpsSelect.value = String(saved.fps);
-      if (hasSelectValue(el.qualitySelect, String(saved.quality))) el.qualitySelect.value = String(saved.quality);
-      if (hasSelectValue(el.cornerRadiusSelect, String(saved.cornerRadius))) {
-        el.cornerRadiusSelect.value = String(saved.cornerRadius);
-      }
-    } catch (_) { }
-  }
-
-  function restoreShortcutPreference() {
-    try {
-      state.shortcut = normalizeShortcut(GM_getValue(SHORTCUT_KEY, null)) || DEFAULT_SHORTCUT;
-    } catch (_) {
-      state.shortcut = DEFAULT_SHORTCUT;
+    const saved = readPrefs().exportPreferences;
+    if (!saved || typeof saved !== 'object') return;
+    if (hasSelectValue(el.fpsSelect, String(saved.fps))) el.fpsSelect.value = String(saved.fps);
+    if (hasSelectValue(el.qualitySelect, String(saved.quality))) el.qualitySelect.value = String(saved.quality);
+    if (hasSelectValue(el.cornerRadiusSelect, String(saved.cornerRadius))) {
+      el.cornerRadiusSelect.value = String(saved.cornerRadius);
     }
   }
 
+  function restoreShortcutPreference() {
+    state.shortcut = normalizeShortcut(readPrefs().shortcut) || DEFAULT_SHORTCUT;
+  }
+
   function saveShortcutPreference() {
-    try { GM_setValue(SHORTCUT_KEY, state.shortcut); } catch (_) { }
+    writePrefs({ shortcut: state.shortcut });
   }
 
   function renderShortcutSetting() {
@@ -3682,13 +3742,12 @@
 
   function saveExportPreference(input) {
     if (!input || !['fpsSelect', 'qualitySelect', 'cornerRadiusSelect'].includes(input.id)) return;
-    try {
-      const saved = JSON.parse(localStorage.getItem(EXPORT_PREFERENCES_KEY) || '{}');
-      if (input === el.fpsSelect) saved.fps = input.value;
-      if (input === el.qualitySelect) saved.quality = input.value;
-      if (input === el.cornerRadiusSelect) saved.cornerRadius = input.value;
-      localStorage.setItem(EXPORT_PREFERENCES_KEY, JSON.stringify(saved));
-    } catch (_) { }
+    const current = readPrefs().exportPreferences;
+    const saved = current && typeof current === 'object' ? { ...current } : {};
+    if (input === el.fpsSelect) saved.fps = input.value;
+    if (input === el.qualitySelect) saved.quality = input.value;
+    if (input === el.cornerRadiusSelect) saved.cornerRadius = input.value;
+    writePrefs({ exportPreferences: saved });
   }
 
   function pointInRect(x, y, rect) {
@@ -3994,25 +4053,16 @@
     el.launcher.style.top = `${Math.round(pos.top)}px`;
     el.launcher.style.right = 'auto';
     el.launcher.style.bottom = 'auto';
-    if (save) {
-      try {
-        localStorage.setItem(LAUNCHER_POSITION_KEY, JSON.stringify(pos));
-      } catch (_) { }
-    }
+    if (save) writePrefs({ launcherPosition: pos });
   }
 
   function restoreLauncherPosition() {
     let restored = false;
-    try {
-      const raw = localStorage.getItem(LAUNCHER_POSITION_KEY);
-      if (raw) {
-        const pos = JSON.parse(raw);
-        if (Number.isFinite(pos?.left) && Number.isFinite(pos?.top)) {
-          applyLauncherPosition(pos.left, pos.top);
-          restored = true;
-        }
-      }
-    } catch (_) { }
+    const pos = readPrefs().launcherPosition;
+    if (pos && Number.isFinite(pos.left) && Number.isFinite(pos.top)) {
+      applyLauncherPosition(pos.left, pos.top);
+      restored = true;
+    }
     if (!restored) {
       const rect = el.launcher.getBoundingClientRect();
       applyLauncherPosition(rect.left, rect.top);
@@ -4342,12 +4392,10 @@
   }
 
   function readSavedPanelGeometry() {
-    try {
-      const saved = GM_getValue(PANEL_GEOMETRY_KEY, null);
-      if (saved && ['left', 'top', 'width', 'height'].every((key) => Number.isFinite(saved[key]))) {
-        return saved;
-      }
-    } catch (_) { }
+    const saved = readPrefs().panelGeometry;
+    if (saved && ['left', 'top', 'width', 'height'].every((key) => Number.isFinite(saved[key]))) {
+      return saved;
+    }
     return null;
   }
 
@@ -4359,7 +4407,7 @@
       height: Math.round(geometry.height),
     };
     state.preferredPanelGeometry = saved;
-    try { GM_setValue(PANEL_GEOMETRY_KEY, saved); } catch (_) { }
+    writePrefs({ panelGeometry: saved });
   }
 
   function panelGeometryFromRect(rect = el.panel.getBoundingClientRect()) {
@@ -4841,7 +4889,7 @@
   function setLiveCaptureMode(mode) {
     if (!IS_LIVE_PAGE || (mode !== 'rewind' && mode !== 'forward')) return;
     state.liveCaptureMode = mode;
-    try { localStorage.setItem(LIVE_CAPTURE_MODE_KEY, mode); } catch (_) { }
+    writePrefs({ liveCaptureMode: mode });
     liveMediaCollector?.setEnabled(mode === 'rewind');
     updateModeUi();
     updateLiveRewindTitle();
