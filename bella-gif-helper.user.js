@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         贝报 GIF 助手
 // @namespace    https://www.bk0717.com/
-// @version      1.5.1-beta
+// @version      1.5.2-beta
 // @description  B站直播回溯、视频框选录制与 GIF 编辑
 // @author       贝极星周报
 // @homepageURL  https://github.com/Bellaris-Weekly/bella-gif-helper
@@ -1109,7 +1109,7 @@
               timestampOffset: Number(this.timestampOffset) || 0,
             });
             if (accepted && isActive) notifyStatus(track);
-          } catch (_) { }
+          } catch (error) { debugLog('appendBuffer', error); }
         }
         return originalAppendBuffer.call(this, data);
       };
@@ -1236,7 +1236,7 @@
       try {
         if (useVideoFrames) video.cancelVideoFrameCallback?.(callbackId);
         else cancelAnimationFrame(callbackId);
-      } catch (_) { }
+      } catch (error) { debugLog('startVideoFramePump.stop', error); }
       callbackId = 0;
     };
     const schedule = () => {
@@ -1344,7 +1344,7 @@
     recording.stopFramePump?.();
     if (recording.timerId) clearInterval(recording.timerId);
     if (recording.maxTimerId) clearTimeout(recording.maxTimerId);
-    try { recording.stream?.getTracks().forEach((track) => track.stop()); } catch (_) { }
+    try { recording.stream?.getTracks().forEach((track) => track.stop()); } catch (error) { debugLog('cleanupRecordingResources', error); }
   }
 
   function createCanvasRecording(video, selection, {
@@ -1385,8 +1385,8 @@
       recording.sourceEnd = Number(video.currentTime)
         || recording.snapshot.sourceStart + recording.measuredDuration;
       cleanupRecordingResources(recording);
-      try { video.playbackRate = recording.snapshot.playbackRate; } catch (_) { }
-      try { video.pause(); } catch (_) { }
+      try { video.playbackRate = recording.snapshot.playbackRate; } catch (error) { debugLog('createCanvasRecording.finish', error); }
+      try { video.pause(); } catch (error) { debugLog('createCanvasRecording.finish', error); }
       void onComplete?.(recording);
     };
 
@@ -1398,12 +1398,12 @@
       if (recording.maxTimerId) clearTimeout(recording.maxTimerId);
       recording.stopFramePump = null;
       recording.maxTimerId = 0;
-      try { video.pause(); } catch (_) { }
+      try { video.pause(); } catch (error) { debugLog('createCanvasRecording', error); }
       onStopping?.(recording);
       try {
         if (recorder.state === 'inactive') finish();
         else {
-          try { recorder.requestData(); } catch (_) { }
+          try { recorder.requestData(); } catch (error) { debugLog('createCanvasRecording', error); }
           recorder.stop();
         }
       } catch (error) {
@@ -1439,8 +1439,8 @@
       if (recording.completed) return;
       recording.completed = true;
       cleanupRecordingResources(recording);
-      try { video.playbackRate = recording.snapshot.playbackRate; } catch (_) { }
-      try { recorder.stop(); } catch (_) { }
+      try { video.playbackRate = recording.snapshot.playbackRate; } catch (error) { debugLog('createCanvasRecording', error); }
+      try { recorder.stop(); } catch (error) { debugLog('createCanvasRecording', error); }
     };
     recorder.addEventListener('dataavailable', (event) => {
       if (event.data?.size > 0) recording.chunks.push(event.data);
@@ -1796,7 +1796,7 @@
             const nested = findFrameElement(target, frame.contentDocument);
             if (nested) return nested;
           }
-        } catch (_) { }
+        } catch (error) { debugLog('findFrameElement', error); }
       }
       return null;
     };
@@ -1880,7 +1880,7 @@
         try {
           post(frame.contentWindow, { action: 'ping' });
           if (frame.contentDocument) pingDocumentFrames(frame.contentDocument);
-        } catch (_) { }
+        } catch (error) { debugLog('pingDocumentFrames', error); }
       }
     };
 
@@ -1995,7 +1995,7 @@
           reading = true;
           const abort = () => {
             disposed = true;
-            try { input.dispose(); } catch (_) { }
+            try { input.dispose(); } catch (error) { debugLog('abort', error); }
           };
           signal?.addEventListener('abort', abort, { once: true });
           let index = 0;
@@ -2023,12 +2023,12 @@
                 }
 
                 if (index >= times.length) break;
-                try { heldSample?.close(); } catch (_) { }
+                try { heldSample?.close(); } catch (error) { debugLog('createExportFrameSourceFromMediaApi', error); }
                 heldSample = sample;
                 sampleHeld = true;
               } finally {
                 if (!sampleHeld) {
-                  try { sample.close(); } catch (_) { }
+                  try { sample.close(); } catch (error) { debugLog('createExportFrameSourceFromMediaApi', error); }
                 }
               }
             }
@@ -2054,7 +2054,7 @@
             if (signal?.aborted) throw new CancelledError();
             throw error;
           } finally {
-            try { heldSample?.close(); } catch (_) { }
+            try { heldSample?.close(); } catch (error) { debugLog('createExportFrameSourceFromMediaApi', error); }
             reading = false;
             signal?.removeEventListener('abort', abort);
           }
@@ -2062,16 +2062,29 @@
         dispose() {
           if (disposed) return;
           disposed = true;
-          try { input.dispose(); } catch (_) { }
+          try { input.dispose(); } catch (error) { debugLog('createExportFrameSourceFromMediaApi', error); }
         },
       });
     } catch (error) {
-      try { input.dispose(); } catch (_) { }
+      try { input.dispose(); } catch (error) { debugLog('createExportFrameSourceFromMediaApi', error); }
       throw error;
     }
   }
 
   const PREFS_KEY = 'biliGifMakerPrefsV1';
+  const DEBUG = (() => {
+    try {
+      return GM_getValue('biliGifMakerDebugV1', false) === true;
+    } catch (_) {
+      return false;
+    }
+  })();
+
+  function debugLog(scope, error) {
+    if (!DEBUG) return;
+    try { console.warn(`[bella-gif][${scope}]`, error); } catch (_) { }
+  }
+
   const LEGACY_PREF_KEYS = Object.freeze({
     launcherPosition: 'biliGifMakerLauncherPositionV1',
     exportPreferences: 'biliGifMakerExportPreferencesV1',
@@ -2102,7 +2115,7 @@
     try {
       const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
-    } catch (_) { }
+    } catch (error) { debugLog('parseLegacyPref', error); }
     return undefined;
   }
 
@@ -2133,7 +2146,7 @@
     try {
       const stored = GM_getValue(PREFS_KEY, null);
       if (stored && typeof stored === 'object' && !Array.isArray(stored)) prefs = stored;
-    } catch (_) { }
+    } catch (error) { debugLog('readPrefs', error); }
     prefsCache = prefs;
     migrateLegacyPrefs();
     return prefsCache;
@@ -2143,7 +2156,7 @@
     const prefs = prefsCache || {};
     Object.assign(prefs, patch);
     prefsCache = prefs;
-    try { GM_setValue(PREFS_KEY, prefs); } catch (_) { }
+    try { GM_setValue(PREFS_KEY, prefs); } catch (error) { debugLog('writePrefs', error); }
     return prefs;
   }
 
@@ -2154,7 +2167,7 @@
   if (IS_LIVE_PAGE) {
     try {
       initialLiveCaptureMode = readPrefs().liveCaptureMode === 'forward' ? 'forward' : 'rewind';
-    } catch (_) { }
+    } catch (error) { debugLog('liveCaptureModeBootstrap', error); }
   }
   const localLiveMediaCollector = IS_LIVE_PAGE
     ? installLiveMediaCollector(pageWindow, initialLiveCaptureMode === 'rewind')
@@ -3800,7 +3813,7 @@
     let top = localRect.top;
     while (ownerDocument && ownerDocument !== document) {
       let frame = null;
-      try { frame = ownerDocument.defaultView?.frameElement || null; } catch (_) { }
+      try { frame = ownerDocument.defaultView?.frameElement || null; } catch (error) { debugLog('getVideoViewportRect', error); }
       if (!frame) return null;
       const frameRect = frame.getBoundingClientRect();
       left += frameRect.left;
@@ -3913,7 +3926,7 @@
     const collectVideos = (rootDocument) => {
       videos.push(...rootDocument.querySelectorAll('video'));
       for (const frame of rootDocument.querySelectorAll('iframe')) {
-        try { if (frame.contentDocument) collectVideos(frame.contentDocument); } catch (_) { }
+        try { if (frame.contentDocument) collectVideos(frame.contentDocument); } catch (error) { debugLog('collectVideos', error); }
       }
     };
     collectVideos(document);
@@ -4101,7 +4114,7 @@
     if (!drag || drag.pointerId !== event.pointerId) return;
     state.launcherDrag = null;
     el.launcher.classList.remove('dragging');
-    try { el.launcher.releasePointerCapture?.(drag.pointerId); } catch (_) { }
+    try { el.launcher.releasePointerCapture?.(drag.pointerId); } catch (error) { debugLog('finishLauncherPointer', error); }
     if (drag.moved) {
       const rect = el.launcher.getBoundingClientRect();
       applyLauncherPosition(rect.left, rect.top, { save: true });
@@ -4517,7 +4530,7 @@
     const drag = state.panelDrag;
     if (!drag || (event && drag.pointerId !== event.pointerId)) return;
     state.panelDrag = null;
-    try { el.header.releasePointerCapture?.(drag.pointerId); } catch (_) { }
+    try { el.header.releasePointerCapture?.(drag.pointerId); } catch (error) { debugLog('finishPanelHeaderDrag', error); }
     const geometry = constrainPanelGeometry(
       panelGeometryFromRect(),
       window.innerWidth,
@@ -4565,7 +4578,7 @@
     const resize = state.panelResize;
     if (!resize || resize.pointerId !== event.pointerId) return;
     state.panelResize = null;
-    try { event.currentTarget.releasePointerCapture?.(resize.pointerId); } catch (_) { }
+    try { event.currentTarget.releasePointerCapture?.(resize.pointerId); } catch (error) { debugLog('finishPanelResize', error); }
     const geometry = cancelled ? resize.startRect : panelGeometryFromRect();
     applyPanelGeometry(geometry);
     schedulePanelContentLayout();
@@ -4683,11 +4696,11 @@
       clip.attachments.delete(video);
       try {
         if (attachment.sourceBuffer?.updating) attachment.sourceBuffer.abort();
-      } catch (_) { }
+      } catch (error) { debugLog('cleanupClipAttachment', error); }
     }
-    try { video.pause(); } catch (_) { }
+    try { video.pause(); } catch (error) { debugLog('cleanupClipAttachment', error); }
     video.removeAttribute('src');
-    try { video.load(); } catch (_) { }
+    try { video.load(); } catch (error) { debugLog('cleanupClipAttachment', error); }
     if (attachment) URL.revokeObjectURL(attachment.url);
   }
 
@@ -4774,7 +4787,7 @@
 
   function closeImageBitmaps(frames) {
     for (const frame of frames || []) {
-      try { frame.close(); } catch (_) { }
+      try { frame.close(); } catch (error) { debugLog('closeImageBitmaps', error); }
     }
   }
 
@@ -4808,7 +4821,7 @@
             ...target,
           });
         } finally {
-          try { frame.close(); } catch (_) { }
+          try { frame.close(); } catch (error) { debugLog('capturePaletteFrames', error); }
         }
       }
       return samples;
@@ -4995,7 +5008,7 @@
       el.scrubVideo.classList.remove('active');
       el.scrubVideo.removeAttribute('src');
       el.scrubVideo.load();
-    } catch (_) { }
+    } catch (error) { debugLog('disposeClip', error); }
     state.editorCrop = { x: 0, y: 0, w: 1, h: 1 };
     state.aspectSquare = readAspectSquarePreference();
     state.trimStart = 0;
@@ -5276,7 +5289,7 @@
     const session = state.pageAdjustSession;
     if (!session || (event && session.pointerId !== event.pointerId)) return;
     state.pageAdjustSession = null;
-    try { el.pageSelectionMarker.releasePointerCapture?.(session.pointerId); } catch (_) { }
+    try { el.pageSelectionMarker.releasePointerCapture?.(session.pointerId); } catch (error) { debugLog('finishPageMarkerAdjustment', error); }
     updatePageSelectionUi();
   }
 
@@ -5454,8 +5467,8 @@
         video.currentTime = 0;
         return video.duration;
       }
-    } catch (_) { }
-    try { video.currentTime = 0; } catch (_) { }
+    } catch (error) { debugLog('resolveRecordedDuration', error); }
+    try { video.currentTime = 0; } catch (error) { debugLog('resolveRecordedDuration', error); }
     return measuredDuration;
   }
 
@@ -5514,8 +5527,8 @@
   async function finalizeRecording(recording) {
     if (state.recording !== recording) return;
     cleanupRecordingResources(recording);
-    try { recording.video.playbackRate = recording.snapshot.playbackRate; } catch (_) { }
-    try { recording.video.pause(); } catch (_) { }
+    try { recording.video.playbackRate = recording.snapshot.playbackRate; } catch (error) { debugLog('finalizeRecording', error); }
+    try { recording.video.pause(); } catch (error) { debugLog('finalizeRecording', error); }
 
     const measuredDuration = Number.isFinite(recording.measuredDuration)
       ? Math.max(0, recording.measuredDuration)
@@ -5573,7 +5586,7 @@
   }
 
   function setupEditorForClip() {
-    try { el.clipVideo.currentTime = 0; } catch (_) { }
+    try { el.clipVideo.currentTime = 0; } catch (error) { debugLog('setupEditorForClip', error); }
     state.textLayers = [];
     state.activeTextId = null;
     state.timelineViewStart = 0;
@@ -5734,7 +5747,7 @@
     const session = state.editorCropSession;
     if (!session || (event && session.pointerId !== event.pointerId)) return;
     state.editorCropSession = null;
-    try { el.editorCropBox.releasePointerCapture?.(session.pointerId); } catch (_) { }
+    try { el.editorCropBox.releasePointerCapture?.(session.pointerId); } catch (error) { debugLog('finishEditorCropAdjustment', error); }
     animateCropIntoPreview(session.fittedLayout);
   }
 
@@ -5770,7 +5783,7 @@
     el.trimSummary.textContent = `${(state.trimEnd - state.trimStart).toFixed(2)} 秒`;
 
     if (seekTarget !== null && Number.isFinite(seekTarget)) {
-      try { el.clipVideo.currentTime = clamp(seekTarget, 0, duration); } catch (_) { }
+      try { el.clipVideo.currentTime = clamp(seekTarget, 0, duration); } catch (error) { debugLog('updateTrimUi', error); }
     }
     updateTimelinePlayhead();
   }
@@ -5817,7 +5830,7 @@
   function showTimelineHandlePreview(time) {
     if (!state.clip || !el.scrubVideo) return;
     const target = clamp(Number(time) || 0, 0, Math.max(0, state.clip.duration - 0.001));
-    try { el.scrubVideo.pause(); } catch (_) { }
+    try { el.scrubVideo.pause(); } catch (error) { debugLog('showTimelineHandlePreview', error); }
     el.scrubVideo.classList.add('active');
     queueTimelinePreview(target, 'handle');
   }
@@ -5935,7 +5948,7 @@
     state.timelineResumePlayback = Boolean(state.trimPreviewCleanup && !el.clipVideo.paused);
     stopTrimPreview();
     cancelTimelinePreview();
-    try { el.scrubVideo.pause(); } catch (_) { }
+    try { el.scrubVideo.pause(); } catch (error) { debugLog('handleTimelinePointerDown', error); }
     state.timelineSettleToken += 1;
     const handleType = event.target?.dataset?.timelineHandle;
     if (handleType === 'start' || handleType === 'end') cancelTimelineThumbnailRefresh();
@@ -5973,7 +5986,7 @@
     const shouldResumePlayback = state.timelineResumePlayback;
     state.timelineResumePlayback = false;
     state.timelineDrag = null;
-    try { el.timelineTrack.releasePointerCapture?.(drag.pointerId); } catch (_) { }
+    try { el.timelineTrack.releasePointerCapture?.(drag.pointerId); } catch (error) { debugLog('finishTimelineDrag', error); }
     if (Number.isFinite(target)) {
       cancelTimelinePreview();
       settleTimelinePreview(
@@ -5994,12 +6007,12 @@
     if (typeof state.trimPreviewCleanup === 'function') state.trimPreviewCleanup();
     state.trimPreviewCleanup = null;
     if (state.previewSnapshot) {
-      try { el.clipVideo.playbackRate = state.previewSnapshot.playbackRate; } catch (_) { }
+      try { el.clipVideo.playbackRate = state.previewSnapshot.playbackRate; } catch (error) { debugLog('stopTrimPreview', error); }
       state.previewSnapshot = null;
     }
     el.previewTrimBtn.textContent = '▶ 播放';
     if (!keepPosition && state.clip) {
-      try { el.clipVideo.currentTime = state.trimStart; } catch (_) { }
+      try { el.clipVideo.currentTime = state.trimStart; } catch (error) { debugLog('stopTrimPreview', error); }
       updateTimelinePlayhead();
     }
     renderExportPreviewFrame();
@@ -6060,7 +6073,7 @@
       state.previewSnapshot = { playbackRate: el.clipVideo.playbackRate };
       el.clipVideo.addEventListener('timeupdate', check);
       state.trimPreviewCleanup = () => {
-        try { el.clipVideo.pause(); } catch (_) { }
+        try { el.clipVideo.pause(); } catch (error) { debugLog('previewTrimmedClip', error); }
         stop();
       };
       el.previewTrimBtn.textContent = '⏸ 暂停';
@@ -6305,7 +6318,7 @@
     if (!drag || (event && drag.pointerId !== event.pointerId)) return;
     state.textLayerDrag = null;
     drag.item.classList.remove('dragging');
-    try { drag.item.releasePointerCapture?.(drag.pointerId); } catch (_) { }
+    try { drag.item.releasePointerCapture?.(drag.pointerId); } catch (error) { debugLog('finishTextLayerDrag', error); }
     scheduleEditorPreviewRender();
   }
 
@@ -6320,7 +6333,7 @@
       };
       const timeout = setTimeout(done, 350);
       if (typeof video.requestVideoFrameCallback === 'function') {
-        try { video.requestVideoFrameCallback(done); } catch (_) { }
+        try { video.requestVideoFrameCallback(done); } catch (error) { debugLog('waitForFreshFrame', error); }
       }
       requestAnimationFrame(() => requestAnimationFrame(done));
     });
@@ -6956,14 +6969,14 @@
             }
             if (!waitingForCapacity) {
               waitingForCapacity = true;
-              try { sourceVideo?.pause(); } catch (_) { }
+              try { sourceVideo?.pause(); } catch (error) { debugLog('createGifEncodingSession', error); }
             }
             await Promise.race(activePromises);
           }
           throw new CancelledError();
         } finally {
           if (!posted) {
-            try { frame.close(); } catch (_) { }
+            try { frame.close(); } catch (error) { debugLog('createGifEncodingSession', error); }
           }
         }
       },
@@ -7280,7 +7293,7 @@
     } finally {
       encodingSession?.destroy();
       for (const frame of pendingPaletteFrames) {
-        try { frame.close(); } catch (_) { }
+        try { frame.close(); } catch (error) { debugLog('generateGif', error); }
       }
       if (state.exportEncodingSession === encodingSession) state.exportEncodingSession = null;
       if (state.exportAbortController === exportController) state.exportAbortController = null;
