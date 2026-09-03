@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         贝报 GIF 助手
 // @namespace    https://www.bk0717.com/
-// @version      1.5.3-beta
+// @version      1.5.4-beta
 // @description  B站直播回溯、视频框选录制与 GIF 编辑
 // @author       贝极星周报
 // @homepageURL  https://github.com/Bellaris-Weekly/bella-gif-helper
@@ -3590,7 +3590,6 @@
     scrubVideo: $('#scrubVideo'),
     previewCanvas: $('#previewCanvas'),
     aspectSquareBtn: $('#aspectSquareBtn'),
-    editorOverlay: $('#editorOverlay'),
     editorBoundary: $('#editorBoundary'),
     editorCropBox: $('#editorCropBox'),
     cropSizeBadge: $('#cropSizeBadge'),
@@ -5387,6 +5386,33 @@
     if (mapping) positionSelectionToolbar(selectionToScreenRect(recording.selection, mapping));
   }
 
+  function beginRecordingSession(recording, { maxTimer = false } = {}) {
+    state.recording = recording;
+    state.mode = 'recording';
+    state.busy = false;
+    el.panel.classList.add('hidden');
+    updateModeUi();
+    setStatus('');
+    recording.timerId = setInterval(() => updateRecordingUi(recording), 200);
+    if (maxTimer) {
+      recording.maxTimerId = setTimeout(() => stopRecording('limit'), MAX_RECORD_SECONDS * 1000);
+    }
+  }
+
+  function abortRecordingSession(error) {
+    const recording = state.recording;
+    if (recording) {
+      recording.destroy?.();
+      if (recording.timerId) clearInterval(recording.timerId);
+      if (recording.maxTimerId) clearTimeout(recording.maxTimerId);
+    }
+    state.recording = null;
+    state.busy = false;
+    state.mode = 'capture';
+    updateModeUi();
+    setStatus(friendlyError(error), 'error');
+  }
+
   async function startRemoteRecording(video) {
     const recordingId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const recordingSelection = { ...state.pageSelection };
@@ -5432,20 +5458,9 @@
       recording.captureHeight = Number(result.captureHeight) || recording.captureHeight;
       recording.liveWallClockStartMs = Number(result.liveWallClockStartMs) || recording.liveWallClockStartMs;
       recording.liveIdentity = result.liveIdentity || recording.liveIdentity;
-      state.recording = recording;
-      state.mode = 'recording';
-      state.busy = false;
-      el.panel.classList.add('hidden');
-      updateModeUi();
-      setStatus('');
-      recording.timerId = setInterval(() => updateRecordingUi(recording), 200);
-      recording.maxTimerId = setTimeout(() => stopRecording('limit'), MAX_RECORD_SECONDS * 1000);
+      beginRecordingSession(recording, { maxTimer: true });
     } catch (error) {
-      state.busy = false;
-      state.recording = null;
-      state.mode = 'capture';
-      updateModeUi();
-      setStatus(friendlyError(error), 'error');
+      abortRecordingSession(error);
     }
   }
 
@@ -5480,19 +5495,10 @@
       });
       recording.liveWallClockStartMs = IS_LIVE_PAGE ? Date.now() : null;
       recording.liveIdentity = IS_LIVE_PAGE ? getLiveRoomIdentity() : null;
-      state.recording = recording;
-      state.mode = 'recording';
-      el.panel.classList.add('hidden');
-      updateModeUi();
-      setStatus('');
-      recording.timerId = setInterval(() => updateRecordingUi(recording), 200);
+      beginRecordingSession(recording);
       await recording.start();
     } catch (error) {
-      state.recording?.destroy?.();
-      state.recording = null;
-      state.mode = 'capture';
-      updateModeUi();
-      setStatus(friendlyError(error), 'error');
+      abortRecordingSession(error);
     }
   }
 
@@ -5516,31 +5522,20 @@
   function waitForEvent(target, eventName, timeoutMs = 8_000) {
     return new Promise((resolve, reject) => {
       let settled = false;
-      const done = (event) => {
+      let timer = 0;
+      const settle = (fn, value) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        target.removeEventListener(eventName, done);
-        target.removeEventListener('error', fail);
-        resolve(event);
+        target.removeEventListener(eventName, onEvent);
+        target.removeEventListener('error', onError);
+        fn(value);
       };
-      const fail = () => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        target.removeEventListener(eventName, done);
-        target.removeEventListener('error', fail);
-        reject(new Error('片段加载失败。'));
-      };
-      const timer = setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        target.removeEventListener(eventName, done);
-        target.removeEventListener('error', fail);
-        reject(new Error('片段加载超时。'));
-      }, timeoutMs);
-      target.addEventListener(eventName, done, { once: true });
-      target.addEventListener('error', fail, { once: true });
+      const onEvent = (event) => settle(resolve, event);
+      const onError = () => settle(reject, new Error('片段加载失败。'));
+      timer = setTimeout(() => settle(reject, new Error('片段加载超时。')), timeoutMs);
+      target.addEventListener(eventName, onEvent, { once: true });
+      target.addEventListener('error', onError, { once: true });
     });
   }
 
