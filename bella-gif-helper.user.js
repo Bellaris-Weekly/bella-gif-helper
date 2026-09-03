@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         贝报 GIF 助手
 // @namespace    https://www.bk0717.com/
-// @version      1.5.2-beta
+// @version      1.5.3-beta
 // @description  B站直播回溯、视频框选录制与 GIF 编辑
 // @author       贝极星周报
 // @homepageURL  https://github.com/Bellaris-Weekly/bella-gif-helper
@@ -2305,6 +2305,7 @@
     panelResize: null,
     panelLayoutRaf: 0,
     preferredPanelGeometry: null,
+    aspectSquareButtonMetrics: null,
     shortcut: DEFAULT_SHORTCUT,
     shortcutRecording: false,
     suppressLauncherClick: false,
@@ -4082,6 +4083,34 @@
     }
   }
 
+  function createFrameScheduler(handler) {
+    let pending = null;
+    let rafId = 0;
+    const run = () => {
+      rafId = 0;
+      const next = pending;
+      pending = null;
+      if (next) handler(next);
+    };
+    return {
+      schedule(event) {
+        pending = event;
+        if (rafId) return;
+        rafId = requestAnimationFrame(run);
+      },
+      flush() {
+        if (rafId) cancelAnimationFrame(rafId);
+        rafId = 0;
+        run();
+      },
+      cancel() {
+        if (rafId) cancelAnimationFrame(rafId);
+        rafId = 0;
+        pending = null;
+      },
+    };
+  }
+
   function handleLauncherPointerDown(event) {
     if (event.button !== undefined && event.button !== 0) return;
     const rect = el.launcher.getBoundingClientRect();
@@ -4098,6 +4127,14 @@
     event.preventDefault();
   }
 
+  const launcherMoveScheduler = createFrameScheduler(applyLauncherPointerMove);
+
+  function applyLauncherPointerMove(event) {
+    const drag = state.launcherDrag;
+    if (!drag) return;
+    applyLauncherPosition(drag.left + event.clientX - drag.startX, drag.top + event.clientY - drag.startY);
+  }
+
   function handleLauncherPointerMove(event) {
     const drag = state.launcherDrag;
     if (!drag || drag.pointerId !== event.pointerId) return;
@@ -4105,13 +4142,14 @@
     const dy = event.clientY - drag.startY;
     if (!drag.moved && Math.hypot(dx, dy) >= 5) drag.moved = true;
     if (!drag.moved) return;
-    applyLauncherPosition(drag.left + dx, drag.top + dy);
     event.preventDefault();
+    launcherMoveScheduler.schedule(event);
   }
 
   function finishLauncherPointer(event, cancelled = false) {
     const drag = state.launcherDrag;
     if (!drag || drag.pointerId !== event.pointerId) return;
+    launcherMoveScheduler.flush();
     state.launcherDrag = null;
     el.launcher.classList.remove('dragging');
     try { el.launcher.releasePointerCapture?.(drag.pointerId); } catch (error) { debugLog('finishLauncherPointer', error); }
@@ -4166,13 +4204,27 @@
     };
   }
 
+  function readAspectSquareButtonMetrics(button) {
+    const cached = state.aspectSquareButtonMetrics;
+    if (cached) return cached;
+    const metrics = {
+      width: button.offsetWidth || 40,
+      height: button.offsetHeight || 28,
+    };
+    state.aspectSquareButtonMetrics = metrics;
+    return metrics;
+  }
+
+  function invalidateAspectSquareButtonMetrics() {
+    state.aspectSquareButtonMetrics = null;
+  }
+
   function positionAspectSquareButton(crop) {
     const wrap = el.editorPreviewWrap;
     const button = el.aspectSquareBtn;
     if (!wrap || !button) return;
-    const buttonWidth = button.offsetWidth || 40;
-    const buttonHeight = button.offsetHeight || 28;
-    const position = calculateInnerOverlayPosition(crop, buttonWidth, buttonHeight);
+    const metrics = readAspectSquareButtonMetrics(button);
+    const position = calculateInnerOverlayPosition(crop, metrics.width, metrics.height);
     button.style.left = `${position.left}px`;
     button.style.top = `${position.top}px`;
     button.style.right = 'auto';
@@ -4449,6 +4501,7 @@
     el.panel.style.width = `${geometry.width}px`;
     el.panel.style.height = `${geometry.height}px`;
     el.panel.style.maxHeight = `${Math.max(1, window.innerHeight - UI_SAFE_MARGIN * 2)}px`;
+    invalidateAspectSquareButtonMetrics();
   }
 
   function clearDesktopPanelGeometry() {
@@ -4507,11 +4560,13 @@
     event.preventDefault();
   }
 
-  function handlePanelHeaderPointerMove(event) {
+  const panelHeaderMoveScheduler = createFrameScheduler(applyPanelHeaderPointerMove);
+
+  function applyPanelHeaderPointerMove(event) {
     const drag = state.panelDrag;
-    if (!drag || drag.pointerId !== event.pointerId) return;
+    if (!drag) return;
     const rect = el.panel.getBoundingClientRect();
-    const geometry = constrainPanelGeometry(
+    applyPanelGeometry(constrainPanelGeometry(
       {
         left: drag.startLeft + event.clientX - drag.startX,
         top: drag.startTop + event.clientY - drag.startY,
@@ -4521,14 +4576,20 @@
       window.innerWidth,
       window.innerHeight,
       UI_SAFE_MARGIN,
-    );
-    applyPanelGeometry(geometry);
+    ));
+  }
+
+  function handlePanelHeaderPointerMove(event) {
+    const drag = state.panelDrag;
+    if (!drag || drag.pointerId !== event.pointerId) return;
     event.preventDefault();
+    panelHeaderMoveScheduler.schedule(event);
   }
 
   function finishPanelHeaderDrag(event) {
     const drag = state.panelDrag;
     if (!drag || (event && drag.pointerId !== event.pointerId)) return;
+    panelHeaderMoveScheduler.flush();
     state.panelDrag = null;
     try { el.header.releasePointerCapture?.(drag.pointerId); } catch (error) { debugLog('finishPanelHeaderDrag', error); }
     const geometry = constrainPanelGeometry(
@@ -4557,10 +4618,12 @@
     event.stopPropagation();
   }
 
-  function handlePanelResizePointerMove(event) {
+  const panelResizeMoveScheduler = createFrameScheduler(applyPanelResizePointerMove);
+
+  function applyPanelResizePointerMove(event) {
     const resize = state.panelResize;
-    if (!resize || resize.pointerId !== event.pointerId) return;
-    const geometry = calculatePanelResize(
+    if (!resize) return;
+    applyPanelGeometry(calculatePanelResize(
       resize.startRect,
       resize.handle,
       event.clientX - resize.startX,
@@ -4568,15 +4631,21 @@
       window.innerWidth,
       window.innerHeight,
       UI_SAFE_MARGIN,
-    );
-    applyPanelGeometry(geometry);
+    ));
     schedulePanelContentLayout();
+  }
+
+  function handlePanelResizePointerMove(event) {
+    const resize = state.panelResize;
+    if (!resize || resize.pointerId !== event.pointerId) return;
     event.preventDefault();
+    panelResizeMoveScheduler.schedule(event);
   }
 
   function finishPanelResize(event, cancelled = false) {
     const resize = state.panelResize;
     if (!resize || resize.pointerId !== event.pointerId) return;
+    panelResizeMoveScheduler.flush();
     state.panelResize = null;
     try { event.currentTarget.releasePointerCapture?.(resize.pointerId); } catch (error) { debugLog('finishPanelResize', error); }
     const geometry = cancelled ? resize.startRect : panelGeometryFromRect();
@@ -5189,7 +5258,9 @@
     setPageSelectionBox(normalizeScreenRect(startX, startY, startX, startY));
   }
 
-  function handlePageSelectPointerMove(event) {
+  const pageSelectMoveScheduler = createFrameScheduler(applyPageSelectPointerMove);
+
+  function applyPageSelectPointerMove(event) {
     const session = state.pageSelectionSession;
     if (!session?.drag) return;
     const mapping = session.mapping || updatePageSelectionBoundary();
@@ -5204,10 +5275,17 @@
     ));
   }
 
+  function handlePageSelectPointerMove(event) {
+    const session = state.pageSelectionSession;
+    if (!session?.drag) return;
+    pageSelectMoveScheduler.schedule(event);
+  }
+
   function handlePageSelectPointerUp(event) {
     const session = state.pageSelectionSession;
     if (!session?.drag) return;
-    handlePageSelectPointerMove(event);
+    pageSelectMoveScheduler.cancel();
+    applyPageSelectPointerMove(event);
     const mapping = session.mapping || updatePageSelectionBoundary();
     const rect = normalizeScreenRect(
       session.drag.startX,
@@ -5270,9 +5348,11 @@
     el.pageSelectionMarker.setPointerCapture?.(event.pointerId);
   }
 
-  function handlePageMarkerPointerMove(event) {
+  const pageMarkerMoveScheduler = createFrameScheduler(applyPageMarkerPointerMove);
+
+  function applyPageMarkerPointerMove(event) {
     const session = state.pageAdjustSession;
-    if (!session || session.pointerId !== event.pointerId) return;
+    if (!session) return;
     const dx = event.clientX - session.startX;
     const dy = event.clientY - session.startY;
     const rect = session.type === 'move'
@@ -5282,12 +5362,19 @@
     if (!selection) return;
     state.pageSelection = selection;
     updatePageSelectionUi();
+  }
+
+  function handlePageMarkerPointerMove(event) {
+    const session = state.pageAdjustSession;
+    if (!session || session.pointerId !== event.pointerId) return;
     event.preventDefault();
+    pageMarkerMoveScheduler.schedule(event);
   }
 
   function finishPageMarkerAdjustment(event) {
     const session = state.pageAdjustSession;
     if (!session || (event && session.pointerId !== event.pointerId)) return;
+    pageMarkerMoveScheduler.flush();
     state.pageAdjustSession = null;
     try { el.pageSelectionMarker.releasePointerCapture?.(session.pointerId); } catch (error) { debugLog('finishPageMarkerAdjustment', error); }
     updatePageSelectionUi();
@@ -5725,9 +5812,11 @@
     el.editorCropBox.setPointerCapture?.(event.pointerId);
   }
 
-  function handleEditorCropPointerMove(event) {
+  const editorCropMoveScheduler = createFrameScheduler(applyEditorCropPointerMove);
+
+  function applyEditorCropPointerMove(event) {
     const session = state.editorCropSession;
-    if (!session || session.pointerId !== event.pointerId) return;
+    if (!session) return;
     const dx = event.clientX - session.startX;
     const dy = event.clientY - session.startY;
     const rect = session.type === 'move'
@@ -5740,12 +5829,19 @@
     state.editorCrop = crop;
     session.fittedLayout = calculateFittedEditorViewport(session.viewport, crop);
     updateEditorCropBox({ render: false });
+  }
+
+  function handleEditorCropPointerMove(event) {
+    const session = state.editorCropSession;
+    if (!session || session.pointerId !== event.pointerId) return;
     event.preventDefault();
+    editorCropMoveScheduler.schedule(event);
   }
 
   function finishEditorCropAdjustment(event) {
     const session = state.editorCropSession;
     if (!session || (event && session.pointerId !== event.pointerId)) return;
+    editorCropMoveScheduler.flush();
     state.editorCropSession = null;
     try { el.editorCropBox.releasePointerCapture?.(session.pointerId); } catch (error) { debugLog('finishEditorCropAdjustment', error); }
     animateCropIntoPreview(session.fittedLayout);
@@ -5973,15 +6069,18 @@
     applyTimelineDrag(event);
   }
 
+  const timelineMoveScheduler = createFrameScheduler(applyTimelineDrag);
+
   function handleTimelinePointerMove(event) {
     if (!state.timelineDrag || state.timelineDrag.pointerId !== event.pointerId) return;
     event.preventDefault();
-    applyTimelineDrag(event);
+    timelineMoveScheduler.schedule(event);
   }
 
   function finishTimelineDrag(event) {
     const drag = state.timelineDrag;
     if (!drag || (event && drag.pointerId !== event.pointerId)) return;
+    timelineMoveScheduler.flush();
     const target = state.timelinePreviewTarget;
     const shouldResumePlayback = state.timelineResumePlayback;
     state.timelineResumePlayback = false;
@@ -6292,9 +6391,11 @@
     event.stopPropagation();
   }
 
-  function handleTextLayerPointerMove(event) {
+  const textLayerMoveScheduler = createFrameScheduler(applyTextLayerPointerMove);
+
+  function applyTextLayerPointerMove(event) {
     const drag = state.textLayerDrag;
-    if (!drag || drag.pointerId !== event.pointerId) return;
+    if (!drag) return;
     const layer = state.textLayers.find((candidate) => candidate.id === drag.id);
     if (!layer) return;
     layer.x = clamp(
@@ -6310,12 +6411,19 @@
     drag.item.style.left = `${layer.x * 100}%`;
     drag.item.style.top = `${layer.y * 100}%`;
     scheduleEditorPreviewRender();
+  }
+
+  function handleTextLayerPointerMove(event) {
+    const drag = state.textLayerDrag;
+    if (!drag || drag.pointerId !== event.pointerId) return;
     event.preventDefault();
+    textLayerMoveScheduler.schedule(event);
   }
 
   function finishTextLayerDrag(event) {
     const drag = state.textLayerDrag;
     if (!drag || (event && drag.pointerId !== event.pointerId)) return;
+    textLayerMoveScheduler.flush();
     state.textLayerDrag = null;
     drag.item.classList.remove('dragging');
     try { drag.item.releasePointerCapture?.(drag.pointerId); } catch (error) { debugLog('finishTextLayerDrag', error); }
@@ -7461,6 +7569,7 @@
   el.pageSelectOverlay.addEventListener('pointermove', handlePageSelectPointerMove);
   el.pageSelectOverlay.addEventListener('pointerup', handlePageSelectPointerUp);
   el.pageSelectOverlay.addEventListener('pointercancel', () => {
+    pageSelectMoveScheduler.cancel();
     const session = state.pageSelectionSession;
     if (session) session.drag = null;
     el.pageSelectBox.style.display = 'none';
