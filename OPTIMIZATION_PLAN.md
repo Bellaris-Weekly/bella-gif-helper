@@ -497,9 +497,13 @@ README 的版本号已经漂移过两次（1.4.13 vs 1.4.14、1.5.2-beta vs 1.5.
 1. **补测试**：T2–T5 改了运行时行为，但测试数量仍是 47 个、且全部覆盖的是重构前就存在的纯函数层，
    新代码零覆盖。风险最高的是 T2 的存量迁移——`parseLegacyPref()` / `migrateLegacyPrefs()`
    是纯函数，最容易补，优先补这两个。
-2. **发布通道隔离**：`@updateURL` 指向 `share.bellaris.fans/bella-gif-helper.user.js`，
-   而 R2 同步在每次 push 到 main 时上传同一个 key，等于 **beta 版会自动推给全部正式用户**。
-   要么 beta 传到不同 key + 单独的 `@updateURL`，要么明确接受「main 即发布」。
+2. ~~**发布通道隔离**~~ —— **已决定：保持现状（2026-09-04）**。
+   `@updateURL` 与 R2 同步共用同一个 key，**main 上的每次提交都会自动推送给全部安装用户**，
+   `-beta` 后缀只是命名、不影响分发。用户在知情后选择接受这一现状，不再拆分通道。
+
+   由此产生的硬性要求：**没有灰度缓冲，合并到 main 之前的验证就是唯一防线。**
+   `npm run verify` 全绿 + 完整跑一遍手动冒烟清单，两者缺一不可；
+   `sync-r2.yml` 里 upload job 的 `needs: test` 不得放宽或绕过。
 3. **补 trellis session 记录**：`.trellis/workspace/` 最后一条还停在 8/27，不符合项目自身约定。
 4. **CI 触发条件**：`on: push`（无分支过滤）+ `pull_request` 会让 PR 分支跑两遍。
 5. 跑完整的 9 项手动冒烟清单，尤其是活动页 iframe 直播与 B 帧回溯导出。
