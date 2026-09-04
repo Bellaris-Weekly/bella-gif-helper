@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         贝报 GIF 助手
 // @namespace    https://www.bk0717.com/
-// @version      1.5.6-beta
+// @version      1.5.7-beta
 // @description  B站直播回溯、视频框选录制与 GIF 编辑
 // @author       贝极星周报
 // @homepageURL  https://github.com/Bellaris-Weekly/bella-gif-helper
@@ -3036,6 +3036,7 @@
       function migrateLegacyPrefs() {
         const prefs = prefsCache;
         if (!prefs) return;
+        if (window.top !== window) return;
         const patch = {};
         for (const field of LEGACY_LOCAL_PREF_FIELDS) {
           if (field in prefs) continue;
@@ -3832,10 +3833,10 @@
         function readAspectSquareButtonMetrics(button) {
           const cached = state.aspectSquareButtonMetrics;
           if (cached) return cached;
-          const metrics = {
-            width: button.offsetWidth || 40,
-            height: button.offsetHeight || 28
-          };
+          const width = button.offsetWidth;
+          const height = button.offsetHeight;
+          if (!width || !height) return { width: width || 40, height: height || 28 };
+          const metrics = { width, height };
           state.aspectSquareButtonMetrics = metrics;
           return metrics;
         }
@@ -4100,6 +4101,7 @@
           ["right", "left", "top", "width", "height", "max-height"].forEach((property) => {
             el.panel.style.removeProperty(property);
           });
+          invalidateAspectSquareButtonMetrics();
         }
         function updatePanelContentLayout() {
           if (el.panel.classList.contains("hidden")) return;

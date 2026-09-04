@@ -2090,6 +2090,9 @@ const { buildPanelTemplate } = require('./ui/panel.js');
   function migrateLegacyPrefs() {
     const prefs = prefsCache;
     if (!prefs) return;
+    // 直播活动页的播放器 iframe 也会走到 readPrefs()。子 frame 只读不写，
+    // 避免每个 iframe 各写一次 GM_setValue，也避免整对象覆盖写互相顶掉字段。
+    if (window.top !== window) return;
     const patch = {};
     for (const field of LEGACY_LOCAL_PREF_FIELDS) {
       if (field in prefs) continue;
@@ -2943,10 +2946,12 @@ const { buildPanelTemplate } = require('./ui/panel.js');
   function readAspectSquareButtonMetrics(button) {
     const cached = state.aspectSquareButtonMetrics;
     if (cached) return cached;
-    const metrics = {
-      width: button.offsetWidth || 40,
-      height: button.offsetHeight || 28,
-    };
+    const width = button.offsetWidth;
+    const height = button.offsetHeight;
+    // 面板隐藏或尚未布局时量到 0，此时只返回兜底值而不缓存，
+    // 否则兜底值会被永久锁死，按钮文案或字体变化后位置就会错。
+    if (!width || !height) return { width: width || 40, height: height || 28 };
+    const metrics = { width, height };
     state.aspectSquareButtonMetrics = metrics;
     return metrics;
   }
@@ -3244,6 +3249,7 @@ const { buildPanelTemplate } = require('./ui/panel.js');
     ['right', 'left', 'top', 'width', 'height', 'max-height'].forEach((property) => {
       el.panel.style.removeProperty(property);
     });
+    invalidateAspectSquareButtonMetrics();
   }
 
   function updatePanelContentLayout() {

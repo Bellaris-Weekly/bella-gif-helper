@@ -1,6 +1,24 @@
 # 贝报 GIF 助手 · 优化实施方案
 
-> 面向执行 Agent的实施说明。基线：`bella-gif-helper.user.js` @version 1.4.15，
+> 面向执行 Agent 的实施说明。原始基线：`bella-gif-helper.user.js` @version 1.4.14。
+
+## 进度（最后更新 2026-09-04）
+
+| 任务 | 状态 | 落地版本 | 备注 |
+|---|---|---|---|
+| T0 CI 测试关卡 | ✅ 完成 | — | `sync-r2.yml` 加了 test job + 产物漂移检查 |
+| T1 提交 1:1 记忆 + 文档 | ✅ 完成 | 1.4.15 / 1.5.0-beta | |
+| T2 统一偏好存储 | ✅ 完成 | 1.5.1-beta | 见 T9 / R2 |
+| T3 调试日志 | ✅ 完成 | 1.5.2-beta | 58/59 处已替换；worker 模板里那处**应当**保留原样 |
+| T4 指针事件 rAF 合并 | ✅ 完成 | 1.5.3-beta | 见 T9 / R1 |
+| T5 录制启动去重 | ✅ 完成 | 1.5.4-beta | |
+| T6 引入 esbuild 构建 | ✅ 完成 | 1.5.5-beta | |
+| T7 抽出模板 | ✅ 完成 | 1.5.6-beta | CSS/HTML 已核对为纯移动 |
+| T9 复查遗留问题 | 🔧 本次 | 1.5.7-beta | 见文末 |
+| T8 拆分 startApp | ⏸ 未开始 | — | **在 T9 与「补测试 / 发布通道」完成前不要开始** |
+
+> 实际版本号走的是 `1.5.x-beta` 线，与下方 T1–T7 各节里写的 `1.4.x` 规划不同——
+> 以本表为准，各节里的版本号仅作历史参考。
 
 ## 0. 全局约束（每个任务都适用）
 
@@ -427,3 +445,61 @@ T1 (提交现有改动 + 文档) ──┤
   重写会原样丢失）
 - 不引入前端框架、不引入 TypeScript（当前规模下收益不抵迁移成本，且 userscript 产物要保持可读）
 - 不改 `@match` 列表、不改分发链路
+
+---
+
+## T9 · 复查发现的遗留问题（1.5.7-beta）
+
+T0–T7 完成后做了一次逐项复查。整体质量高：286 个函数零丢失，19 个新增函数与计划一一对应；
+T7 的 CSS/HTML 去缩进后与原模板逐行一致；T4 的 `flush()` 语义正确
+（`preventDefault()` 同步调用、松手前补最后一帧）。以下是需要收尾的部分。
+
+### R1 · 1:1 按钮尺寸缓存会锁死兜底值（已修）
+
+`readAspectSquareButtonMetrics()` 把 `button.offsetWidth || 40` 的**兜底值也写进了缓存**。
+`finalizeRecording()` 里 `await loadRecordedClip(...)` 会走到
+`setupEditorForClip` → `updateEditorCropBox` → `positionAspectSquareButton`，
+而这一步发生在 `el.panel.classList.remove('hidden')` **之前**，
+所以首次测量时按钮还在隐藏的面板里，`offsetWidth` 为 0，兜底值 `{40, 28}` 会被永久缓存。
+
+当前视觉影响很小（CSS 恰好是 `min-width: 40px; height: 28px`），但按钮文案或字体一变就会错位。
+
+修法：量到 0 时只返回兜底值、不写缓存；并在 `clearDesktopPanelGeometry()`
+（窄视口分支）里补一次 `invalidateAspectSquareButtonMetrics()`。
+
+### R2 · 子 frame 也在跑迁移和写入（已修）
+
+`readPrefs()` 在 `if (!IS_TOP_WINDOW) return;` **之前**被调用
+（live 页 `initialLiveCaptureMode` 的初始化）。于是 `live.bilibili.com/blanc/*`
+的每个播放器 iframe 加载时都会跑一遍 `migrateLegacyPrefs()` 并可能触发 `GM_setValue`。
+
+`writePrefs()` 是整对象覆盖写，顶层窗口与 iframe 各持一份 `prefsCache`，
+理论上存在后写覆盖先写、丢字段的竞态。
+
+修法：`migrateLegacyPrefs()` 开头加 `if (window.top !== window) return;`，子 frame 只读不写。
+这里刻意不用 `IS_TOP_WINDOW` 常量——它声明在 `readPrefs()` 的调用点之后，直接引用会有 TDZ 风险。
+
+### R3 · 版本号一致性检查（已加）
+
+README 的版本号已经漂移过两次（1.4.13 vs 1.4.14、1.5.2-beta vs 1.5.6-beta）。
+新增 `scripts/check-version.mjs`，断言 `src/header.txt`、构建产物、README 三处版本号一致，
+并接入 `npm run verify`。以后漏改 README 会直接让 CI 变红。
+
+### R4 · 不是问题（复查误报，记录备查）
+
+`makeEncodingWorkerSource()` 模板字符串里的 `try { frame.close(); } catch (_) { }`
+**不应该**改成 `debugLog`——那段代码运行在 Worker 上下文里，`debugLog` 不存在。保持原样是对的。
+
+---
+
+## 仍然待办（优先级高于 T8）
+
+1. **补测试**：T2–T5 改了运行时行为，但测试数量仍是 47 个、且全部覆盖的是重构前就存在的纯函数层，
+   新代码零覆盖。风险最高的是 T2 的存量迁移——`parseLegacyPref()` / `migrateLegacyPrefs()`
+   是纯函数，最容易补，优先补这两个。
+2. **发布通道隔离**：`@updateURL` 指向 `share.bellaris.fans/bella-gif-helper.user.js`，
+   而 R2 同步在每次 push 到 main 时上传同一个 key，等于 **beta 版会自动推给全部正式用户**。
+   要么 beta 传到不同 key + 单独的 `@updateURL`，要么明确接受「main 即发布」。
+3. **补 trellis session 记录**：`.trellis/workspace/` 最后一条还停在 8/27，不符合项目自身约定。
+4. **CI 触发条件**：`on: push`（无分支过滤）+ `pull_request` 会让 PR 分支跑两遍。
+5. 跑完整的 9 项手动冒烟清单，尤其是活动页 iframe 直播与 B 帧回溯导出。
