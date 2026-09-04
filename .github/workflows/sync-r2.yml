@@ -9,6 +9,9 @@ permissions:
 
 jobs:
   test:
+    # 同仓库分支的 PR 已经被 push 事件覆盖，这里只放行 push 和来自 fork 的 PR，
+    # 避免同一个 commit 跑两遍。
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-latest
 
     steps:

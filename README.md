@@ -1,6 +1,6 @@
 # 贝报 GIF 助手
 
-在哔哩哔哩直播或视频页面中截取画面、编辑片段并导出 GIF 的用户脚本。当前版本为 `1.5.7-beta`。
+在哔哩哔哩直播或视频页面中截取画面、编辑片段并导出 GIF 的用户脚本。当前版本为 `1.5.8`。
 
 ## 功能
 
@@ -80,7 +80,7 @@ GM_setValue('biliGifMakerDebugV1', true)
 
 ```bash
 npm run build       # 生成 bella-gif-helper.user.js
-npm run verify      # build + node --check + 47 个测试
+npm run verify      # build + node --check + 版本号一致性校验 + 47 个测试
 ```
 
 推送到 GitHub 后，`sync-r2.yml` 会在上传 R2 前先跑一遍 `verify`，并校验产物与源码一致（防止改了源码忘了重新构建）。
