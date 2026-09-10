@@ -72,15 +72,15 @@ test('viewport transitions cover zoom, movement, and identity transforms', () =>
   }
 });
 
-test('overlay controls stay usable in both large and small crops', () => {
+test('overlay controls sit near the top-right corner and stay usable in small crops', () => {
   const cases = [
     [
       { left: 0, top: 0, width: 360, height: 360 },
-      { left: 296, top: 24 },
+      { left: 308, top: 12 },
     ],
     [
       { left: 80, top: 60, width: 72, height: 52 },
-      { left: 96, top: 72 },
+      { left: 100, top: 72 },
     ],
   ];
 

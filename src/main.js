@@ -289,7 +289,7 @@ const { buildPanelTemplate } = require('./ui/panel.js');
     };
   }
 
-  function calculateInnerOverlayPosition(crop, controlWidth, controlHeight, preferredInset = 24) {
+  function calculateInnerOverlayPosition(crop, controlWidth, controlHeight, preferredInset = 12) {
     const availableHorizontal = Math.max(0, crop.width - controlWidth);
     const availableVertical = Math.max(0, crop.height - controlHeight);
     const rightInset = Math.min(preferredInset, availableHorizontal / 2);

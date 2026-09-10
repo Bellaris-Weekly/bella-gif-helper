@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         贝报 GIF 助手
 // @namespace    https://www.bk0717.com/
-// @version      1.5.9
+// @version      1.5.10
 // @description  B站直播回溯、视频框选录制与 GIF 编辑
 // @author       贝极星周报
 // @homepageURL  https://github.com/Bellaris-Weekly/bella-gif-helper
@@ -1340,7 +1340,7 @@
           scale
         };
       }
-      function calculateInnerOverlayPosition(crop, controlWidth, controlHeight, preferredInset = 24) {
+      function calculateInnerOverlayPosition(crop, controlWidth, controlHeight, preferredInset = 12) {
         const availableHorizontal = Math.max(0, crop.width - controlWidth);
         const availableVertical = Math.max(0, crop.height - controlHeight);
         const rightInset = Math.min(preferredInset, availableHorizontal / 2);
