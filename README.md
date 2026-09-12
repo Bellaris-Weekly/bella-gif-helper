@@ -1,6 +1,6 @@
 # 贝报 GIF 助手
 
-在哔哩哔哩直播或视频页面中截取画面、编辑片段并导出 GIF 的用户脚本。当前版本为 `1.5.10`。
+在哔哩哔哩直播或视频页面中截取画面、编辑片段并导出 GIF 的用户脚本。当前版本为 `1.5.11`。
 
 ## 功能
 
@@ -99,7 +99,24 @@ python3 tests/check_gif_color.py reference.png output.gif
 
 ## 第三方媒体组件
 
-- `Mediabunny 1.55.3`：MPL-2.0 License。
-- `modern-palette 2.0.0`：MIT License。
-- `gifenc 1.0.3`：MIT License。
-- `gifsicle-wasm-browser 1.5.19`：封装层为 MIT License，内含的 Gifsicle 压缩核心为 GPL-2.0-or-later。
+脚本运行时会从 CDN 加载下列组件，版本固定在 `src/header.txt` 的 `@resource` 中，不随上游自动升级。
+
+- `Mediabunny 1.55.3`：MPL-2.0 License。<https://github.com/Vanilagy/mediabunny>
+- `modern-palette 2.0.0`：MIT License。<https://github.com/qq15725/modern-palette>
+- `gifenc 1.0.3`：MIT License。<https://github.com/mattdesl/gifenc>
+- `gifsicle-wasm-browser 1.5.19`：封装层为 MIT License，其 `dist/gifsicle.min.js` 内嵌的
+  Gifsicle 压缩核心为 **GPL-2.0-only**（GPL 第 2 版，且仅第 2 版，不可升级到第 3 版）。
+  <https://github.com/kohler/gifsicle>
+
+## 许可
+
+本仓库中由本项目创作的代码与文档以 MIT License 发布，全文见 [LICENSE](LICENSE)。
+
+上述第三方组件**不在** MIT 的授权范围内，各自遵循其上游许可证；它们的版权声明、
+许可证全文与源码获取方式见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
+
+需要特别留意分发边界：本项目不复制、不内联、也不自行托管这些组件，只通过
+`@resource` 发布它们在 jsDelivr 上的地址，由用户浏览器自行下载。因此本项目的自有代码
+可以合法地保持 MIT。**如果将来改为自托管（例如镜像到本项目使用的对象存储）或把组件
+内联进 `bella-gif-helper.user.js`，本项目就会成为 GPL-2.0-only 作品的分发者，整个构建
+产物必须改为以 GPL-2.0-only 发布。** 这条约束已写入 [AGENTS.md](AGENTS.md) 的红线。

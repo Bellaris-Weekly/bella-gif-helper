@@ -1,12 +1,12 @@
 // ==UserScript==
 // @name         贝报 GIF 助手
 // @namespace    https://www.bk0717.com/
-// @version      1.5.10
+// @version      1.5.11
 // @description  B站直播回溯、视频框选录制与 GIF 编辑
 // @author       贝极星周报
 // @homepageURL  https://github.com/Bellaris-Weekly/bella-gif-helper
 // @icon         https://i0.hdslb.com/bfs/garb/item/70de4619ce5e8a7b5bbe5c4124aa69353d8102e4.png
-// @license      MIT
+// @license      MIT (own code) + MPL-2.0 + GPL-2.0-only (runtime deps)
 // @downloadURL  https://share.bellaris.fans/bella-gif-helper.user.js
 // @updateURL    https://share.bellaris.fans/bella-gif-helper.user.js
 // @match        https://www.bilibili.com/video/*
@@ -27,8 +27,11 @@
 // @run-at       document-start
 // ==/UserScript==
 
-// GIF 调色使用 modern-palette 2.0.0，编码使用 gifenc 1.0.3（MIT License）。
-// GIF 后压缩使用 Gifsicle WASM（Gifsicle GPL-2.0-or-later）。
+// 本脚本的自有代码以 MIT License 发布，全文见仓库根目录 LICENSE。
+// 运行时会从 CDN 加载以下第三方组件，它们各自遵循其上游许可证，不适用 MIT；
+// 完整声明与源码获取方式见仓库根目录 THIRD-PARTY-NOTICES.md。
+// GIF 调色使用 modern-palette 2.0.0，编码使用 gifenc 1.0.3（均为 MIT License）。
+// GIF 后压缩使用 Gifsicle WASM（Gifsicle GPL-2.0-only，经 gifsicle-wasm-browser 1.5.19 内嵌）。
 // 媒体解复用与解码调度使用 Mediabunny 1.55.3（MPL-2.0 License）。
 
 "use strict";

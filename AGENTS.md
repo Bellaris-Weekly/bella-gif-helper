@@ -63,8 +63,35 @@ tests/               测试与真实媒体素材
 - 不升级、不替换 `@resource` 里的四个依赖版本。
 - 不对产物做混淆或压缩（收益接近零，且会阻断上架与调试）。
 - 不改 `@match` 列表、不改分发链路。
+- 不把 `@resource` 里的四个依赖自托管、镜像或内联进产物（见下节「许可边界」）。
 - `makeEncodingWorkerSource()` 模板字符串里的 `catch (_) { }` **保持原样**——
   那段代码运行在 Worker 上下文，`debugLog` 不存在。
+
+## 许可边界
+
+本仓库自有代码是 MIT（`LICENSE`），但产物运行时会加载 GPL-2.0-only 与 MPL-2.0 代码
+（清单见 `THIRD-PARTY-NOTICES.md`）。**MIT 之所以成立，只因为本项目不复制、不托管
+这些组件**——`@resource` 只发布 jsDelivr 地址，由用户浏览器自行下载，分发者是上游
+与 CDN，不是本项目。
+
+以下动作会把本项目从「聚合分发」变成「分发 GPL 作品」，一旦发生，**整个
+`bella-gif-helper.user.js` 必须改为以 GPL-2.0-only 发布**，`LICENSE`、`src/header.txt`
+的 `@license`、README 与 `package.json` 需同步改写：
+
+- 把 `dist/gifsicle.min.js` 或任何 Gifsicle 构建产物镜像到本项目使用的对象存储；
+- 把上述组件内联、打包进 `bella-gif-helper.user.js`（包括为「离线可用」而内联）；
+- 把依赖换成本项目自行编译的 Gifsicle 构建产物。
+
+另外两条：
+
+- Gifsicle 是 **GPL-2.0-only**，不是 `-or-later`。不要在任何文档里写成可升级到
+  GPL-3.0，也不要指望靠升级许可证版本化解冲突。
+- `gifsicle-wasm-browser` 的 `package.json` 只声明封装层 MIT，包内没有 GPL 声明与
+  `COPYING`，但 `dist/gifsicle.min.js` 已把 GPL-2.0-only 的 Gifsicle 编译为 WASM
+  并以 base64 内嵌。**不要以该包的 MIT 声明推断其整体许可证。**
+
+升级 `@resource` 依赖版本时，必须同步复核 `THIRD-PARTY-NOTICES.md` 中的版本、
+许可证标识与源码地址。
 
 ## 已知缺口
 

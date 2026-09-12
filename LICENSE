@@ -2,6 +2,33 @@ MIT License
 
 Copyright (c) 2026 Bellaris Weekly
 
+适用范围
+--------
+
+本许可证适用于本仓库中由 Bellaris Weekly 创作的源代码与文档，包括 src/、scripts/、
+tests/ 目录下的文件，README.md、AGENTS.md，以及构建产物 bella-gif-helper.user.js
+中由本项目创作的代码。
+
+该用户脚本在运行时会从 CDN 加载下列第三方组件。它们各自遵循其上游许可证，
+不属于本许可证的授权范围，也不得按 MIT 使用或再分发：
+
+  - Mediabunny 1.55.3            MPL-2.0
+  - Gifsicle（WebAssembly 构建）  GPL-2.0-only
+    经 gifsicle-wasm-browser 1.5.19 的 dist/gifsicle.min.js 内嵌分发
+  - gifenc 1.0.3                 MIT
+  - modern-palette 2.0.0         MIT
+
+各组件对应的版权声明、许可证全文与源码获取方式见 THIRD-PARTY-NOTICES.md。
+
+注意：本项目目前仅通过 @resource 元数据发布上述组件的 CDN 地址，并未复制或
+再分发这些组件本身。若将来改为自行托管（例如镜像到本项目使用的对象存储）或
+内联进 bella-gif-helper.user.js，则本项目将成为 GPL-2.0-only 作品的分发者，
+届时整个构建产物必须改为以 GPL-2.0-only 发布。详见 AGENTS.md 的红线一节。
+
+以下为 MIT 许可证正文。
+
+---
+
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
 in the Software without restriction, including without limitation the rights
