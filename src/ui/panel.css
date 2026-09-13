@@ -206,7 +206,6 @@
   #versionBtn.update-available::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
   .header-actions { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; }
   .shortcut-setting { display: flex; align-items: center; gap: 5px; }
-  .shortcut-setting label { color: var(--color-text-muted); font-size: 11px; white-space: nowrap; }
   #shortcutInput {
     width: 84px;
     height: 30px;
