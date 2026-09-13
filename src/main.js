@@ -1,5 +1,7 @@
 'use strict';
 
+const { bindVersionButton } = require('./update-check.js');
+
 const { buildPanelTemplate } = require('./ui/panel.js');
 
   const LIVE_REWIND_BUFFER_SECONDS = 75;
@@ -6426,6 +6428,14 @@ const { buildPanelTemplate } = require('./ui/panel.js');
     pageWindow.navigation?.removeEventListener('currententrychange', handlePageRouteChange);
   });
 
+  bindVersionButton({
+    button: $('#versionBtn'),
+    version: __SCRIPT_METADATA__.version,
+    updateUrl: __SCRIPT_METADATA__.updateURL,
+    downloadUrl: __SCRIPT_METADATA__.downloadURL,
+    request: (options) => GM_xmlhttpRequest(options),
+    openTab: (url, options) => GM_openInTab(url, options),
+  });
   restoreExportPreferences();
   restoreShortcutPreference();
   renderShortcutSetting();

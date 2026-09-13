@@ -63,3 +63,26 @@ for await (const sample of sink.samples(undefined, undefined, { skipLiveWait: tr
   // Emit targets covered by the previously displayed sample, then advance.
 }
 ```
+
+## Scenario: Version Badge and Update Detection
+
+### 1. Scope / Trigger
+Changes to the title version badge, metadata, or update transport.
+
+### 2. Signatures
+`bindVersionButton({ button, version, updateUrl, downloadUrl, request, openTab })` binds one main-page badge. `compareVersions(left, right)` returns -1, 0, or 1.
+
+### 3. Contracts
+Build injects version and both URLs from `src/header.txt`. Startup sends one anonymous request with a 15-second timeout. Clicks during a request are coalesced. Only a newer numeric/prerelease version sets the update badge; clicking that badge opens the existing installation URL. Never execute downloaded source or auto-navigate.
+
+### 4. Validation & Error Matrix
+Non-200, missing/invalid metadata, network errors and timeout restore retry ability without an update badge or popup. Same/older versions remain neutral.
+
+### 5. Good/Base/Bad Cases
+Good: 1.5.12 exceeds 1.5.9; beta.10 exceeds beta.2. Base: identical versions do not update. Bad: HTML error response must not be interpreted as a version.
+
+### 6. Tests Required
+Version ordering, metadata extraction, startup request, duplicate clicks, failed request retry, update click destination. Browser-check compact title and update badge. Full project smoke checklist remains mandatory before release.
+
+### 7. Wrong vs Correct
+Wrong: compare version strings lexically or duplicate the version in UI source. Correct: compare numeric components and prerelease identifiers; derive the displayed version from the metadata at build time.
