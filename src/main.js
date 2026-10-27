@@ -231,16 +231,72 @@ const { buildPanelTemplate } = require('./ui/panel.js');
     });
   }
 
+  const LOOP_MODES = Object.freeze(['none', 'pingpong', 'crossfade']);
+  const LOOP_CROSSFADE_MAX_MS = 800;
+  const LOOP_CROSSFADE_MAX_RATIO = 0.25;
+
+  function normalizeLoopMode(value) {
+    return LOOP_MODES.includes(value) ? value : 'none';
+  }
+
+  function calculateCrossfadeFrameCount(frameDelays) {
+    const delays = Array.from(frameDelays || [], (delay) => Number(delay) || 0);
+    const limit = Math.floor(delays.length * LOOP_CROSSFADE_MAX_RATIO);
+    let count = 0;
+    let elapsed = 0;
+    while (count < limit && elapsed + delays[count] <= LOOP_CROSSFADE_MAX_MS) {
+      elapsed += delays[count];
+      count += 1;
+    }
+    return count;
+  }
+
+  // 输出帧表：sourceIndex 指向 frameTimes 下标；blend 表示把开头那一帧按 alpha 叠在上面。
+  function createLoopFramePlan(frameDelays, loopMode) {
+    const delays = Array.from(frameDelays || []);
+    const count = delays.length;
+    const frame = (sourceIndex, blend = null) => Object.freeze({
+      sourceIndex,
+      delay: delays[sourceIndex],
+      blend,
+    });
+    const mode = normalizeLoopMode(loopMode);
+
+    if (mode === 'pingpong' && count >= 3) {
+      return Object.freeze([
+        ...delays.map((_, index) => frame(index)),
+        ...Array.from({ length: count - 2 }, (_, offset) => frame(count - 2 - offset)),
+      ]);
+    }
+
+    const fadeCount = mode === 'crossfade' ? calculateCrossfadeFrameCount(delays) : 0;
+    if (fadeCount > 0) {
+      const fadeStart = count - fadeCount;
+      return Object.freeze(Array.from({ length: count - fadeCount }, (_, offset) => {
+        const index = fadeCount + offset;
+        if (index < fadeStart) return frame(index);
+        const step = index - fadeStart;
+        return frame(index, Object.freeze({ sourceIndex: step, alpha: (step + 1) / (fadeCount + 1) }));
+      }));
+    }
+
+    return Object.freeze(delays.map((_, index) => frame(index)));
+  }
+
   function createExportPlan(settings) {
     const timing = createExportTiming(settings.start, settings.end, settings.fps, settings.speed);
+    const loopMode = normalizeLoopMode(settings.loopMode);
+    const loopFrames = createLoopFramePlan(timing.frameDelays, loopMode);
     return Object.freeze({
       ...settings,
       crop: Object.freeze({ ...settings.crop }),
       textLayers: Object.freeze((settings.textLayers || []).map((layer) => Object.freeze({ ...layer }))),
       qualityPreset: Object.freeze({ ...settings.qualityPreset }),
       ...timing,
+      loopMode,
+      loopFrames,
       baseFrames: timing.frameTimes.length,
-      finalFrames: timing.frameTimes.length,
+      finalFrames: loopFrames.length,
     });
   }
 
@@ -2224,6 +2280,7 @@ const { buildPanelTemplate } = require('./ui/panel.js');
   const ENCODE_TIMEOUT_MS = 600_000;
   const ENCODER_MAX_IN_FLIGHT_PER_WORKER = 2;
   const EXPORT_UI_UPDATE_INTERVAL_MS = 120;
+  const LOOP_FRAME_CACHE_BUDGET_BYTES = 192 * 1024 * 1024;
   const MIN_SELECT_PX = 24;
   const EDITOR_CROP_PADDING = 18;
   const EDITOR_VIEWPORT_MOTION_MS = 260;
@@ -2358,6 +2415,7 @@ const { buildPanelTemplate } = require('./ui/panel.js');
     estimatedSize: $('#estimatedSize'),
     actionEstimate: $('#actionEstimate'),
     speedSelect: $('#speedSelect'),
+    loopModeSelect: $('#loopModeSelect'),
     qualitySelect: $('#qualitySelect'),
     cornerRadiusSelect: $('#cornerRadiusSelect'),
     cornerRadiusState: $('#cornerRadiusState'),
@@ -5964,6 +6022,7 @@ const { buildPanelTemplate } = require('./ui/panel.js');
       speed,
       quality,
       qualityPreset: GIF_QUALITY_PRESETS[quality],
+      loopMode: el.loopModeSelect?.value,
     });
     if (plan.finalFrames > MAX_EXPORT_FRAMES) {
       throw new Error('帧数超过上限，请缩短片段或降低帧率。');
@@ -6047,6 +6106,141 @@ const { buildPanelTemplate } = require('./ui/panel.js');
     window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
   }
 
+  // 循环模式下所有输出帧统一转成 ImageBitmap：按输出尺寸预缩放整帧（裁剪比例不变），
+  // 正放、倒放、叠化帧走同一条路径，避免折返处画质跳变。
+  function calculateLoopBitmapSize(settings, frame) {
+    const sourceWidth = Math.max(2, frame.displayWidth || state.clip.width);
+    const sourceHeight = Math.max(2, frame.displayHeight || state.clip.height);
+    const scale = Math.min(1, Math.max(
+      settings.outputWidth / Math.max(1, settings.crop.w * sourceWidth),
+      settings.outputHeight / Math.max(1, settings.crop.h * sourceHeight),
+    ));
+    return Object.freeze({
+      scale,
+      width: Math.max(2, Math.round(sourceWidth * scale)),
+      height: Math.max(2, Math.round(sourceHeight * scale)),
+    });
+  }
+
+  async function createLoopBitmap(frame, size) {
+    try {
+      if (size.scale >= 1) return await createImageBitmap(frame);
+      return await createImageBitmap(frame, {
+        resizeWidth: size.width,
+        resizeHeight: size.height,
+        resizeQuality: 'high',
+      });
+    } finally {
+      try { frame.close(); } catch (error) { debugLog('createLoopBitmap', error); }
+    }
+  }
+
+  async function encodeLoopFrames(frameSource, encodingSession, settings, { signal, onFrame }) {
+    const plan = settings.loopFrames;
+    const times = settings.frameTimes;
+    const cache = new Map();
+    let bitmapSize = null;
+    let blendCanvas = null;
+    let emitted = 0;
+
+    let forwardCount = 0;
+    while (
+      forwardCount < plan.length
+      && (forwardCount === 0 || plan[forwardCount].sourceIndex > plan[forwardCount - 1].sourceIndex)
+    ) forwardCount += 1;
+    const forwardOutputs = new Map(plan.slice(0, forwardCount).map((item, index) => [item.sourceIndex, index]));
+    const blendSources = new Set(plan.map((item) => item.blend?.sourceIndex).filter(Number.isInteger));
+    const tailOutputs = plan.slice(forwardCount).map((item, offset) => ({ ...item, outputIndex: forwardCount + offset }));
+    if (tailOutputs.some((item) => item.blend)) throw new Error('循环帧计划无效。');
+    let windowSize = 1;
+    let prefetchSources = new Set();
+
+    const toBitmap = async (frame) => {
+      if (!bitmapSize) {
+        bitmapSize = calculateLoopBitmapSize(settings, frame);
+        windowSize = Math.max(1, Math.floor(LOOP_FRAME_CACHE_BUDGET_BYTES / (bitmapSize.width * bitmapSize.height * 4)));
+        prefetchSources = new Set(tailOutputs.slice(0, windowSize).map((item) => item.sourceIndex));
+      }
+      return createLoopBitmap(frame, bitmapSize);
+    };
+    const blend = (base, overlay, alpha) => {
+      blendCanvas ||= new OffscreenCanvas(base.width, base.height);
+      const ctx = blendCanvas.getContext('2d');
+      ctx.globalAlpha = 1;
+      ctx.drawImage(base, 0, 0);
+      ctx.globalAlpha = alpha;
+      ctx.drawImage(overlay, 0, 0, base.width, base.height);
+      return blendCanvas.transferToImageBitmap();
+    };
+    const emit = async (bitmap, outputIndex) => {
+      await encodingSession.addFrame(bitmap, outputIndex, plan[outputIndex].delay);
+      emitted += 1;
+      onFrame?.(emitted);
+    };
+    const takeCached = (sourceIndex) => {
+      const bitmap = cache.get(sourceIndex);
+      if (!bitmap) throw new Error('循环帧缓存缺失。');
+      cache.delete(sourceIndex);
+      return bitmap;
+    };
+
+    try {
+      const lastForwardSource = plan[forwardCount - 1].sourceIndex;
+      for await (const decoded of frameSource.framesAt(times.slice(0, lastForwardSource + 1), { signal })) {
+        const sourceIndex = decoded.index;
+        const outputIndex = forwardOutputs.get(sourceIndex);
+        const keep = () => blendSources.has(sourceIndex) || prefetchSources.has(sourceIndex);
+        // 预取集合要等第一帧确定位图尺寸后才算得出，所以尺寸未知时先转换再判断。
+        if (bitmapSize && outputIndex === undefined && !keep()) {
+          decoded.frame.close();
+          continue;
+        }
+        const bitmap = await toBitmap(decoded.frame);
+        if (outputIndex === undefined) {
+          if (keep()) cache.set(sourceIndex, bitmap);
+          else bitmap.close();
+          continue;
+        }
+        if (keep()) cache.set(sourceIndex, await createImageBitmap(bitmap));
+        const blendInfo = plan[outputIndex].blend;
+        if (blendInfo) {
+          const overlay = takeCached(blendInfo.sourceIndex);
+          let blended;
+          try {
+            blended = blend(bitmap, overlay, blendInfo.alpha);
+          } finally {
+            bitmap.close();
+            overlay.close();
+          }
+          await emit(blended, outputIndex);
+        } else {
+          await emit(bitmap, outputIndex);
+        }
+      }
+
+      // 解码只能顺序向前，倒放部分按内存预算分批回读，每批倒序送出。
+      for (let cursor = 0; cursor < tailOutputs.length;) {
+        const batch = tailOutputs.slice(cursor, cursor + windowSize);
+        const missing = [...new Set(batch.map((item) => item.sourceIndex))]
+          .filter((sourceIndex) => !cache.has(sourceIndex))
+          .sort((a, b) => a - b);
+        if (missing.length) {
+          for await (const decoded of frameSource.framesAt(missing.map((index) => times[index]), { signal })) {
+            cache.set(missing[decoded.index], await toBitmap(decoded.frame));
+          }
+        }
+        for (const item of batch) {
+          if (signal?.aborted) throw new CancelledError();
+          await emit(takeCached(item.sourceIndex), item.outputIndex);
+        }
+        cursor += batch.length;
+      }
+    } finally {
+      closeImageBitmaps(cache.values());
+      cache.clear();
+    }
+  }
+
   async function generateGif() {
     if (state.mode !== 'edit' || state.busy) return;
     let settings;
@@ -6112,17 +6306,24 @@ const { buildPanelTemplate } = require('./ui/panel.js');
       state.exportEncodingSession = encodingSession;
       if (exportController.signal.aborted) throw new CancelledError();
 
-      let extractedFrames = 0;
-      for await (const decoded of frameSource.framesAt(settings.frameTimes, {
-        signal: exportController.signal,
-      })) {
-        await encodingSession.addFrame(
-          decoded.frame,
-          decoded.index,
-          settings.frameDelays[decoded.index],
-        );
-        extractedFrames += 1;
-        reportExportProgress('extracting', extractedFrames, settings.baseFrames);
+      if (settings.loopMode === 'none') {
+        let extractedFrames = 0;
+        for await (const decoded of frameSource.framesAt(settings.frameTimes, {
+          signal: exportController.signal,
+        })) {
+          await encodingSession.addFrame(
+            decoded.frame,
+            decoded.index,
+            settings.frameDelays[decoded.index],
+          );
+          extractedFrames += 1;
+          reportExportProgress('extracting', extractedFrames, settings.baseFrames);
+        }
+      } else {
+        await encodeLoopFrames(frameSource, encodingSession, settings, {
+          signal: exportController.signal,
+          onFrame: (completed) => reportExportProgress('extracting', completed, settings.finalFrames),
+        });
       }
 
       if (exportController.signal.aborted) throw new CancelledError();

@@ -9,6 +9,7 @@ const {
   calculateEncoderWorkerCount,
   calculateTimelinePlaybackTarget,
   createExportTiming,
+  createLoopFramePlan,
   createTimelineSeekGate,
   orderFrameChunks,
   selectEncoderWorker,
@@ -110,4 +111,45 @@ test('parallel frame chunks are restored to source order', () => {
   ]);
 
   assert.deepEqual(chunks.map((bytes) => bytes[0]), [0, 1, 2]);
+});
+
+test('loop plan keeps the original frame order when looping is off', () => {
+  const delays = [80, 90, 80, 90];
+  for (const mode of ['none', undefined, 'bogus']) {
+    const plan = createLoopFramePlan(delays, mode);
+    assert.deepEqual(plan.map((item) => item.sourceIndex), [0, 1, 2, 3]);
+    assert.deepEqual(plan.map((item) => item.delay), delays);
+    assert.ok(plan.every((item) => item.blend === null));
+  }
+});
+
+test('pingpong loop plays forward then back without repeating either turnaround frame', () => {
+  const delays = [80, 90, 80, 90, 80];
+  const plan = createLoopFramePlan(delays, 'pingpong');
+  assert.deepEqual(plan.map((item) => item.sourceIndex), [0, 1, 2, 3, 4, 3, 2, 1]);
+  assert.deepEqual(plan.map((item) => item.delay), plan.map((item) => delays[item.sourceIndex]));
+  assert.ok(plan.every((item) => item.blend === null));
+  assert.deepEqual(createLoopFramePlan([80, 80], 'pingpong').map((item) => item.sourceIndex), [0, 1]);
+});
+
+test('crossfade loop blends the head into the tail and drops the head frames', () => {
+  const delays = Array(20).fill(100);
+  const plan = createLoopFramePlan(delays, 'crossfade');
+  // 上限：20 帧的 25% = 5 帧，且 5 × 100ms ≤ 800ms。
+  assert.equal(plan.length, 15);
+  assert.deepEqual(plan.map((item) => item.sourceIndex), Array.from({ length: 15 }, (_, i) => i + 5));
+  const blended = plan.filter((item) => item.blend);
+  assert.deepEqual(blended.map((item) => item.sourceIndex), [15, 16, 17, 18, 19]);
+  assert.deepEqual(blended.map((item) => item.blend.sourceIndex), [0, 1, 2, 3, 4]);
+  const alphas = blended.map((item) => item.blend.alpha);
+  assert.ok(alphas.every((alpha, i) => alpha > 0 && alpha < 1 && (i === 0 || alpha > alphas[i - 1])));
+});
+
+test('crossfade length is capped by duration and short clips stay untouched', () => {
+  // 40 帧的 25% = 10 帧，但 800ms 只够 8 帧。
+  const plan = createLoopFramePlan(Array(40).fill(100), 'crossfade');
+  assert.equal(40 - plan.length, 8);
+  const short = createLoopFramePlan([100, 100, 100], 'crossfade');
+  assert.deepEqual(short.map((item) => item.sourceIndex), [0, 1, 2]);
+  assert.ok(short.every((item) => item.blend === null));
 });

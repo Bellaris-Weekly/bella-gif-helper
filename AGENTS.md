@@ -25,7 +25,7 @@ tests/               测试与真实媒体素材
   正文需包含 `说明：` 段落（`commit-msg` 钩子会拦截）。
 - 每次提交前必须通过：
   ```bash
-  npm run verify   # build + node --check + check:version + 47 个测试
+  npm run verify   # build + node --check + check:version + 56 个测试
   ```
 
 ### 发布通道：main 即正式发布

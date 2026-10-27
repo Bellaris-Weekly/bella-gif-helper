@@ -32,6 +32,7 @@ const exportNames = [
   'constrainPanelGeometry',
   'createExportFrameSourceFromMediaApi',
   'createExportTiming',
+  'createLoopFramePlan',
   'createTimelineSeekGate',
   'extractLiveRoomId',
   'filterLiveInitToTrack',
