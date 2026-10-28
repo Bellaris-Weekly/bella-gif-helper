@@ -2418,7 +2418,6 @@ const { buildPanelTemplate } = require('./ui/panel.js');
     loopModeSelect: $('#loopModeSelect'),
     qualitySelect: $('#qualitySelect'),
     cornerRadiusSelect: $('#cornerRadiusSelect'),
-    cornerRadiusState: $('#cornerRadiusState'),
     captionText: $('#captionText'),
     fontScale: $('#fontScale'),
     fontScaleValue: $('#fontScaleValue'),
@@ -5315,9 +5314,6 @@ const { buildPanelTemplate } = require('./ui/panel.js');
     const radius = getCornerRadiusPixels(width, height, ratio);
     // Apply the guide to the crop frame itself so its corners match the real output boundary.
     el.editorCropBox.style.setProperty('--crop-frame-radius', `${radius}px`);
-    if (el.cornerRadiusState) {
-      el.cornerRadiusState.textContent = ratio > 0 ? '透明背景' : '无圆角';
-    }
   }
 
   function drawExportCanvasFrame(ctx, settings, source) {

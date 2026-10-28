@@ -616,10 +616,13 @@
     min-height: 0;
     overflow-y: auto;
     overscroll-behavior: contain;
+    color-scheme: dark;
     scrollbar-width: thin;
+    scrollbar-color: rgba(255,255,255,.20) transparent;
     padding: 0 10px 10px;
   }
   #editorSettingsScroll::-webkit-scrollbar { width: 8px; }
+  #editorSettingsScroll::-webkit-scrollbar-track { background: transparent; }
   #editorSettingsScroll::-webkit-scrollbar-thumb {
     border: 2px solid transparent;
     border-radius: 999px;
@@ -656,10 +659,6 @@
     color: var(--color-text-muted);
     font-size: 12px;
     line-height: 1.35;
-  }
-  .field-hint {
-    color: var(--color-success);
-    font-weight: 700;
   }
   select, textarea, input[type="text"] {
     width: 100%;
