@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         贝报 GIF 助手
 // @namespace    https://www.bk0717.com/
-// @version      1.5.15
+// @version      1.5.16
 // @description  B站直播回溯、视频框选录制与 GIF 编辑
 // @author       贝极星周报
 // @homepageURL  https://github.com/Bellaris-Weekly/bella-gif-helper
@@ -26,6 +26,7 @@
 // @grant        GM_xmlhttpRequest
 // @grant        GM_openInTab
 // @connect      share.bellaris.fans
+// @connect      cdn.jsdelivr.net
 // @grant        unsafeWindow
 // @run-at       document-start
 // ==/UserScript==
@@ -60,7 +61,7 @@
   var define_SCRIPT_METADATA_default;
   var init_define_SCRIPT_METADATA = __esm({
     "<define:__SCRIPT_METADATA__>"() {
-      define_SCRIPT_METADATA_default = { version: "1.5.15", updateURL: "https://share.bellaris.fans/bella-gif-helper.user.js", downloadURL: "https://share.bellaris.fans/bella-gif-helper.user.js" };
+      define_SCRIPT_METADATA_default = { version: "1.5.16", updateURL: "https://share.bellaris.fans/bella-gif-helper.user.js", downloadURL: "https://share.bellaris.fans/bella-gif-helper.user.js", resources: { MODERN_PALETTE_MODULE: "https://cdn.jsdelivr.net/npm/modern-palette@2.0.0/dist/index.mjs", GIFENC_MODULE: "https://cdn.jsdelivr.net/npm/gifenc@1.0.3/dist/gifenc.esm.js", GIFSICLE_MODULE: "https://cdn.jsdelivr.net/npm/gifsicle-wasm-browser@1.5.19/dist/gifsicle.min.js", MEDIABUNNY_MODULE: "https://cdn.jsdelivr.net/npm/mediabunny@1.55.3/+esm" } };
     }
   });
 
@@ -3356,6 +3357,7 @@
         const ENCODER_MAX_IN_FLIGHT_PER_WORKER = 2;
         const EXPORT_UI_UPDATE_INTERVAL_MS = 120;
         const LOOP_FRAME_CACHE_BUDGET_BYTES = 192 * 1024 * 1024;
+        const RESOURCE_FALLBACK_TIMEOUT_MS = 6e4;
         const MIN_SELECT_PX = 24;
         const EDITOR_CROP_PADDING = 18;
         const EDITOR_VIEWPORT_MOTION_MS = 260;
@@ -6284,12 +6286,39 @@
           drawExportCanvasFrame(ctx, nextSettings, sourceVideo);
           setOutputPreviewVisible(true);
         }
+        function requestUserscriptResource(url) {
+          return new Promise((resolve) => {
+            const fail = () => resolve("");
+            try {
+              GM_xmlhttpRequest({
+                method: "GET",
+                url,
+                anonymous: true,
+                timeout: RESOURCE_FALLBACK_TIMEOUT_MS,
+                onload: (response) => resolve(response.status === 200 ? String(response.responseText || "") : ""),
+                onerror: fail,
+                ontimeout: fail,
+                onabort: fail
+              });
+            } catch (error) {
+              debugLog("requestUserscriptResource", error);
+              fail();
+            }
+          });
+        }
         async function readUserscriptResource(name) {
-          if (typeof GM_getResourceText === "function") return GM_getResourceText(name);
-          if (globalThis.GM && typeof globalThis.GM.getResourceText === "function") {
-            return globalThis.GM.getResourceText(name);
+          let text = "";
+          try {
+            if (typeof GM_getResourceText === "function") text = await GM_getResourceText(name);
+            else if (globalThis.GM && typeof globalThis.GM.getResourceText === "function") {
+              text = await globalThis.GM.getResourceText(name);
+            }
+          } catch (error) {
+            debugLog("readUserscriptResource", error);
           }
-          return "";
+          if (text) return text;
+          const url = define_SCRIPT_METADATA_default.resources?.[name];
+          return url ? requestUserscriptResource(url) : "";
         }
         async function loadExportMediaApi() {
           if (typeof VideoDecoder !== "function" || typeof VideoFrame !== "function") {
@@ -6298,7 +6327,7 @@
           if (!state.mediaModulePromise) {
             state.mediaModulePromise = (async () => {
               const source = await readUserscriptResource("MEDIABUNNY_MODULE");
-              if (!source) throw new Error("媒体解码组件加载失败。");
+              if (!source) throw new Error("媒体解码组件下载失败，请确认能访问 cdn.jsdelivr.net 后刷新页面重试。");
               const url = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
               try {
                 return await import(url);
@@ -7237,6 +7266,7 @@
           if (/GIF is not defined|编码库/i.test(message)) {
             return "GIF 编码组件加载失败，请刷新页面重试。";
           }
+          if (/下载失败/.test(message)) return message;
           if (/WebCodecs|媒体解码组件|视频编码无法/i.test(message)) {
             return `${message} 请使用最新版 Chromium，或切换直播画质后重试。`;
           }

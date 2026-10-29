@@ -2281,6 +2281,7 @@ const { buildPanelTemplate } = require('./ui/panel.js');
   const ENCODER_MAX_IN_FLIGHT_PER_WORKER = 2;
   const EXPORT_UI_UPDATE_INTERVAL_MS = 120;
   const LOOP_FRAME_CACHE_BUDGET_BYTES = 192 * 1024 * 1024;
+  const RESOURCE_FALLBACK_TIMEOUT_MS = 60_000;
   const MIN_SELECT_PX = 24;
   const EDITOR_CROP_PADDING = 18;
   const EDITOR_VIEWPORT_MOTION_MS = 260;
@@ -5375,12 +5376,42 @@ const { buildPanelTemplate } = require('./ui/panel.js');
     setOutputPreviewVisible(true);
   }
 
+  function requestUserscriptResource(url) {
+    return new Promise((resolve) => {
+      const fail = () => resolve('');
+      try {
+        GM_xmlhttpRequest({
+          method: 'GET',
+          url,
+          anonymous: true,
+          timeout: RESOURCE_FALLBACK_TIMEOUT_MS,
+          onload: (response) => resolve(response.status === 200 ? String(response.responseText || '') : ''),
+          onerror: fail,
+          ontimeout: fail,
+          onabort: fail,
+        });
+      } catch (error) {
+        debugLog('requestUserscriptResource', error);
+        fail();
+      }
+    });
+  }
+
   async function readUserscriptResource(name) {
-    if (typeof GM_getResourceText === 'function') return GM_getResourceText(name);
-    if (globalThis.GM && typeof globalThis.GM.getResourceText === 'function') {
-      return globalThis.GM.getResourceText(name);
+    let text = '';
+    try {
+      if (typeof GM_getResourceText === 'function') text = await GM_getResourceText(name);
+      else if (globalThis.GM && typeof globalThis.GM.getResourceText === 'function') {
+        text = await globalThis.GM.getResourceText(name);
+      }
+    } catch (error) {
+      debugLog('readUserscriptResource', error);
     }
-    return '';
+    if (text) return text;
+    // 脚本管理器有时会存下空资源，重装也不一定恢复；这里从 @resource 声明的同一个
+    // jsDelivr 地址再取一次，仍由用户浏览器直接下载，不经过本项目的存储。
+    const url = __SCRIPT_METADATA__.resources?.[name];
+    return url ? requestUserscriptResource(url) : '';
   }
 
   async function loadExportMediaApi() {
@@ -5390,7 +5421,7 @@ const { buildPanelTemplate } = require('./ui/panel.js');
     if (!state.mediaModulePromise) {
       state.mediaModulePromise = (async () => {
         const source = await readUserscriptResource('MEDIABUNNY_MODULE');
-        if (!source) throw new Error('媒体解码组件加载失败。');
+        if (!source) throw new Error('媒体解码组件下载失败，请确认能访问 cdn.jsdelivr.net 后刷新页面重试。');
         const url = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
         try {
           return await import(url);
@@ -6370,6 +6401,7 @@ const { buildPanelTemplate } = require('./ui/panel.js');
     if (/GIF is not defined|编码库/i.test(message)) {
       return 'GIF 编码组件加载失败，请刷新页面重试。';
     }
+    if (/下载失败/.test(message)) return message;
     if (/WebCodecs|媒体解码组件|视频编码无法/i.test(message)) {
       return `${message} 请使用最新版 Chromium，或切换直播画质后重试。`;
     }

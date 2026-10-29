@@ -7,6 +7,9 @@ const metadata = Object.fromEntries(['version', 'updateURL', 'downloadURL'].map(
   if (!value) throw new Error(`Missing @${key}`);
   return [key, value];
 }));
+metadata.resources = Object.fromEntries(
+  [...header.matchAll(/^\/\/ @resource\s+(\S+)\s+(\S+)/gm)].map(([, name, url]) => [name, url]),
+);
 
 await build({
   entryPoints: ['src/main.js'],
