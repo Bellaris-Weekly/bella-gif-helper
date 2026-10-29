@@ -60,7 +60,7 @@
   var define_SCRIPT_METADATA_default;
   var init_define_SCRIPT_METADATA = __esm({
     "<define:__SCRIPT_METADATA__>"() {
-      define_SCRIPT_METADATA_default = { version: "1.5.18", updateURL: "https://share.bellaris.fans/bella-gif-helper.user.js", downloadURL: "https://share.bellaris.fans/bella-gif-helper.user.js", resources: { MODERN_PALETTE_MODULE: "https://share.bellaris.fans/dependencies/modern-palette@2.0.0/dist/index.mjs", GIFENC_MODULE: "https://share.bellaris.fans/dependencies/gifenc@1.0.3/dist/gifenc.esm.js", GIFSICLE_MODULE: "https://share.bellaris.fans/dependencies/gifsicle-wasm-browser@1.5.19/dist/gifsicle.min.js", MEDIABUNNY_MODULE: "https://share.bellaris.fans/dependencies/mediabunny@1.55.3/+esm" } };
+      define_SCRIPT_METADATA_default = { version: "1.5.18", updateURL: "https://share.bellaris.fans/bella-gif-helper.user.js", downloadURL: "https://share.bellaris.fans/bella-gif-helper.user.js" };
     }
   });
 
@@ -1014,8 +1014,6 @@
     color: var(--color-text-muted);
     font-size: 12px;
     line-height: 1.45;
-    white-space: pre-line;
-    overflow-wrap: anywhere;
   }
   #status.success { color: var(--color-success); border-color: rgba(112, 217, 170, .26); }
   #status.error { color: #ff938e; border-color: rgba(255, 113, 107, .28); background: rgba(255, 113, 107, .07); }
@@ -3358,7 +3356,6 @@
         const ENCODER_MAX_IN_FLIGHT_PER_WORKER = 2;
         const EXPORT_UI_UPDATE_INTERVAL_MS = 120;
         const LOOP_FRAME_CACHE_BUDGET_BYTES = 192 * 1024 * 1024;
-        const RESOURCE_FALLBACK_TIMEOUT_MS = 6e4;
         const MIN_SELECT_PX = 24;
         const EDITOR_CROP_PADDING = 18;
         const EDITOR_VIEWPORT_MOTION_MS = 260;
@@ -6287,72 +6284,12 @@
           drawExportCanvasFrame(ctx, nextSettings, sourceVideo);
           setOutputPreviewVisible(true);
         }
-        const resourceFailureNotes = /* @__PURE__ */ new Map();
-        function requestUserscriptResource(url) {
-          return new Promise((resolve) => {
-            const fail = (reason) => resolve({ text: "", note: `GM 请求${reason}` });
-            try {
-              GM_xmlhttpRequest({
-                method: "GET",
-                url,
-                anonymous: true,
-                timeout: RESOURCE_FALLBACK_TIMEOUT_MS,
-                onload: (response) => {
-                  const text = response.status === 200 ? String(response.responseText || "") : "";
-                  if (text) resolve({ text, note: "" });
-                  else fail(response.status === 200 ? "返回空内容" : `状态 ${response.status}`);
-                },
-                onerror: (response) => fail(`出错${response?.error ? `（${response.error}）` : ""}`),
-                ontimeout: () => fail("超时"),
-                onabort: () => fail("被中止")
-              });
-            } catch (error) {
-              debugLog("requestUserscriptResource", error);
-              fail(`异常（${error?.message || error}）`);
-            }
-          });
-        }
-        async function fetchUserscriptResource(url) {
-          try {
-            const response = await fetch(url, { credentials: "omit", cache: "no-cache" });
-            if (!response.ok) return { text: "", note: `页面请求状态 ${response.status}` };
-            const text = await response.text();
-            return { text, note: text ? "" : "页面请求返回空内容" };
-          } catch (error) {
-            debugLog("fetchUserscriptResource", error);
-            return { text: "", note: `页面请求失败（${error?.message || error}）` };
-          }
-        }
         async function readUserscriptResource(name) {
-          const notes = [];
-          let text = "";
-          try {
-            if (typeof GM_getResourceText === "function") text = await GM_getResourceText(name);
-            else if (globalThis.GM && typeof globalThis.GM.getResourceText === "function") {
-              text = await globalThis.GM.getResourceText(name);
-            }
-            if (!text) notes.push("管理器资源为空");
-          } catch (error) {
-            debugLog("readUserscriptResource", error);
-            notes.push(`管理器资源读取异常（${error?.message || error}）`);
+          if (typeof GM_getResourceText === "function") return GM_getResourceText(name);
+          if (globalThis.GM && typeof globalThis.GM.getResourceText === "function") {
+            return globalThis.GM.getResourceText(name);
           }
-          const url = define_SCRIPT_METADATA_default.resources?.[name];
-          if (!text && url) {
-            for (const attempt of [requestUserscriptResource, fetchUserscriptResource]) {
-              const result = await attempt(url);
-              if (result.text) {
-                text = result.text;
-                break;
-              }
-              notes.push(result.note);
-            }
-          }
-          if (text) resourceFailureNotes.delete(name);
-          else resourceFailureNotes.set(name, notes.join("；"));
-          return text || "";
-        }
-        function describeResourceFailures(names) {
-          return names.filter((name) => resourceFailureNotes.has(name)).map((name) => `${name}：${resourceFailureNotes.get(name)}`).join("\n");
+          return "";
         }
         async function loadExportMediaApi() {
           if (typeof VideoDecoder !== "function" || typeof VideoFrame !== "function") {
@@ -6361,10 +6298,7 @@
           if (!state.mediaModulePromise) {
             state.mediaModulePromise = (async () => {
               const source = await readUserscriptResource("MEDIABUNNY_MODULE");
-              if (!source) {
-                throw new Error(`媒体解码组件下载失败，请确认能访问 share.bellaris.fans 后刷新页面重试。
-${describeResourceFailures(["MEDIABUNNY_MODULE"])}`);
-              }
+              if (!source) throw new Error("媒体解码组件加载失败。");
               const url = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
               try {
                 return await import(url);
@@ -6388,11 +6322,7 @@ ${describeResourceFailures(["MEDIABUNNY_MODULE"])}`);
             readUserscriptResource("GIFENC_MODULE"),
             readUserscriptResource("GIFSICLE_MODULE")
           ]);
-          if (!modernPalette || !gifenc || !gifsicle) {
-            const details = describeResourceFailures(["MODERN_PALETTE_MODULE", "GIFENC_MODULE", "GIFSICLE_MODULE"]);
-            throw new Error(`编码组件下载失败，请确认能访问 share.bellaris.fans 后刷新页面重试。
-${details}`);
-          }
+          if (!modernPalette || !gifenc || !gifsicle) throw new Error("编码组件加载失败，请刷新页面重试。");
           state.encodingResourceTexts = { modernPalette, gifenc, gifsicle };
           return state.encodingResourceTexts;
         }
@@ -7307,7 +7237,6 @@ ${details}`);
           if (/GIF is not defined|编码库/i.test(message)) {
             return "GIF 编码组件加载失败，请刷新页面重试。";
           }
-          if (/下载失败/.test(message)) return message;
           if (/WebCodecs|媒体解码组件|视频编码无法/i.test(message)) {
             return `${message} 请使用最新版 Chromium，或切换直播画质后重试。`;
           }

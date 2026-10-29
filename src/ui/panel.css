@@ -843,8 +843,6 @@
     color: var(--color-text-muted);
     font-size: 12px;
     line-height: 1.45;
-    white-space: pre-line;
-    overflow-wrap: anywhere;
   }
   #status.success { color: var(--color-success); border-color: rgba(112, 217, 170, .26); }
   #status.error { color: #ff938e; border-color: rgba(255, 113, 107, .28); background: rgba(255, 113, 107, .07); }
