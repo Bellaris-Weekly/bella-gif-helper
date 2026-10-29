@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         贝报 GIF 助手
 // @namespace    https://www.bk0717.com/
-// @version      1.5.17
+// @version      1.5.18
 // @description  B站直播回溯、视频框选录制与 GIF 编辑
 // @author       贝极星周报
 // @homepageURL  https://github.com/Bellaris-Weekly/bella-gif-helper
@@ -16,17 +16,16 @@
 // @match        https://www.bilibili.com/cheese/play/*
 // @match        https://live.bilibili.com/*
 // @match        https://m.bilibili.com/video/*
-// @resource     MODERN_PALETTE_MODULE https://cdn.jsdelivr.net/npm/modern-palette@2.0.0/dist/index.mjs
-// @resource     GIFENC_MODULE https://cdn.jsdelivr.net/npm/gifenc@1.0.3/dist/gifenc.esm.js
-// @resource     GIFSICLE_MODULE https://cdn.jsdelivr.net/npm/gifsicle-wasm-browser@1.5.19/dist/gifsicle.min.js
-// @resource     MEDIABUNNY_MODULE https://cdn.jsdelivr.net/npm/mediabunny@1.55.3/+esm
+// @resource     MODERN_PALETTE_MODULE https://share.bellaris.fans/dependencies/modern-palette@2.0.0/dist/index.mjs
+// @resource     GIFENC_MODULE https://share.bellaris.fans/dependencies/gifenc@1.0.3/dist/gifenc.esm.js
+// @resource     GIFSICLE_MODULE https://share.bellaris.fans/dependencies/gifsicle-wasm-browser@1.5.19/dist/gifsicle.min.js
+// @resource     MEDIABUNNY_MODULE https://share.bellaris.fans/dependencies/mediabunny@1.55.3/+esm
 // @grant        GM_getResourceText
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_xmlhttpRequest
 // @grant        GM_openInTab
 // @connect      share.bellaris.fans
-// @connect      cdn.jsdelivr.net
 // @grant        unsafeWindow
 // @run-at       document-start
 // ==/UserScript==
@@ -61,7 +60,7 @@
   var define_SCRIPT_METADATA_default;
   var init_define_SCRIPT_METADATA = __esm({
     "<define:__SCRIPT_METADATA__>"() {
-      define_SCRIPT_METADATA_default = { version: "1.5.17", updateURL: "https://share.bellaris.fans/bella-gif-helper.user.js", downloadURL: "https://share.bellaris.fans/bella-gif-helper.user.js", resources: { MODERN_PALETTE_MODULE: "https://cdn.jsdelivr.net/npm/modern-palette@2.0.0/dist/index.mjs", GIFENC_MODULE: "https://cdn.jsdelivr.net/npm/gifenc@1.0.3/dist/gifenc.esm.js", GIFSICLE_MODULE: "https://cdn.jsdelivr.net/npm/gifsicle-wasm-browser@1.5.19/dist/gifsicle.min.js", MEDIABUNNY_MODULE: "https://cdn.jsdelivr.net/npm/mediabunny@1.55.3/+esm" } };
+      define_SCRIPT_METADATA_default = { version: "1.5.18", updateURL: "https://share.bellaris.fans/bella-gif-helper.user.js", downloadURL: "https://share.bellaris.fans/bella-gif-helper.user.js", resources: { MODERN_PALETTE_MODULE: "https://share.bellaris.fans/dependencies/modern-palette@2.0.0/dist/index.mjs", GIFENC_MODULE: "https://share.bellaris.fans/dependencies/gifenc@1.0.3/dist/gifenc.esm.js", GIFSICLE_MODULE: "https://share.bellaris.fans/dependencies/gifsicle-wasm-browser@1.5.19/dist/gifsicle.min.js", MEDIABUNNY_MODULE: "https://share.bellaris.fans/dependencies/mediabunny@1.55.3/+esm" } };
     }
   });
 
@@ -6363,7 +6362,7 @@
             state.mediaModulePromise = (async () => {
               const source = await readUserscriptResource("MEDIABUNNY_MODULE");
               if (!source) {
-                throw new Error(`媒体解码组件下载失败，请确认能访问 cdn.jsdelivr.net 后刷新页面重试。
+                throw new Error(`媒体解码组件下载失败，请确认能访问 share.bellaris.fans 后刷新页面重试。
 ${describeResourceFailures(["MEDIABUNNY_MODULE"])}`);
               }
               const url = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
@@ -6391,7 +6390,7 @@ ${describeResourceFailures(["MEDIABUNNY_MODULE"])}`);
           ]);
           if (!modernPalette || !gifenc || !gifsicle) {
             const details = describeResourceFailures(["MODERN_PALETTE_MODULE", "GIFENC_MODULE", "GIFSICLE_MODULE"]);
-            throw new Error(`编码组件下载失败，请确认能访问 cdn.jsdelivr.net 后刷新页面重试。
+            throw new Error(`编码组件下载失败，请确认能访问 share.bellaris.fans 后刷新页面重试。
 ${details}`);
           }
           state.encodingResourceTexts = { modernPalette, gifenc, gifsicle };

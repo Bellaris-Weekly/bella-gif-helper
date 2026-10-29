@@ -5429,8 +5429,7 @@ const { buildPanelTemplate } = require('./ui/panel.js');
       notes.push(`管理器资源读取异常（${error?.message || error}）`);
     }
     // 脚本管理器有时会存下空资源，重装也不一定恢复；这里从 @resource 声明的同一个
-    // jsDelivr 地址再取：先走 GM 请求，再走页面 fetch（与用户直接打开地址同一网络路径）。
-    // 仍由用户浏览器直接下载，不经过本项目的存储。
+    // 地址再取：先走 GM 请求，再走页面 fetch（与用户直接打开地址同一网络路径）。
     const url = __SCRIPT_METADATA__.resources?.[name];
     if (!text && url) {
       for (const attempt of [requestUserscriptResource, fetchUserscriptResource]) {
@@ -5462,7 +5461,7 @@ const { buildPanelTemplate } = require('./ui/panel.js');
       state.mediaModulePromise = (async () => {
         const source = await readUserscriptResource('MEDIABUNNY_MODULE');
         if (!source) {
-          throw new Error(`媒体解码组件下载失败，请确认能访问 cdn.jsdelivr.net 后刷新页面重试。\n${describeResourceFailures(['MEDIABUNNY_MODULE'])}`);
+          throw new Error(`媒体解码组件下载失败，请确认能访问 share.bellaris.fans 后刷新页面重试。\n${describeResourceFailures(['MEDIABUNNY_MODULE'])}`);
         }
         const url = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
         try {
@@ -5491,7 +5490,7 @@ const { buildPanelTemplate } = require('./ui/panel.js');
     ]);
     if (!modernPalette || !gifenc || !gifsicle) {
       const details = describeResourceFailures(['MODERN_PALETTE_MODULE', 'GIFENC_MODULE', 'GIFSICLE_MODULE']);
-      throw new Error(`编码组件下载失败，请确认能访问 cdn.jsdelivr.net 后刷新页面重试。\n${details}`);
+      throw new Error(`编码组件下载失败，请确认能访问 share.bellaris.fans 后刷新页面重试。\n${details}`);
     }
     state.encodingResourceTexts = { modernPalette, gifenc, gifsicle };
     return state.encodingResourceTexts;
