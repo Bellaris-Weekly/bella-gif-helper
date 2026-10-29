@@ -5376,42 +5376,82 @@ const { buildPanelTemplate } = require('./ui/panel.js');
     setOutputPreviewVisible(true);
   }
 
+  const resourceFailureNotes = new Map();
+
   function requestUserscriptResource(url) {
     return new Promise((resolve) => {
-      const fail = () => resolve('');
+      const fail = (reason) => resolve({ text: '', note: `GM 请求${reason}` });
       try {
         GM_xmlhttpRequest({
           method: 'GET',
           url,
           anonymous: true,
           timeout: RESOURCE_FALLBACK_TIMEOUT_MS,
-          onload: (response) => resolve(response.status === 200 ? String(response.responseText || '') : ''),
-          onerror: fail,
-          ontimeout: fail,
-          onabort: fail,
+          onload: (response) => {
+            const text = response.status === 200 ? String(response.responseText || '') : '';
+            if (text) resolve({ text, note: '' });
+            else fail(response.status === 200 ? '返回空内容' : `状态 ${response.status}`);
+          },
+          onerror: (response) => fail(`出错${response?.error ? `（${response.error}）` : ''}`),
+          ontimeout: () => fail('超时'),
+          onabort: () => fail('被中止'),
         });
       } catch (error) {
         debugLog('requestUserscriptResource', error);
-        fail();
+        fail(`异常（${error?.message || error}）`);
       }
     });
   }
 
+  async function fetchUserscriptResource(url) {
+    try {
+      const response = await fetch(url, { credentials: 'omit', cache: 'no-cache' });
+      if (!response.ok) return { text: '', note: `页面请求状态 ${response.status}` };
+      const text = await response.text();
+      return { text, note: text ? '' : '页面请求返回空内容' };
+    } catch (error) {
+      debugLog('fetchUserscriptResource', error);
+      return { text: '', note: `页面请求失败（${error?.message || error}）` };
+    }
+  }
+
   async function readUserscriptResource(name) {
+    const notes = [];
     let text = '';
     try {
       if (typeof GM_getResourceText === 'function') text = await GM_getResourceText(name);
       else if (globalThis.GM && typeof globalThis.GM.getResourceText === 'function') {
         text = await globalThis.GM.getResourceText(name);
       }
+      if (!text) notes.push('管理器资源为空');
     } catch (error) {
       debugLog('readUserscriptResource', error);
+      notes.push(`管理器资源读取异常（${error?.message || error}）`);
     }
-    if (text) return text;
     // 脚本管理器有时会存下空资源，重装也不一定恢复；这里从 @resource 声明的同一个
-    // jsDelivr 地址再取一次，仍由用户浏览器直接下载，不经过本项目的存储。
+    // jsDelivr 地址再取：先走 GM 请求，再走页面 fetch（与用户直接打开地址同一网络路径）。
+    // 仍由用户浏览器直接下载，不经过本项目的存储。
     const url = __SCRIPT_METADATA__.resources?.[name];
-    return url ? requestUserscriptResource(url) : '';
+    if (!text && url) {
+      for (const attempt of [requestUserscriptResource, fetchUserscriptResource]) {
+        const result = await attempt(url);
+        if (result.text) {
+          text = result.text;
+          break;
+        }
+        notes.push(result.note);
+      }
+    }
+    if (text) resourceFailureNotes.delete(name);
+    else resourceFailureNotes.set(name, notes.join('；'));
+    return text || '';
+  }
+
+  function describeResourceFailures(names) {
+    return names
+      .filter((name) => resourceFailureNotes.has(name))
+      .map((name) => `${name}：${resourceFailureNotes.get(name)}`)
+      .join('\n');
   }
 
   async function loadExportMediaApi() {
@@ -5421,7 +5461,9 @@ const { buildPanelTemplate } = require('./ui/panel.js');
     if (!state.mediaModulePromise) {
       state.mediaModulePromise = (async () => {
         const source = await readUserscriptResource('MEDIABUNNY_MODULE');
-        if (!source) throw new Error('媒体解码组件下载失败，请确认能访问 cdn.jsdelivr.net 后刷新页面重试。');
+        if (!source) {
+          throw new Error(`媒体解码组件下载失败，请确认能访问 cdn.jsdelivr.net 后刷新页面重试。\n${describeResourceFailures(['MEDIABUNNY_MODULE'])}`);
+        }
         const url = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
         try {
           return await import(url);
@@ -5447,7 +5489,10 @@ const { buildPanelTemplate } = require('./ui/panel.js');
       readUserscriptResource('GIFENC_MODULE'),
       readUserscriptResource('GIFSICLE_MODULE'),
     ]);
-    if (!modernPalette || !gifenc || !gifsicle) throw new Error('编码组件加载失败，请刷新页面重试。');
+    if (!modernPalette || !gifenc || !gifsicle) {
+      const details = describeResourceFailures(['MODERN_PALETTE_MODULE', 'GIFENC_MODULE', 'GIFSICLE_MODULE']);
+      throw new Error(`编码组件下载失败，请确认能访问 cdn.jsdelivr.net 后刷新页面重试。\n${details}`);
+    }
     state.encodingResourceTexts = { modernPalette, gifenc, gifsicle };
     return state.encodingResourceTexts;
   }
