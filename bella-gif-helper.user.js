@@ -182,19 +182,19 @@
       }
       function captureVideoPng(video, rootDocument) {
         if (!video || video.readyState < 2 || video.seeking || !video.videoWidth || !video.videoHeight) {
-          return Promise.reject(new Error("当前没有可截图的画面，请等待直播开始播放。"));
+          return Promise.reject(new Error("暂无画面，请稍后重试"));
         }
         return new Promise((resolve, reject) => {
           const canvas = rootDocument.createElement("canvas");
           canvas.width = video.videoWidth;
           canvas.height = video.videoHeight;
           const context = canvas.getContext("2d", { alpha: false });
-          if (!context) throw new Error("浏览器无法创建截图画布。");
+          if (!context) throw new Error("截图失败，请重试");
           context.drawImage(video, 0, 0, canvas.width, canvas.height);
           canvas.toBlob((blob) => {
             canvas.width = canvas.height = 0;
             if (blob) resolve(blob);
-            else reject(new Error("截图编码失败，请重试。"));
+            else reject(new Error("截图失败，请重试"));
           }, "image/png");
         });
       }
@@ -202,26 +202,27 @@
         const pad = (value, length = 2) => String(value).padStart(length, "0");
         const stamp = `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}_${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}_${pad(date.getMilliseconds(), 3)}`;
         const source = String(identity.streamerName || identity.roomId || "直播间").replace(/[\\/:*?"<>|\u0000-\u001f]/g, "_");
-        return `贝报截图_${source}_${stamp}.png`;
+        return `${source}_${stamp}.png`;
       }
       function installLiveScreenshot({ rootDocument, selectVideo, getIdentity, download }) {
         const view = rootDocument.defaultView;
         const controls = /* @__PURE__ */ new WeakSet();
         let notice = null;
         let noticeTimer = null;
+        const clearNotice = () => {
+          notice?.remove();
+          notice = null;
+          view.clearTimeout(noticeTimer);
+        };
         const showNotice = (control, message) => {
           if (!control.isConnected) return;
-          notice?.remove();
-          view.clearTimeout(noticeTimer);
+          clearNotice();
           notice = rootDocument.createElement("div");
           notice.setAttribute("role", "status");
           notice.textContent = message;
           notice.style.cssText = "position:absolute;top:44px;right:12px;z-index:101;max-width:calc(100% - 24px);padding:8px 12px;border-radius:6px;background:#000c;color:#fff;font:13px/1.5 sans-serif;pointer-events:none;";
           control.parentElement.appendChild(notice);
-          noticeTimer = view.setTimeout(() => {
-            notice?.remove();
-            notice = null;
-          }, 3500);
+          noticeTimer = view.setTimeout(clearNotice, 3500);
         };
         const enhance = (control) => {
           if (!control.querySelector("[data-bella-screenshot-icon]")) control.innerHTML = CAMERA_ICON;
@@ -236,18 +237,16 @@
             event.preventDefault();
             event.stopImmediatePropagation();
             if (busy) return;
+            clearNotice();
             busy = true;
             control.setAttribute("aria-busy", "true");
             try {
               const video = findScreenshotVideo(control, selectVideo);
               const fileName = formatScreenshotFileName(/* @__PURE__ */ new Date(), getIdentity());
-              const width = video?.videoWidth;
-              const height = video?.videoHeight;
               const blob = await captureVideoPng(video, rootDocument);
               download(blob, fileName);
-              showNotice(control, `已发起下载：${width} × ${height} PNG`);
             } catch (error) {
-              showNotice(control, error.name === "SecurityError" ? "浏览器限制读取该视频画面，无法截图。" : `截图失败：${error.message}`);
+              showNotice(control, error.name === "SecurityError" ? "浏览器不允许截图" : error.message);
             } finally {
               busy = false;
               control.removeAttribute("aria-busy");

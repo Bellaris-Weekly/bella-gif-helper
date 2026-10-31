@@ -50,7 +50,7 @@ test('freezes the click-time frame before asynchronous encoding finishes', async
 test('rejects unavailable or seeking video without exporting a blank image', async () => {
   for (const video of [null, { readyState: 1 }, { readyState: 2, videoWidth: 0, videoHeight: 1080 },
     { readyState: 2, videoWidth: 1920, videoHeight: 1080, seeking: true }]) {
-    await assert.rejects(captureVideoPng(video, { createElement() { assert.fail('must not create a canvas'); } }), /当前没有/);
+    await assert.rejects(captureVideoPng(video, { createElement() { assert.fail('must not create a canvas'); } }), /暂无画面/);
   }
 });
 
@@ -58,7 +58,7 @@ test('reports failed encoding and browser cross-origin rejection', async () => {
   const fixture = captureFixture(1920, 1080, { blob: null });
   const pending = captureVideoPng(fixture.video, fixture.doc);
   fixture.finish();
-  await assert.rejects(pending, /编码失败/);
+  await assert.rejects(pending, /截图失败/);
   const restricted = captureFixture(1920, 1080, { error: new DOMException('tainted', 'SecurityError') });
   await assert.rejects(captureVideoPng(restricted.video, restricted.doc), { name: 'SecurityError' });
 });
@@ -76,8 +76,8 @@ test('selects the video within the clicked player instead of another player or t
 
 test('names screenshots using local click time and safe streamer names', () => {
   const date = new Date(2026, 9, 31, 20, 1, 2, 7);
-  assert.equal(formatScreenshotFileName(date, { streamerName: '贝拉/测试:直播' }), '贝报截图_贝拉_测试_直播_20261031_200102_007.png');
-  assert.equal(formatScreenshotFileName(date, { roomId: '1234' }), '贝报截图_1234_20261031_200102_007.png');
+  assert.equal(formatScreenshotFileName(date, { streamerName: '贝拉/测试:直播' }), '贝拉_测试_直播_20261031_200102_007.png');
+  assert.equal(formatScreenshotFileName(date, { roomId: '1234' }), '1234_20261031_200102_007.png');
 });
 
 const { JSDOM } = require('jsdom');
@@ -142,7 +142,7 @@ test('replaces feedback in place and one click downloads once without opening fe
   await flush();
   assert.equal(page.downloads.length, 1);
   assert.equal(control.hasAttribute('aria-busy'), false);
-  assert.match(page.document.querySelector('[role=status]').textContent, /1920 × 1080 PNG/);
+  assert.equal(page.document.querySelector('[role=status]'), null);
 });
 
 test('late loading, player replacement and icon redraw do not lose the action or duplicate it', async t => {
@@ -190,9 +190,10 @@ test('no local video never captures a different player, and failure permits a re
   await flush();
   assert.equal(page.frames.length, 0);
   assert.equal(page.downloads.length, 0);
-  assert.match(page.document.querySelector('[role=status]').textContent, /当前没有/);
+  assert.match(page.document.querySelector('[role=status]').textContent, /暂无画面/);
   first.player.prepend(first.video);
   first.control.click();
+  assert.equal(page.document.querySelector('[role=status]'), null);
   page.finish();
   await flush();
   assert.equal(page.downloads.length, 1);
