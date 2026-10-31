@@ -1,0 +1,54 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>直播截图浏览器验证</title>
+<style>
+  body { background:#17191e;color:#fff;font:16px system-ui;margin:24px }
+  .player { position:relative;width:min(640px,100%);background:#000 }
+  video { display:block;width:100% }
+  .web-player-icon-feedback { position:absolute;top:0;right:12px;width:36px;height:36px;cursor:pointer;z-index:100 }
+  .overlay { position:absolute;top:60px;left:10px;color:magenta;font-size:28px }
+  button { margin:12px 12px 12px 0;padding:8px }
+  iframe { width:720px;max-width:100%;height:560px;border:1px solid #555 }
+</style>
+<h1>直播截图浏览器验证</h1>
+<p>真实 H.264 视频；点播放器右上角相机，检查原尺寸 PNG 下载。</p>
+<div id="mount"></div>
+<button id="remount">重建播放器</button>
+<p id="report" role="status">等待截图</p>
+<script>var module = { exports: {} };</script>
+<script src="../src/live-screenshot.js"></script>
+<script>
+  let nativeFeedbackClicks = 0;
+  let captures = 0;
+  function mount() {
+    document.querySelector('#mount').innerHTML = '<div class="player"><video autoplay muted loop playsinline controls src="fixtures/avc-bframes-fragmented.mp4"></video><div class="overlay">网页弹幕不应出现在截图中</div><div class="web-player-icon-feedback">反馈</div></div>';
+    document.querySelector('.web-player-icon-feedback').addEventListener('click', () => nativeFeedbackClicks++);
+  }
+  mount();
+  document.querySelector('#remount').onclick = mount;
+  installLiveScreenshot({
+    rootDocument: document,
+    selectVideo: root => root.querySelector('video'),
+    getIdentity: () => ({ streamerName: '浏览器验证' }),
+    async download(blob, fileName) {
+      const bitmap = await createImageBitmap(blob);
+      const video = document.querySelector('video');
+      const valid = blob.type === 'image/png' && bitmap.width === video.videoWidth && bitmap.height === video.videoHeight && nativeFeedbackClicks === 0;
+      document.querySelector('#report').textContent = `${valid ? 'PASS' : 'FAIL'}：${++captures} 次截图；PNG ${bitmap.width} × ${bitmap.height}；视频 ${video.videoWidth} × ${video.videoHeight}；原反馈触发 ${nativeFeedbackClicks} 次；${blob.size} 字节`;
+      bitmap.close();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = fileName;
+      anchor.click();
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    }
+  });
+  if (!location.search) {
+    const heading = document.createElement('h2');
+    heading.textContent = '内嵌播放器';
+    const iframe = document.createElement('iframe');
+    iframe.src = '?frame=1';
+    document.body.append(heading, iframe);
+  }
+</script>

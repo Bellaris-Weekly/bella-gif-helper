@@ -1,6 +1,7 @@
 'use strict';
 
 const { bindVersionButton } = require('./update-check.js');
+const { installLiveScreenshot } = require('./live-screenshot.js');
 
 const { buildPanelTemplate } = require('./ui/panel.js');
 
@@ -2189,6 +2190,18 @@ const { buildPanelTemplate } = require('./ui/panel.js');
     return prefs;
   }
 
+  function downloadBlob(blob, fileName) {
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = fileName || '贝报gif.gif';
+    anchor.style.display = 'none';
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  }
+
   const IS_LIVE_PAGE = location.hostname === 'live.bilibili.com';
   const IS_TOP_WINDOW = window.top === window;
   const pageWindow = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
@@ -2201,6 +2214,17 @@ const { buildPanelTemplate } = require('./ui/panel.js');
   const localLiveMediaCollector = IS_LIVE_PAGE
     ? installLiveMediaCollector(pageWindow, initialLiveCaptureMode === 'rewind')
     : null;
+
+  if (IS_LIVE_PAGE) {
+    const startScreenshot = () => installLiveScreenshot({
+      rootDocument: document,
+      selectVideo: scanDocumentVideo,
+      getIdentity: () => getLiveIdentity(document),
+      download: downloadBlob,
+    });
+    if (document.documentElement) startScreenshot();
+    else document.addEventListener('DOMContentLoaded', startScreenshot, { once: true });
+  }
 
   if (!IS_TOP_WINDOW) {
     if (IS_LIVE_PAGE) installLiveFrameAgent(localLiveMediaCollector);
@@ -6089,18 +6113,6 @@ const { buildPanelTemplate } = require('./ui/panel.js');
     return formatGifFileName(Date.now(), bvid, { sourcePosition: 'before-timestamp' });
   }
 
-
-  function downloadBlob(blob, fileName) {
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = fileName || '贝报gif.gif';
-    anchor.style.display = 'none';
-    document.body.appendChild(anchor);
-    anchor.click();
-    anchor.remove();
-    window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
-  }
 
   // 循环模式下所有输出帧统一转成 ImageBitmap：按输出尺寸预缩放整帧（裁剪比例不变），
   // 正放、倒放、叠化帧走同一条路径，避免折返处画质跳变。

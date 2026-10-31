@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         贝报 GIF 助手
 // @namespace    https://www.bk0717.com/
-// @version      1.5.18
+// @version      1.5.19
 // @description  B站直播回溯、视频框选录制与 GIF 编辑
 // @author       贝极星周报
 // @homepageURL  https://github.com/Bellaris-Weekly/bella-gif-helper
@@ -60,7 +60,7 @@
   var define_SCRIPT_METADATA_default;
   var init_define_SCRIPT_METADATA = __esm({
     "<define:__SCRIPT_METADATA__>"() {
-      define_SCRIPT_METADATA_default = { version: "1.5.18", updateURL: "https://share.bellaris.fans/bella-gif-helper.user.js", downloadURL: "https://share.bellaris.fans/bella-gif-helper.user.js" };
+      define_SCRIPT_METADATA_default = { version: "1.5.19", updateURL: "https://share.bellaris.fans/bella-gif-helper.user.js", downloadURL: "https://share.bellaris.fans/bella-gif-helper.user.js" };
     }
   });
 
@@ -163,6 +163,127 @@
         check();
       }
       module.exports = { compareVersions, readRemoteVersion, bindVersionButton };
+    }
+  });
+
+  // src/live-screenshot.js
+  var require_live_screenshot = __commonJS({
+    "src/live-screenshot.js"(exports, module) {
+      "use strict";
+      init_define_SCRIPT_METADATA();
+      var FEEDBACK_SELECTOR = ".web-player-icon-feedback";
+      var SCREENSHOT_LABEL = "截图（原尺寸 PNG）";
+      var CAMERA_ICON = '<svg data-bella-screenshot-icon viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" style="display:block;margin:6px;pointer-events:none;filter:drop-shadow(0 1px 2px #0008)"><path d="M8 5l1.5-2h5L16 5h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z" fill="none" stroke="white" stroke-width="1.8" stroke-linejoin="round"/><circle cx="12" cy="12.5" r="4" fill="none" stroke="white" stroke-width="1.8"/></svg>';
+      function findScreenshotVideo(control, selectVideo) {
+        for (let parent = control.parentElement; parent && parent !== control.ownerDocument?.body; parent = parent.parentElement) {
+          if (parent.querySelector("video")) return selectVideo(parent);
+        }
+        return null;
+      }
+      function captureVideoPng(video, rootDocument) {
+        if (!video || video.readyState < 2 || video.seeking || !video.videoWidth || !video.videoHeight) {
+          return Promise.reject(new Error("当前没有可截图的画面，请等待直播开始播放。"));
+        }
+        return new Promise((resolve, reject) => {
+          const canvas = rootDocument.createElement("canvas");
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+          const context = canvas.getContext("2d", { alpha: false });
+          if (!context) throw new Error("浏览器无法创建截图画布。");
+          context.drawImage(video, 0, 0, canvas.width, canvas.height);
+          canvas.toBlob((blob) => {
+            canvas.width = canvas.height = 0;
+            if (blob) resolve(blob);
+            else reject(new Error("截图编码失败，请重试。"));
+          }, "image/png");
+        });
+      }
+      function formatScreenshotFileName(date, identity) {
+        const pad = (value, length = 2) => String(value).padStart(length, "0");
+        const stamp = `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}_${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}_${pad(date.getMilliseconds(), 3)}`;
+        const source = String(identity.streamerName || identity.roomId || "直播间").replace(/[\\/:*?"<>|\u0000-\u001f]/g, "_");
+        return `贝报截图_${source}_${stamp}.png`;
+      }
+      function installLiveScreenshot({ rootDocument, selectVideo, getIdentity, download }) {
+        const view = rootDocument.defaultView;
+        const controls = /* @__PURE__ */ new WeakSet();
+        let notice = null;
+        let noticeTimer = null;
+        const showNotice = (control, message) => {
+          if (!control.isConnected) return;
+          notice?.remove();
+          view.clearTimeout(noticeTimer);
+          notice = rootDocument.createElement("div");
+          notice.setAttribute("role", "status");
+          notice.textContent = message;
+          notice.style.cssText = "position:absolute;top:44px;right:12px;z-index:101;max-width:calc(100% - 24px);padding:8px 12px;border-radius:6px;background:#000c;color:#fff;font:13px/1.5 sans-serif;pointer-events:none;";
+          control.parentElement.appendChild(notice);
+          noticeTimer = view.setTimeout(() => {
+            notice?.remove();
+            notice = null;
+          }, 3500);
+        };
+        const enhance = (control) => {
+          if (!control.querySelector("[data-bella-screenshot-icon]")) control.innerHTML = CAMERA_ICON;
+          control.title = SCREENSHOT_LABEL;
+          control.setAttribute("aria-label", SCREENSHOT_LABEL);
+          control.setAttribute("role", "button");
+          control.tabIndex = 0;
+          if (controls.has(control)) return;
+          controls.add(control);
+          let busy = false;
+          const capture = async (event) => {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            if (busy) return;
+            busy = true;
+            control.setAttribute("aria-busy", "true");
+            try {
+              const video = findScreenshotVideo(control, selectVideo);
+              const fileName = formatScreenshotFileName(/* @__PURE__ */ new Date(), getIdentity());
+              const width = video?.videoWidth;
+              const height = video?.videoHeight;
+              const blob = await captureVideoPng(video, rootDocument);
+              download(blob, fileName);
+              showNotice(control, `已发起下载：${width} × ${height} PNG`);
+            } catch (error) {
+              showNotice(control, error.name === "SecurityError" ? "浏览器限制读取该视频画面，无法截图。" : `截图失败：${error.message}`);
+            } finally {
+              busy = false;
+              control.removeAttribute("aria-busy");
+            }
+          };
+          control.addEventListener("click", capture, true);
+          control.addEventListener("dblclick", (event) => {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+          }, true);
+          control.addEventListener("keydown", (event) => {
+            if (event.key !== "Enter" && event.key !== " ") return;
+            if (event.repeat) {
+              event.preventDefault();
+              event.stopImmediatePropagation();
+              return;
+            }
+            capture(event);
+          }, true);
+        };
+        const scan = (root) => {
+          if (root.nodeType !== 1) return;
+          if (root.matches(FEEDBACK_SELECTOR)) enhance(root);
+          root.querySelectorAll(FEEDBACK_SELECTOR).forEach(enhance);
+        };
+        const observer = new view.MutationObserver((records) => {
+          for (const record of records) {
+            const control = record.target.closest?.(FEEDBACK_SELECTOR);
+            if (control) enhance(control);
+            record.addedNodes.forEach(scan);
+          }
+        });
+        observer.observe(rootDocument.documentElement, { childList: true, subtree: true });
+        scan(rootDocument.documentElement);
+      }
+      module.exports = { captureVideoPng, findScreenshotVideo, formatScreenshotFileName, installLiveScreenshot };
     }
   });
 
@@ -1231,6 +1352,7 @@
     "src/main.js"() {
       init_define_SCRIPT_METADATA();
       var { bindVersionButton } = require_update_check();
+      var { installLiveScreenshot } = require_live_screenshot();
       var { buildPanelTemplate } = require_panel3();
       var LIVE_REWIND_BUFFER_SECONDS = 75;
       var LIVE_REWIND_TARGET_SECONDS = 60;
@@ -3270,6 +3392,17 @@
         }
         return prefs;
       }
+      function downloadBlob(blob, fileName) {
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = fileName || "贝报gif.gif";
+        anchor.style.display = "none";
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        window.setTimeout(() => URL.revokeObjectURL(url), 6e4);
+      }
       var IS_LIVE_PAGE = location.hostname === "live.bilibili.com";
       var IS_TOP_WINDOW = window.top === window;
       var pageWindow = typeof unsafeWindow !== "undefined" ? unsafeWindow : window;
@@ -3282,6 +3415,16 @@
         }
       }
       var localLiveMediaCollector = IS_LIVE_PAGE ? installLiveMediaCollector(pageWindow, initialLiveCaptureMode === "rewind") : null;
+      if (IS_LIVE_PAGE) {
+        const startScreenshot = () => installLiveScreenshot({
+          rootDocument: document,
+          selectVideo: scanDocumentVideo,
+          getIdentity: () => getLiveIdentity(document),
+          download: downloadBlob
+        });
+        if (document.documentElement) startScreenshot();
+        else document.addEventListener("DOMContentLoaded", startScreenshot, { once: true });
+      }
       if (!IS_TOP_WINDOW) {
         if (IS_LIVE_PAGE) installLiveFrameAgent(localLiveMediaCollector);
         return;
@@ -6976,17 +7119,6 @@
           }
           const bvid = location.pathname.match(/\/(BV[\w]+)/i)?.[1] || "视频";
           return formatGifFileName(Date.now(), bvid, { sourcePosition: "before-timestamp" });
-        }
-        function downloadBlob(blob, fileName) {
-          const url = URL.createObjectURL(blob);
-          const anchor = document.createElement("a");
-          anchor.href = url;
-          anchor.download = fileName || "贝报gif.gif";
-          anchor.style.display = "none";
-          document.body.appendChild(anchor);
-          anchor.click();
-          anchor.remove();
-          window.setTimeout(() => URL.revokeObjectURL(url), 6e4);
         }
         function calculateLoopBitmapSize(settings, frame) {
           const sourceWidth = Math.max(2, frame.displayWidth || state.clip.width);
