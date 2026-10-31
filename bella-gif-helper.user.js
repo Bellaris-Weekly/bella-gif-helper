@@ -172,7 +172,7 @@
       "use strict";
       init_define_SCRIPT_METADATA();
       var FEEDBACK_SELECTOR = ".web-player-icon-feedback";
-      var SCREENSHOT_LABEL = "截图（原尺寸 PNG）";
+      var SCREENSHOT_LABEL = "截图";
       var CAMERA_ICON = '<svg data-bella-screenshot-icon viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" style="display:block;margin:8px;pointer-events:none;filter:drop-shadow(0 1px 2px #000a)"><path fill="white" fill-rule="evenodd" d="M8 5l1.5-2h5L16 5h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z M12 8a4.5 4.5 0 1 0 0 9a4.5 4.5 0 0 0 0-9z"/></svg>';
       function findScreenshotVideo(control, selectVideo) {
         for (let parent = control.parentElement; parent && parent !== control.ownerDocument?.body; parent = parent.parentElement) {

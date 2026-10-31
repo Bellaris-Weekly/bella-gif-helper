@@ -130,7 +130,7 @@ test('replaces feedback in place and one click downloads once without opening fe
   const { control, feedbackClicks } = page.mount();
   page.install();
   await flush();
-  assert.equal(control.getAttribute('aria-label'), '截图（原尺寸 PNG）');
+  assert.equal(control.getAttribute('aria-label'), '截图');
   assert.equal(control.getAttribute('role'), 'button');
   assert.ok(control.querySelector('[data-bella-screenshot-icon]'));
   control.querySelector('path').dispatchEvent(new page.window.MouseEvent('click', { bubbles: true }));
