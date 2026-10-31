@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         贝报 GIF 助手
 // @namespace    https://www.bk0717.com/
-// @version      1.5.19
+// @version      1.5.20
 // @description  B站直播回溯、视频框选录制与 GIF 编辑
 // @author       贝极星周报
 // @homepageURL  https://github.com/Bellaris-Weekly/bella-gif-helper
@@ -60,7 +60,7 @@
   var define_SCRIPT_METADATA_default;
   var init_define_SCRIPT_METADATA = __esm({
     "<define:__SCRIPT_METADATA__>"() {
-      define_SCRIPT_METADATA_default = { version: "1.5.19", updateURL: "https://share.bellaris.fans/bella-gif-helper.user.js", downloadURL: "https://share.bellaris.fans/bella-gif-helper.user.js" };
+      define_SCRIPT_METADATA_default = { version: "1.5.20", updateURL: "https://share.bellaris.fans/bella-gif-helper.user.js", downloadURL: "https://share.bellaris.fans/bella-gif-helper.user.js" };
     }
   });
 
@@ -173,7 +173,7 @@
       init_define_SCRIPT_METADATA();
       var FEEDBACK_SELECTOR = ".web-player-icon-feedback";
       var SCREENSHOT_LABEL = "截图（原尺寸 PNG）";
-      var CAMERA_ICON = '<svg data-bella-screenshot-icon viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" style="display:block;margin:6px;pointer-events:none;filter:drop-shadow(0 1px 2px #0008)"><path d="M8 5l1.5-2h5L16 5h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z" fill="none" stroke="white" stroke-width="1.8" stroke-linejoin="round"/><circle cx="12" cy="12.5" r="4" fill="none" stroke="white" stroke-width="1.8"/></svg>';
+      var CAMERA_ICON = '<svg data-bella-screenshot-icon viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" style="display:block;margin:8px;pointer-events:none;filter:drop-shadow(0 1px 2px #000a)"><path fill="white" fill-rule="evenodd" d="M8 5l1.5-2h5L16 5h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z M12 8a4.5 4.5 0 1 0 0 9a4.5 4.5 0 0 0 0-9z"/></svg>';
       function findScreenshotVideo(control, selectVideo) {
         for (let parent = control.parentElement; parent && parent !== control.ownerDocument?.body; parent = parent.parentElement) {
           if (parent.querySelector("video")) return selectVideo(parent);
