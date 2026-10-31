@@ -212,3 +212,57 @@ test('replacing a player during PNG encoding still completes the original downlo
   assert.equal(page.frames[0].video, first.video);
   assert.equal(page.document.querySelector('[role=status]'), null);
 });
+
+
+const {readFileSync} = require('node:fs');
+const {runInNewContext} = require('node:vm');
+
+function isolatedScreenshotInstaller() {
+  const module = {exports: {}};
+  runInNewContext(readFileSync(require.resolve('../src/live-screenshot'), 'utf8'), {module});
+  return module.exports.installLiveScreenshot;
+}
+
+for (const order of [['gif', 'clip'], ['clip', 'gif']]) {
+  test(`independent userscript sandboxes share one screenshot owner: ${order.join(' then ')}`, async t => {
+    const page = pageFixture(t);
+    const downloads = [];
+    let observers = 0;
+    const Observer = page.window.MutationObserver;
+    page.window.MutationObserver = class extends Observer {
+      constructor(callback) { super(callback); observers++; }
+    };
+    // Separate VM contexts model userscript managers with isolated JavaScript globals.
+    const installers = order.map(() => isolatedScreenshotInstaller());
+    const install = (index) => installers[index]({rootDocument: page.document,
+      selectVideo: root => root.querySelector('video'), getIdentity: () => ({roomId: '123'}),
+      download: () => downloads.push(order[index]),
+    });
+    assert.equal(install(0), true);
+    assert.equal(install(1), false);
+    assert.equal(observers, 1);
+    // Claiming must work before the site has even created its player.
+    const first = page.mount();
+    await flush();
+    first.control.click(); page.finish(); await flush();
+    assert.deepEqual(downloads, [order[0]]);
+    first.player.remove();
+    const second = page.mount(1080, 1920);
+    await flush();
+    second.control.click(); page.finish(); await flush();
+    assert.deepEqual(downloads, [order[0], order[0]]);
+    assert.equal(second.control.querySelectorAll('[data-bella-screenshot-icon]').length, 1);
+    assert.equal(second.feedbackClicks(), 0);
+  });
+}
+
+test('top document ownership does not suppress screenshots in an iframe document', async t => {
+  const page = pageFixture(t, {embedded: true});
+  const install = isolatedScreenshotInstaller();
+  const top = page.window.parent.document;
+  assert.equal(install({rootDocument: top, selectVideo() {}, getIdentity() {}, download() {}}), true);
+  const {control} = page.mount();
+  page.install();
+  control.click(); page.finish(); await flush();
+  assert.equal(page.downloads.length, 1);
+});

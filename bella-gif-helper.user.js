@@ -172,6 +172,7 @@
       "use strict";
       init_define_SCRIPT_METADATA();
       var FEEDBACK_SELECTOR = ".web-player-icon-feedback";
+      var INSTALLED_ATTRIBUTE = "data-bella-live-screenshot-installed";
       var SCREENSHOT_LABEL = "截图";
       var CAMERA_ICON = '<svg data-bella-screenshot-icon viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" style="display:block;margin:8px;pointer-events:none;filter:drop-shadow(0 1px 2px #000a)"><path fill="white" fill-rule="evenodd" d="M8 5l1.5-2h5L16 5h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z M12 8a4.5 4.5 0 1 0 0 9a4.5 4.5 0 0 0 0-9z"/></svg>';
       function findScreenshotVideo(control, selectVideo) {
@@ -205,6 +206,9 @@
         return `${source}_${stamp}.png`;
       }
       function installLiveScreenshot({ rootDocument, selectVideo, getIdentity, download }) {
+        const root = rootDocument.documentElement;
+        if (root.hasAttribute(INSTALLED_ATTRIBUTE)) return false;
+        root.setAttribute(INSTALLED_ATTRIBUTE, "");
         const view = rootDocument.defaultView;
         const controls = /* @__PURE__ */ new WeakSet();
         let notice = null;
@@ -267,10 +271,10 @@
             capture(event);
           }, true);
         };
-        const scan = (root) => {
-          if (root.nodeType !== 1) return;
-          if (root.matches(FEEDBACK_SELECTOR)) enhance(root);
-          root.querySelectorAll(FEEDBACK_SELECTOR).forEach(enhance);
+        const scan = (root2) => {
+          if (root2.nodeType !== 1) return;
+          if (root2.matches(FEEDBACK_SELECTOR)) enhance(root2);
+          root2.querySelectorAll(FEEDBACK_SELECTOR).forEach(enhance);
         };
         const observer = new view.MutationObserver((records) => {
           for (const record of records) {
@@ -281,6 +285,7 @@
         });
         observer.observe(rootDocument.documentElement, { childList: true, subtree: true });
         scan(rootDocument.documentElement);
+        return true;
       }
       module.exports = { captureVideoPng, findScreenshotVideo, formatScreenshotFileName, installLiveScreenshot };
     }

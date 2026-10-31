@@ -1,6 +1,7 @@
 'use strict';
 
 const FEEDBACK_SELECTOR = '.web-player-icon-feedback';
+const INSTALLED_ATTRIBUTE = 'data-bella-live-screenshot-installed';
 const SCREENSHOT_LABEL = '截图';
 const CAMERA_ICON = '<svg data-bella-screenshot-icon viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" style="display:block;margin:8px;pointer-events:none;filter:drop-shadow(0 1px 2px #000a)"><path fill="white" fill-rule="evenodd" d="M8 5l1.5-2h5L16 5h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z M12 8a4.5 4.5 0 1 0 0 9a4.5 4.5 0 0 0 0-9z"/></svg>';
 
@@ -40,6 +41,11 @@ function formatScreenshotFileName(date, identity) {
 }
 
 function installLiveScreenshot({ rootDocument, selectVideo, getIdentity, download }) {
+  // DOM attributes are shared across userscript sandboxes; globals are not.
+  // Claim synchronously before observing or binding any controls. Each iframe owns its document.
+  const root = rootDocument.documentElement;
+  if (root.hasAttribute(INSTALLED_ATTRIBUTE)) return false;
+  root.setAttribute(INSTALLED_ATTRIBUTE, '');
   const view = rootDocument.defaultView;
   const controls = new WeakSet();
   let notice = null;
@@ -125,6 +131,7 @@ function installLiveScreenshot({ rootDocument, selectVideo, getIdentity, downloa
   // Also runs inside the player's iframe, before the main editor's top-window guard.
   observer.observe(rootDocument.documentElement, { childList: true, subtree: true });
   scan(rootDocument.documentElement);
+  return true;
 }
 
 module.exports = { captureVideoPng, findScreenshotVideo, formatScreenshotFileName, installLiveScreenshot };
