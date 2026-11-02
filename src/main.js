@@ -5,6 +5,8 @@ const { installLiveScreenshot } = require('./live-screenshot.js');
 
 const { buildPanelTemplate } = require('./ui/panel.js');
 
+const { startPageBridge } = require('./page-bridge.js');
+
   const LIVE_REWIND_BUFFER_SECONDS = 75;
   const LIVE_REWIND_TARGET_SECONDS = 60;
   const LIVE_FRAME_CHANNEL = 'bella-gif-helper-live-frame-v1';
@@ -2205,6 +2207,15 @@ const { buildPanelTemplate } = require('./ui/panel.js');
   const IS_LIVE_PAGE = location.hostname === 'live.bilibili.com';
   const IS_TOP_WINDOW = window.top === window;
   const pageWindow = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+  if (location.hostname === 'studio.bk0717.com') {
+    startPageBridge({
+      name: 'bella-gif-helper',
+      version: __SCRIPT_METADATA__.version,
+      request: GM_xmlhttpRequest,
+      target: pageWindow,
+    });
+    return;
+  }
   let initialLiveCaptureMode = 'rewind';
   if (IS_LIVE_PAGE) {
     try {

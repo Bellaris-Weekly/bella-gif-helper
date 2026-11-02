@@ -16,6 +16,7 @@
 // @match        https://www.bilibili.com/cheese/play/*
 // @match        https://live.bilibili.com/*
 // @match        https://m.bilibili.com/video/*
+// @match        https://studio.bk0717.com/*
 // @resource     MODERN_PALETTE_MODULE https://share.bellaris.fans/dependencies/modern-palette@2.0.0/dist/index.mjs
 // @resource     GIFENC_MODULE https://share.bellaris.fans/dependencies/gifenc@1.0.3/dist/gifenc.esm.js
 // @resource     GIFSICLE_MODULE https://share.bellaris.fans/dependencies/gifsicle-wasm-browser@1.5.19/dist/gifsicle.min.js
@@ -26,6 +27,7 @@
 // @grant        GM_xmlhttpRequest
 // @grant        GM_openInTab
 // @connect      share.bellaris.fans
+// @connect      bilivideo.com
 // @grant        unsafeWindow
 // @run-at       document-start
 // ==/UserScript==
@@ -39,7 +41,10 @@
 
 "use strict";
 (() => {
+  var __defProp = Object.defineProperty;
+  var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
   var __getOwnPropNames = Object.getOwnPropertyNames;
+  var __hasOwnProp = Object.prototype.hasOwnProperty;
   var __esm = (fn, res, err) => function __init() {
     if (err) throw err[0];
     try {
@@ -55,6 +60,19 @@
       throw mod = 0, e;
     }
   };
+  var __export = (target, all) => {
+    for (var name in all)
+      __defProp(target, name, { get: all[name], enumerable: true });
+  };
+  var __copyProps = (to, from, except, desc) => {
+    if (from && typeof from === "object" || typeof from === "function") {
+      for (let key of __getOwnPropNames(from))
+        if (!__hasOwnProp.call(to, key) && key !== except)
+          __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+    }
+    return to;
+  };
+  var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
   // <define:__SCRIPT_METADATA__>
   var define_SCRIPT_METADATA_default;
@@ -1351,6 +1369,80 @@
     }
   });
 
+  // src/page-bridge.js
+  var page_bridge_exports = {};
+  __export(page_bridge_exports, {
+    BRIDGE_CHANNEL: () => BRIDGE_CHANNEL,
+    BRIDGE_PROTOCOL: () => BRIDGE_PROTOCOL,
+    isAllowedRequest: () => isAllowedRequest,
+    startPageBridge: () => startPageBridge
+  });
+  function isAllowedRequest({ method, url, headers }) {
+    if (!ALLOWED_METHODS.has(method)) return false;
+    let target;
+    try {
+      target = new URL(url);
+    } catch {
+      return false;
+    }
+    if (target.protocol !== "https:" || !target.hostname.endsWith(".bilivideo.com")) return false;
+    return Object.keys(headers ?? {}).every((name) => ALLOWED_HEADERS.has(name.toLowerCase()));
+  }
+  function startPageBridge({ name, version, request, target }) {
+    const active = /* @__PURE__ */ new Map();
+    const post = (message) => target.postMessage({ channel: BRIDGE_CHANNEL, ...message }, target.location.origin);
+    const announce = (nonce) => post({ type: "ready", bridge: name, version, protocol: BRIDGE_PROTOCOL, nonce });
+    const handlers = {
+      hello: (message) => announce(message.nonce),
+      abort: (message) => active.get(message.id)?.abort(),
+      request(message) {
+        const { id, method, url, headers, body } = message;
+        if (!isAllowedRequest(message)) {
+          post({ type: "error", id, message: "请求被拒绝" });
+          return;
+        }
+        const finish = (reply) => {
+          active.delete(id);
+          post({ id, ...reply });
+        };
+        active.set(
+          id,
+          request({
+            method,
+            url,
+            headers,
+            data: body,
+            anonymous: true,
+            timeout: REQUEST_TIMEOUT_MS,
+            onload: (response) => finish({ type: "response", status: response.status, text: response.responseText }),
+            onerror: () => finish({ type: "error", message: "网络错误" }),
+            ontimeout: () => finish({ type: "error", message: "请求超时" }),
+            onabort: () => finish({ type: "error", message: "已取消" })
+          })
+        );
+      }
+    };
+    target.addEventListener("message", (event) => {
+      const message = event.data;
+      if (event.source !== target || event.origin !== target.location.origin) return;
+      if (message?.channel !== BRIDGE_CHANNEL) return;
+      if (message.to !== void 0 && message.to !== name) return;
+      handlers[message.type]?.(message);
+    });
+    announce();
+  }
+  var BRIDGE_CHANNEL, BRIDGE_PROTOCOL, ALLOWED_METHODS, ALLOWED_HEADERS, REQUEST_TIMEOUT_MS;
+  var init_page_bridge = __esm({
+    "src/page-bridge.js"() {
+      init_define_SCRIPT_METADATA();
+      BRIDGE_CHANNEL = "bella-bridge";
+      BRIDGE_PROTOCOL = 1;
+      ALLOWED_METHODS = /* @__PURE__ */ new Set(["GET", "PUT", "POST"]);
+      ALLOWED_HEADERS = /* @__PURE__ */ new Set(["x-upos-auth", "content-type"]);
+      REQUEST_TIMEOUT_MS = 24e4;
+    }
+  });
+
   // src/main.js
   var require_main = __commonJS({
     "src/main.js"() {
@@ -1358,6 +1450,7 @@
       var { bindVersionButton } = require_update_check();
       var { installLiveScreenshot } = require_live_screenshot();
       var { buildPanelTemplate } = require_panel3();
+      var { startPageBridge: startPageBridge2 } = (init_page_bridge(), __toCommonJS(page_bridge_exports));
       var LIVE_REWIND_BUFFER_SECONDS = 75;
       var LIVE_REWIND_TARGET_SECONDS = 60;
       var LIVE_FRAME_CHANNEL = "bella-gif-helper-live-frame-v1";
@@ -3410,6 +3503,15 @@
       var IS_LIVE_PAGE = location.hostname === "live.bilibili.com";
       var IS_TOP_WINDOW = window.top === window;
       var pageWindow = typeof unsafeWindow !== "undefined" ? unsafeWindow : window;
+      if (location.hostname === "studio.bk0717.com") {
+        startPageBridge2({
+          name: "bella-gif-helper",
+          version: define_SCRIPT_METADATA_default.version,
+          request: GM_xmlhttpRequest,
+          target: pageWindow
+        });
+        return;
+      }
       var initialLiveCaptureMode = "rewind";
       if (IS_LIVE_PAGE) {
         try {

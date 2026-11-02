@@ -16,6 +16,7 @@
 // @match        https://www.bilibili.com/cheese/play/*
 // @match        https://live.bilibili.com/*
 // @match        https://m.bilibili.com/video/*
+// @match        https://studio.bk0717.com/*
 // @resource     MODERN_PALETTE_MODULE https://share.bellaris.fans/dependencies/modern-palette@2.0.0/dist/index.mjs
 // @resource     GIFENC_MODULE https://share.bellaris.fans/dependencies/gifenc@1.0.3/dist/gifenc.esm.js
 // @resource     GIFSICLE_MODULE https://share.bellaris.fans/dependencies/gifsicle-wasm-browser@1.5.19/dist/gifsicle.min.js
@@ -26,6 +27,7 @@
 // @grant        GM_xmlhttpRequest
 // @grant        GM_openInTab
 // @connect      share.bellaris.fans
+// @connect      bilivideo.com
 // @grant        unsafeWindow
 // @run-at       document-start
 // ==/UserScript==
