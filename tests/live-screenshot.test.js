@@ -266,3 +266,12 @@ test('top document ownership does not suppress screenshots in an iframe document
   control.click(); page.finish(); await flush();
   assert.equal(page.downloads.length, 1);
 });
+
+test('crops to the normalized editor region at source resolution', async () => {
+  const fixture = captureFixture(1920, 1080);
+  const pending = captureVideoPng(fixture.video, fixture.doc, { x: 0.25, y: 0.5, w: 0.5, h: 0.5 });
+  assert.deepEqual(fixture.calls[1].args, [fixture.video, 480, 540, 960, 540, 0, 0, 960, 540]);
+  assert.deepEqual(fixture.calls[2], { type: 'image/png', width: 960, height: 540 });
+  fixture.finish();
+  await pending;
+});

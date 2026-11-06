@@ -5,7 +5,6 @@ const test = require('node:test');
 
 const {
   calculateCropViewport,
-  calculateInnerOverlayPosition,
   calculatePanelResize,
   calculateTimelineDraggedViewport,
   calculateTimelineDragTime,
@@ -69,23 +68,6 @@ test('viewport transitions cover zoom, movement, and identity transforms', () =>
 
   for (const [first, last, expected] of cases) {
     assert.deepEqual(calculateViewportTransitionTransform(first, last), expected);
-  }
-});
-
-test('overlay controls sit near the top-right corner and stay usable in small crops', () => {
-  const cases = [
-    [
-      { left: 0, top: 0, width: 360, height: 360 },
-      { left: 308, top: 12 },
-    ],
-    [
-      { left: 80, top: 60, width: 72, height: 52 },
-      { left: 100, top: 72 },
-    ],
-  ];
-
-  for (const [crop, expected] of cases) {
-    assert.deepEqual(calculateInnerOverlayPosition(crop, 40, 28), expected);
   }
 });
 

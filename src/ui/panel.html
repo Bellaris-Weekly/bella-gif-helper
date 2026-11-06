@@ -19,6 +19,17 @@
   <div class="body">
     <div id="editStage" class="hidden">
       <div class="workspace">
+        <div class="preview-toolbar">
+          <div class="aspect-switch" role="group" aria-label="裁剪比例">
+            <span class="toolbar-label">比例</span>
+            <button id="aspectFreeBtn" class="edit-lockable" type="button" aria-pressed="true" title="自由裁剪">自由</button>
+            <button id="aspectSquareBtn" class="edit-lockable" type="button" aria-pressed="false" title="锁定裁剪比例为 1:1">1:1</button>
+          </div>
+          <button id="editorScreenshotBtn" class="toolbar-btn edit-lockable" type="button" title="截取当前帧（裁剪区域，原始分辨率 PNG）" aria-label="截图">
+            <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="currentColor" fill-rule="evenodd" d="M8 5l1.5-2h5L16 5h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z M12 8a4.5 4.5 0 1 0 0 9a4.5 4.5 0 0 0 0-9z"/></svg>
+            <span>截图</span>
+          </button>
+        </div>
         <div id="editorPreviewWrap">
           <div id="editorMotionLayer">
             <video id="clipVideo" muted playsinline preload="auto"></video>
@@ -40,7 +51,6 @@
             </div>
             <div id="captionLayer"></div>
           </div>
-          <button id="aspectSquareBtn" class="edit-lockable" type="button" aria-pressed="false" title="锁定裁剪比例为 1:1">1:1</button>
         </div>
 
         <div class="trim-block">

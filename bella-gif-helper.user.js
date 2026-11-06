@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         贝报 GIF 助手
 // @namespace    https://www.bk0717.com/
-// @version      1.5.21
+// @version      1.5.22
 // @description  B站直播回溯、视频框选录制与 GIF 编辑
 // @author       贝极星周报
 // @homepageURL  https://github.com/Bellaris-Weekly/bella-gif-helper
@@ -78,7 +78,7 @@
   var define_SCRIPT_METADATA_default;
   var init_define_SCRIPT_METADATA = __esm({
     "<define:__SCRIPT_METADATA__>"() {
-      define_SCRIPT_METADATA_default = { version: "1.5.21", updateURL: "https://share.bellaris.fans/bella-gif-helper.user.js", downloadURL: "https://share.bellaris.fans/bella-gif-helper.user.js" };
+      define_SCRIPT_METADATA_default = { version: "1.5.22", updateURL: "https://share.bellaris.fans/bella-gif-helper.user.js", downloadURL: "https://share.bellaris.fans/bella-gif-helper.user.js" };
     }
   });
 
@@ -199,17 +199,24 @@
         }
         return null;
       }
-      function captureVideoPng(video, rootDocument) {
+      function captureVideoPng(video, rootDocument, crop = null) {
         if (!video || video.readyState < 2 || video.seeking || !video.videoWidth || !video.videoHeight) {
           return Promise.reject(new Error("暂无画面，请稍后重试"));
         }
         return new Promise((resolve, reject) => {
+          const fullWidth = video.videoWidth;
+          const fullHeight = video.videoHeight;
+          const sx = crop ? Math.round(crop.x * fullWidth) : 0;
+          const sy = crop ? Math.round(crop.y * fullHeight) : 0;
+          const sw = crop ? Math.max(1, Math.min(fullWidth - sx, Math.round(crop.w * fullWidth))) : fullWidth;
+          const sh = crop ? Math.max(1, Math.min(fullHeight - sy, Math.round(crop.h * fullHeight))) : fullHeight;
           const canvas = rootDocument.createElement("canvas");
-          canvas.width = video.videoWidth;
-          canvas.height = video.videoHeight;
+          canvas.width = sw;
+          canvas.height = sh;
           const context = canvas.getContext("2d", { alpha: false });
           if (!context) throw new Error("截图失败，请重试");
-          context.drawImage(video, 0, 0, canvas.width, canvas.height);
+          if (crop) context.drawImage(video, sx, sy, sw, sh, 0, 0, sw, sh);
+          else context.drawImage(video, 0, 0, sw, sh);
           canvas.toBlob((blob) => {
             canvas.width = canvas.height = 0;
             if (blob) resolve(blob);
@@ -738,30 +745,58 @@
     visibility: hidden;
   }
   #scrubVideo.active { visibility: visible; }
-  #aspectSquareBtn {
-    position: absolute;
-    top: 16px;
-    left: 16px;
-    z-index: 12;
-    min-width: 40px;
-    height: 28px;
-    padding: 0 8px;
-    border: 1px solid var(--color-border-strong);
-    border-radius: var(--radius-control);
-    background: rgba(21, 22, 25, .86);
-    color: var(--color-text);
-    font-size: 11px;
-    font-weight: 800;
-    cursor: pointer;
-    backdrop-filter: blur(10px);
+  .preview-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    width: min(100%, var(--editor-preview-size, 360px));
+    max-width: 520px;
+    justify-self: center;
   }
-  #aspectSquareBtn:hover { background: var(--color-surface-hover); }
-  #aspectSquareBtn.active {
-    border-color: var(--color-brand);
+  .aspect-switch {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-control);
+    background: var(--color-surface-raised);
+  }
+  .toolbar-label { padding: 0 6px 0 4px; color: var(--color-text-muted); font-size: 11px; }
+  .aspect-switch button {
+    min-width: 38px;
+    height: 24px;
+    padding: 0 8px;
+    border: 0;
+    border-radius: calc(var(--radius-control) - 2px);
+    background: transparent;
+    color: var(--color-text-secondary);
+    font-size: 11px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  .aspect-switch button:hover { color: var(--color-text); background: var(--color-surface-hover); }
+  .aspect-switch button[aria-pressed="true"] {
     background: var(--color-brand);
     color: var(--color-on-brand);
-    box-shadow: 0 4px 16px rgba(var(--color-brand-rgb), .24);
   }
+  .toolbar-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    height: 30px;
+    padding: 0 10px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-control);
+    background: var(--color-surface-raised);
+    color: var(--color-text);
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  .toolbar-btn:hover { background: var(--color-surface-hover); border-color: var(--color-border-strong); }
+  .toolbar-btn svg { display: block; }
+  .preview-toolbar button:disabled { opacity: .5; cursor: not-allowed; }
   #editorOverlay {
     position: absolute;
     inset: 0;
@@ -1470,7 +1505,7 @@
   // src/ui/panel.html
   var require_panel2 = __commonJS({
     "src/ui/panel.html"(exports, module) {
-      module.exports = '\n\n<button id="launcher" title="框选视频制作 GIF" aria-label="贝报GIF助手"></button>\n\n<section id="panel" class="hidden" aria-label="__SCRIPT_NAME__">\n  <div class="header">\n    <div class="title-row">\n      <div class="title">贝报GIF助手</div>\n      <button id="versionBtn" type="button"></button>\n    </div>\n    <div class="header-actions">\n      <div class="shortcut-setting">\n        <input id="shortcutInput" class="shortcut-input" type="text" readonly aria-label="启动快捷键" title="点击后按下新快捷键" value="Ctrl+Z">\n      </div>\n      <button id="closeBtn" class="icon-btn" type="button" title="关闭">✕</button>\n    </div>\n  </div>\n\n  <div class="body">\n    <div id="editStage" class="hidden">\n      <div class="workspace">\n        <div id="editorPreviewWrap">\n          <div id="editorMotionLayer">\n            <video id="clipVideo" muted playsinline preload="auto"></video>\n            <video id="scrubVideo" muted playsinline preload="auto" aria-hidden="true"></video>\n            <canvas id="previewCanvas" aria-hidden="true"></canvas>\n            <div id="editorOverlay">\n              <div id="editorBoundary"></div>\n              <div id="editorCropBox">\n                <span id="cropSizeBadge" aria-hidden="true">-- × --</span>\n                <i class="crop-handle" data-resize="n"></i>\n                <i class="crop-handle" data-resize="s"></i>\n                <i class="crop-handle" data-resize="e"></i>\n                <i class="crop-handle" data-resize="w"></i>\n                <i class="crop-handle" data-resize="nw"></i>\n                <i class="crop-handle" data-resize="ne"></i>\n                <i class="crop-handle" data-resize="sw"></i>\n                <i class="crop-handle" data-resize="se"></i>\n              </div>\n            </div>\n            <div id="captionLayer"></div>\n          </div>\n          <button id="aspectSquareBtn" class="edit-lockable" type="button" aria-pressed="false" title="锁定裁剪比例为 1:1">1:1</button>\n        </div>\n\n        <div class="trim-block">\n          <div id="timelineTrack" class="edit-lockable" aria-label="片段剪辑时间轴">\n            <div id="timelineFilmstrip" aria-hidden="true"></div>\n            <div id="timelineRail"></div>\n            <div id="timelineSelected"></div>\n            <div id="timelinePlayhead"></div>\n            <button id="timelineStartHandle" class="timeline-handle" data-timeline-handle="start" title="拖动设置起点"></button>\n            <button id="timelineEndHandle" class="timeline-handle" data-timeline-handle="end" title="拖动设置终点"></button>\n          </div>\n          <div class="timeline-labels">\n            <span id="trimStartValue">00:00.000</span>\n            <span id="trimSummary">1.00 秒</span>\n            <span id="trimEndValue">00:01.000</span>\n          </div>\n          <div class="preview-controls">\n            <button id="previewTrimBtn" class="btn secondary edit-lockable">▶ 播放</button>\n            <div id="previewPlaybackInfo" class="preview-playback-info" aria-label="预览播放状态">\n              <span id="previewDirection">正放 →</span>\n              <span id="previewCycleTime">本轮 -- / -- 秒</span>\n            </div>\n            <div id="liveModeSwitch" class="live-mode-switch hidden" role="group" aria-label="下次录制模式">\n              <button id="liveRewindModeBtn" type="button" class="edit-lockable" aria-pressed="true">回溯</button>\n              <button id="liveForwardModeBtn" type="button" class="edit-lockable" aria-pressed="false">录制</button>\n            </div>\n          </div>\n        </div>\n      </div>\n\n      <div id="editorSettingsScroll">\n      <section class="compact-section">\n        <div class="section-head">\n          <span>文字</span>\n          <button id="addTextBtn" class="small-btn edit-lockable">＋ 添加</button>\n        </div>\n        <div id="textLayerTabs" class="text-tabs"></div>\n        <div id="textEditorEmpty" class="text-empty">暂无文字</div>\n        <div id="textEditor" class="hidden">\n          <textarea id="captionText" class="edit-lockable export-input" maxlength="120" placeholder="输入文字"></textarea>\n          <div class="grid-2 text-options">\n            <div class="field">\n              <label for="fontScale">大小 <span id="fontScaleValue">9%</span></label>\n              <input id="fontScale" class="edit-lockable export-input" type="range" min="0.035" max="0.30" step="0.005" value="0.09">\n            </div>\n            <div class="field">\n              <label for="strokeScale">描边</label>\n              <select id="strokeScale" class="edit-lockable export-input">\n                <option value="0.08">细</option>\n                <option value="0.14" selected>标准</option>\n                <option value="0.20">粗</option>\n              </select>\n            </div>\n            <div class="field">\n              <label for="textColor">文字颜色</label>\n              <div class="text-color-control">\n                <input id="textColor" class="edit-lockable export-input" type="color" value="#ffffff" title="自定义文字颜色" aria-label="自定义文字颜色">\n                <button type="button" class="color-swatch edit-lockable" data-text-color="#db7d74" style="--swatch-color: #db7d74" aria-label="文字颜色 #db7d74" aria-pressed="false" title="#db7d74"></button>\n                <button type="button" class="color-swatch edit-lockable" data-text-color="#576690" style="--swatch-color: #576690" aria-label="文字颜色 #576690" aria-pressed="false" title="#576690"></button>\n                <button type="button" class="color-swatch edit-lockable" data-text-color="#e799b0" style="--swatch-color: #e799b0" aria-label="文字颜色 #e799b0" aria-pressed="false" title="#e799b0"></button>\n              </div>\n            </div>\n            <div class="field">\n              <label for="strokeColor">描边颜色</label>\n              <input id="strokeColor" class="edit-lockable export-input" type="color" value="#ffffff">\n            </div>\n          </div>\n        </div>\n      </section>\n\n      <section class="compact-section">\n        <div class="section-head"><span>导出</span><span id="estimatedSize" class="size-estimate">预计 --</span></div>\n        <div class="grid-2">\n          <div class="field">\n            <label for="resolutionSelect">分辨率</label>\n            <select id="resolutionSelect" class="edit-lockable export-input"></select>\n          </div>\n          <div class="field">\n            <label for="fpsSelect">帧率</label>\n            <select id="fpsSelect" class="edit-lockable export-input">\n              <option value="8">8 FPS</option>\n              <option value="10">10 FPS</option>\n              <option value="12" selected>12 FPS</option>\n              <option value="15">15 FPS</option>\n              <option value="20">20 FPS</option>\n            </select>\n          </div>\n        </div>\n\n        <div class="grid-2 export-options">\n          <div class="field">\n            <label for="speedSelect">播放速度</label>\n            <select id="speedSelect" class="edit-lockable export-input">\n              <option value="0.75">0.75×</option>\n              <option value="1" selected>1.0×</option>\n              <option value="1.25">1.25×</option>\n              <option value="1.5">1.5×</option>\n            </select>\n          </div>\n          <div class="field">\n            <label for="qualitySelect">画质</label>\n            <select id="qualitySelect" class="edit-lockable export-input">\n              <option value="nai">高</option>\n              <option value="bei" selected>中</option>\n              <option value="ran">低</option>\n            </select>\n          </div>\n          <div class="field">\n            <label for="cornerRadiusSelect">圆角</label>\n            <select id="cornerRadiusSelect" class="edit-lockable export-input">\n              <option value="0" selected>无圆角</option>\n              <option value="0.04">4%</option>\n              <option value="0.08">8%</option>\n              <option value="0.12">12%</option>\n              <option value="0.16">16%</option>\n              <option value="0.24">24%</option>\n            </select>\n          </div>\n          <div class="field">\n            <label for="loopModeSelect">循环</label>\n            <select id="loopModeSelect" class="edit-lockable export-input">\n              <option value="none" selected>不循环</option>\n              <option value="pingpong">往返</option>\n              <option value="crossfade">淡入淡出</option>\n            </select>\n          </div>\n        </div>\n      </section>\n\n      <div id="status" class="hidden" role="status" aria-live="polite"></div>\n      <div id="progressWrap" class="progress-wrap hidden" role="progressbar" aria-label="GIF 导出进度" aria-valuemin="0" aria-valuemax="100"><div id="progress"></div></div>\n      </div>\n\n      <div id="mainActions" class="action-dock">\n        <button id="newRecordingBtn" class="btn secondary edit-lockable">重新录制</button>\n        <button id="generateBtn" class="btn primary edit-lockable"><span>导出 GIF</span><small id="actionEstimate">预计 --</small></button>\n      </div>\n      <div id="cancelExportWrap" class="action-dock one hidden">\n        <button id="cancelExportBtn" class="btn danger">取消导出</button>\n      </div>\n    </div>\n  </div>\n  <span class="panel-resize-handle" data-panel-resize="n" role="button" aria-label="调整窗口上边缘" tabindex="0"></span>\n  <span class="panel-resize-handle" data-panel-resize="s" role="button" aria-label="调整窗口下边缘" tabindex="0"></span>\n  <span class="panel-resize-handle" data-panel-resize="e" role="button" aria-label="调整窗口右边缘" tabindex="0"></span>\n  <span class="panel-resize-handle" data-panel-resize="w" role="button" aria-label="调整窗口左边缘" tabindex="0"></span>\n  <span class="panel-resize-handle" data-panel-resize="nw" role="button" aria-label="调整窗口左上角" tabindex="0"></span>\n  <span class="panel-resize-handle" data-panel-resize="ne" role="button" aria-label="调整窗口右上角" tabindex="0"></span>\n  <span class="panel-resize-handle" data-panel-resize="sw" role="button" aria-label="调整窗口左下角" tabindex="0"></span>\n  <span class="panel-resize-handle" data-panel-resize="se" role="button" aria-label="调整窗口右下角" tabindex="0"></span>\n</section>\n\n<div id="pageSelectionMarker" class="hidden">\n  <i class="page-resize-handle" data-resize="n"></i>\n  <i class="page-resize-handle" data-resize="s"></i>\n  <i class="page-resize-handle" data-resize="e"></i>\n  <i class="page-resize-handle" data-resize="w"></i>\n  <i class="page-resize-handle" data-resize="nw"></i>\n  <i class="page-resize-handle" data-resize="ne"></i>\n  <i class="page-resize-handle" data-resize="sw"></i>\n  <i class="page-resize-handle" data-resize="se"></i>\n</div>\n\n<div id="selectionToolbar" class="hidden">\n  <button id="selectionRecordBtn">● 录制</button>\n  <span id="selectionTimer" class="hidden">00:00.0</span>\n  <button id="selectionReselectBtn">重选</button>\n  <button id="selectionClearBtn" title="清除选区">✕</button>\n</div>\n\n<div id="pageSelectOverlay" class="hidden">\n  <div id="pageSelectBoundary"></div>\n  <div id="pageSelectBox"></div>\n  <button id="pageSelectCancel">取消</button>\n</div>\n\n<div id="toast" class="hidden"></div>\n';
+      module.exports = '\n\n<button id="launcher" title="框选视频制作 GIF" aria-label="贝报GIF助手"></button>\n\n<section id="panel" class="hidden" aria-label="__SCRIPT_NAME__">\n  <div class="header">\n    <div class="title-row">\n      <div class="title">贝报GIF助手</div>\n      <button id="versionBtn" type="button"></button>\n    </div>\n    <div class="header-actions">\n      <div class="shortcut-setting">\n        <input id="shortcutInput" class="shortcut-input" type="text" readonly aria-label="启动快捷键" title="点击后按下新快捷键" value="Ctrl+Z">\n      </div>\n      <button id="closeBtn" class="icon-btn" type="button" title="关闭">✕</button>\n    </div>\n  </div>\n\n  <div class="body">\n    <div id="editStage" class="hidden">\n      <div class="workspace">\n        <div class="preview-toolbar">\n          <div class="aspect-switch" role="group" aria-label="裁剪比例">\n            <span class="toolbar-label">比例</span>\n            <button id="aspectFreeBtn" class="edit-lockable" type="button" aria-pressed="true" title="自由裁剪">自由</button>\n            <button id="aspectSquareBtn" class="edit-lockable" type="button" aria-pressed="false" title="锁定裁剪比例为 1:1">1:1</button>\n          </div>\n          <button id="editorScreenshotBtn" class="toolbar-btn edit-lockable" type="button" title="截取当前帧（裁剪区域，原始分辨率 PNG）" aria-label="截图">\n            <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="currentColor" fill-rule="evenodd" d="M8 5l1.5-2h5L16 5h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z M12 8a4.5 4.5 0 1 0 0 9a4.5 4.5 0 0 0 0-9z"/></svg>\n            <span>截图</span>\n          </button>\n        </div>\n        <div id="editorPreviewWrap">\n          <div id="editorMotionLayer">\n            <video id="clipVideo" muted playsinline preload="auto"></video>\n            <video id="scrubVideo" muted playsinline preload="auto" aria-hidden="true"></video>\n            <canvas id="previewCanvas" aria-hidden="true"></canvas>\n            <div id="editorOverlay">\n              <div id="editorBoundary"></div>\n              <div id="editorCropBox">\n                <span id="cropSizeBadge" aria-hidden="true">-- × --</span>\n                <i class="crop-handle" data-resize="n"></i>\n                <i class="crop-handle" data-resize="s"></i>\n                <i class="crop-handle" data-resize="e"></i>\n                <i class="crop-handle" data-resize="w"></i>\n                <i class="crop-handle" data-resize="nw"></i>\n                <i class="crop-handle" data-resize="ne"></i>\n                <i class="crop-handle" data-resize="sw"></i>\n                <i class="crop-handle" data-resize="se"></i>\n              </div>\n            </div>\n            <div id="captionLayer"></div>\n          </div>\n        </div>\n\n        <div class="trim-block">\n          <div id="timelineTrack" class="edit-lockable" aria-label="片段剪辑时间轴">\n            <div id="timelineFilmstrip" aria-hidden="true"></div>\n            <div id="timelineRail"></div>\n            <div id="timelineSelected"></div>\n            <div id="timelinePlayhead"></div>\n            <button id="timelineStartHandle" class="timeline-handle" data-timeline-handle="start" title="拖动设置起点"></button>\n            <button id="timelineEndHandle" class="timeline-handle" data-timeline-handle="end" title="拖动设置终点"></button>\n          </div>\n          <div class="timeline-labels">\n            <span id="trimStartValue">00:00.000</span>\n            <span id="trimSummary">1.00 秒</span>\n            <span id="trimEndValue">00:01.000</span>\n          </div>\n          <div class="preview-controls">\n            <button id="previewTrimBtn" class="btn secondary edit-lockable">▶ 播放</button>\n            <div id="previewPlaybackInfo" class="preview-playback-info" aria-label="预览播放状态">\n              <span id="previewDirection">正放 →</span>\n              <span id="previewCycleTime">本轮 -- / -- 秒</span>\n            </div>\n            <div id="liveModeSwitch" class="live-mode-switch hidden" role="group" aria-label="下次录制模式">\n              <button id="liveRewindModeBtn" type="button" class="edit-lockable" aria-pressed="true">回溯</button>\n              <button id="liveForwardModeBtn" type="button" class="edit-lockable" aria-pressed="false">录制</button>\n            </div>\n          </div>\n        </div>\n      </div>\n\n      <div id="editorSettingsScroll">\n      <section class="compact-section">\n        <div class="section-head">\n          <span>文字</span>\n          <button id="addTextBtn" class="small-btn edit-lockable">＋ 添加</button>\n        </div>\n        <div id="textLayerTabs" class="text-tabs"></div>\n        <div id="textEditorEmpty" class="text-empty">暂无文字</div>\n        <div id="textEditor" class="hidden">\n          <textarea id="captionText" class="edit-lockable export-input" maxlength="120" placeholder="输入文字"></textarea>\n          <div class="grid-2 text-options">\n            <div class="field">\n              <label for="fontScale">大小 <span id="fontScaleValue">9%</span></label>\n              <input id="fontScale" class="edit-lockable export-input" type="range" min="0.035" max="0.30" step="0.005" value="0.09">\n            </div>\n            <div class="field">\n              <label for="strokeScale">描边</label>\n              <select id="strokeScale" class="edit-lockable export-input">\n                <option value="0.08">细</option>\n                <option value="0.14" selected>标准</option>\n                <option value="0.20">粗</option>\n              </select>\n            </div>\n            <div class="field">\n              <label for="textColor">文字颜色</label>\n              <div class="text-color-control">\n                <input id="textColor" class="edit-lockable export-input" type="color" value="#ffffff" title="自定义文字颜色" aria-label="自定义文字颜色">\n                <button type="button" class="color-swatch edit-lockable" data-text-color="#db7d74" style="--swatch-color: #db7d74" aria-label="文字颜色 #db7d74" aria-pressed="false" title="#db7d74"></button>\n                <button type="button" class="color-swatch edit-lockable" data-text-color="#576690" style="--swatch-color: #576690" aria-label="文字颜色 #576690" aria-pressed="false" title="#576690"></button>\n                <button type="button" class="color-swatch edit-lockable" data-text-color="#e799b0" style="--swatch-color: #e799b0" aria-label="文字颜色 #e799b0" aria-pressed="false" title="#e799b0"></button>\n              </div>\n            </div>\n            <div class="field">\n              <label for="strokeColor">描边颜色</label>\n              <input id="strokeColor" class="edit-lockable export-input" type="color" value="#ffffff">\n            </div>\n          </div>\n        </div>\n      </section>\n\n      <section class="compact-section">\n        <div class="section-head"><span>导出</span><span id="estimatedSize" class="size-estimate">预计 --</span></div>\n        <div class="grid-2">\n          <div class="field">\n            <label for="resolutionSelect">分辨率</label>\n            <select id="resolutionSelect" class="edit-lockable export-input"></select>\n          </div>\n          <div class="field">\n            <label for="fpsSelect">帧率</label>\n            <select id="fpsSelect" class="edit-lockable export-input">\n              <option value="8">8 FPS</option>\n              <option value="10">10 FPS</option>\n              <option value="12" selected>12 FPS</option>\n              <option value="15">15 FPS</option>\n              <option value="20">20 FPS</option>\n            </select>\n          </div>\n        </div>\n\n        <div class="grid-2 export-options">\n          <div class="field">\n            <label for="speedSelect">播放速度</label>\n            <select id="speedSelect" class="edit-lockable export-input">\n              <option value="0.75">0.75×</option>\n              <option value="1" selected>1.0×</option>\n              <option value="1.25">1.25×</option>\n              <option value="1.5">1.5×</option>\n            </select>\n          </div>\n          <div class="field">\n            <label for="qualitySelect">画质</label>\n            <select id="qualitySelect" class="edit-lockable export-input">\n              <option value="nai">高</option>\n              <option value="bei" selected>中</option>\n              <option value="ran">低</option>\n            </select>\n          </div>\n          <div class="field">\n            <label for="cornerRadiusSelect">圆角</label>\n            <select id="cornerRadiusSelect" class="edit-lockable export-input">\n              <option value="0" selected>无圆角</option>\n              <option value="0.04">4%</option>\n              <option value="0.08">8%</option>\n              <option value="0.12">12%</option>\n              <option value="0.16">16%</option>\n              <option value="0.24">24%</option>\n            </select>\n          </div>\n          <div class="field">\n            <label for="loopModeSelect">循环</label>\n            <select id="loopModeSelect" class="edit-lockable export-input">\n              <option value="none" selected>不循环</option>\n              <option value="pingpong">往返</option>\n              <option value="crossfade">淡入淡出</option>\n            </select>\n          </div>\n        </div>\n      </section>\n\n      <div id="status" class="hidden" role="status" aria-live="polite"></div>\n      <div id="progressWrap" class="progress-wrap hidden" role="progressbar" aria-label="GIF 导出进度" aria-valuemin="0" aria-valuemax="100"><div id="progress"></div></div>\n      </div>\n\n      <div id="mainActions" class="action-dock">\n        <button id="newRecordingBtn" class="btn secondary edit-lockable">重新录制</button>\n        <button id="generateBtn" class="btn primary edit-lockable"><span>导出 GIF</span><small id="actionEstimate">预计 --</small></button>\n      </div>\n      <div id="cancelExportWrap" class="action-dock one hidden">\n        <button id="cancelExportBtn" class="btn danger">取消导出</button>\n      </div>\n    </div>\n  </div>\n  <span class="panel-resize-handle" data-panel-resize="n" role="button" aria-label="调整窗口上边缘" tabindex="0"></span>\n  <span class="panel-resize-handle" data-panel-resize="s" role="button" aria-label="调整窗口下边缘" tabindex="0"></span>\n  <span class="panel-resize-handle" data-panel-resize="e" role="button" aria-label="调整窗口右边缘" tabindex="0"></span>\n  <span class="panel-resize-handle" data-panel-resize="w" role="button" aria-label="调整窗口左边缘" tabindex="0"></span>\n  <span class="panel-resize-handle" data-panel-resize="nw" role="button" aria-label="调整窗口左上角" tabindex="0"></span>\n  <span class="panel-resize-handle" data-panel-resize="ne" role="button" aria-label="调整窗口右上角" tabindex="0"></span>\n  <span class="panel-resize-handle" data-panel-resize="sw" role="button" aria-label="调整窗口左下角" tabindex="0"></span>\n  <span class="panel-resize-handle" data-panel-resize="se" role="button" aria-label="调整窗口右下角" tabindex="0"></span>\n</section>\n\n<div id="pageSelectionMarker" class="hidden">\n  <i class="page-resize-handle" data-resize="n"></i>\n  <i class="page-resize-handle" data-resize="s"></i>\n  <i class="page-resize-handle" data-resize="e"></i>\n  <i class="page-resize-handle" data-resize="w"></i>\n  <i class="page-resize-handle" data-resize="nw"></i>\n  <i class="page-resize-handle" data-resize="ne"></i>\n  <i class="page-resize-handle" data-resize="sw"></i>\n  <i class="page-resize-handle" data-resize="se"></i>\n</div>\n\n<div id="selectionToolbar" class="hidden">\n  <button id="selectionRecordBtn">● 录制</button>\n  <span id="selectionTimer" class="hidden">00:00.0</span>\n  <button id="selectionReselectBtn">重选</button>\n  <button id="selectionClearBtn" title="清除选区">✕</button>\n</div>\n\n<div id="pageSelectOverlay" class="hidden">\n  <div id="pageSelectBoundary"></div>\n  <div id="pageSelectBox"></div>\n  <button id="pageSelectCancel">取消</button>\n</div>\n\n<div id="toast" class="hidden"></div>\n';
     }
   });
 
@@ -1568,7 +1603,7 @@
     "src/main.js"() {
       init_define_SCRIPT_METADATA();
       var { bindVersionButton } = require_update_check();
-      var { installLiveScreenshot } = require_live_screenshot();
+      var { captureVideoPng, formatScreenshotFileName, installLiveScreenshot } = require_live_screenshot();
       var { createLoopPreviewClock, prepareLoopPreviewFrames } = require_loop_preview();
       var { buildPanelTemplate } = require_panel3();
       var { startPageBridge: startPageBridge2 } = (init_page_bridge(), __toCommonJS(page_bridge_exports));
@@ -1862,16 +1897,6 @@
           left: viewportWidth / 2 - (crop.x + crop.w / 2) * width,
           top: viewportHeight / 2 - (crop.y + crop.h / 2) * height,
           scale
-        };
-      }
-      function calculateInnerOverlayPosition(crop, controlWidth, controlHeight, preferredInset = 12) {
-        const availableHorizontal = Math.max(0, crop.width - controlWidth);
-        const availableVertical = Math.max(0, crop.height - controlHeight);
-        const rightInset = Math.min(preferredInset, availableHorizontal / 2);
-        const topInset = Math.min(preferredInset, availableVertical / 2);
-        return {
-          left: crop.left + availableHorizontal - rightInset,
-          top: crop.top + topInset
         };
       }
       function calculateViewportTransitionTransform(first, last) {
@@ -3782,7 +3807,6 @@
           panelResize: null,
           panelLayoutRaf: 0,
           preferredPanelGeometry: null,
-          aspectSquareButtonMetrics: null,
           shortcut: DEFAULT_SHORTCUT,
           shortcutRecording: false,
           suppressLauncherClick: false,
@@ -3832,6 +3856,8 @@
           scrubVideo: $("#scrubVideo"),
           previewCanvas: $("#previewCanvas"),
           aspectSquareBtn: $("#aspectSquareBtn"),
+          aspectFreeBtn: $("#aspectFreeBtn"),
+          editorScreenshotBtn: $("#editorScreenshotBtn"),
           editorBoundary: $("#editorBoundary"),
           editorCropBox: $("#editorCropBox"),
           cropSizeBadge: $("#cropSizeBadge"),
@@ -4390,29 +4416,6 @@
             height: crop.h * layout.height
           };
         }
-        function readAspectSquareButtonMetrics(button) {
-          const cached = state.aspectSquareButtonMetrics;
-          if (cached) return cached;
-          const width = button.offsetWidth;
-          const height = button.offsetHeight;
-          if (!width || !height) return { width: width || 40, height: height || 28 };
-          const metrics = { width, height };
-          state.aspectSquareButtonMetrics = metrics;
-          return metrics;
-        }
-        function invalidateAspectSquareButtonMetrics() {
-          state.aspectSquareButtonMetrics = null;
-        }
-        function positionAspectSquareButton(crop) {
-          const wrap = el.editorPreviewWrap;
-          const button = el.aspectSquareBtn;
-          if (!wrap || !button) return;
-          const metrics = readAspectSquareButtonMetrics(button);
-          const position = calculateInnerOverlayPosition(crop, metrics.width, metrics.height);
-          button.style.left = `${position.left}px`;
-          button.style.top = `${position.top}px`;
-          button.style.right = "auto";
-        }
         function setOutputPreviewVisible(visible) {
           if (!el.editorMotionLayer || !el.previewCanvas) return;
           el.editorMotionLayer.classList.toggle("output-previewing", visible);
@@ -4428,7 +4431,6 @@
             height: `${crop.height}px`,
             visibility: "visible"
           });
-          positionAspectSquareButton(crop);
           Object.assign(el.editorBoundary.style, {
             left: `${layout.left}px`,
             top: `${layout.top}px`,
@@ -4659,13 +4661,11 @@
           el.panel.style.width = `${geometry.width}px`;
           el.panel.style.height = `${geometry.height}px`;
           el.panel.style.maxHeight = `${Math.max(1, window.innerHeight - UI_SAFE_MARGIN * 2)}px`;
-          invalidateAspectSquareButtonMetrics();
         }
         function clearDesktopPanelGeometry() {
           ["right", "left", "top", "width", "height", "max-height"].forEach((property) => {
             el.panel.style.removeProperty(property);
           });
-          invalidateAspectSquareButtonMetrics();
         }
         function updatePanelContentLayout() {
           if (el.panel.classList.contains("hidden")) return;
@@ -5820,10 +5820,8 @@
           if (render) renderExportPreviewFrame();
         }
         function updateAspectSquareButton() {
-          if (!el.aspectSquareBtn) return;
-          el.aspectSquareBtn.classList.toggle("active", state.aspectSquare);
-          el.aspectSquareBtn.setAttribute("aria-pressed", state.aspectSquare ? "true" : "false");
-          el.aspectSquareBtn.title = state.aspectSquare ? "已锁定 1:1，点击取消" : "锁定裁剪比例为 1:1";
+          el.aspectSquareBtn.setAttribute("aria-pressed", String(state.aspectSquare));
+          el.aspectFreeBtn.setAttribute("aria-pressed", String(!state.aspectSquare));
         }
         function makeCurrentCropSquare() {
           if (!state.clip) return;
@@ -5841,13 +5839,30 @@
           const y = clamp(centerY - side / 2, 0, maxY);
           state.editorCrop = { x: x / vw, y: y / vh, w: side / vw, h: side / vh };
         }
-        function toggleAspectSquare() {
-          if (state.mode !== "edit" || !state.clip) return;
-          state.aspectSquare = !state.aspectSquare;
+        function setAspectSquare(value) {
+          if (state.mode !== "edit" || !state.clip || state.aspectSquare === value) return;
+          state.aspectSquare = value;
           saveAspectSquarePreference(state.aspectSquare);
           if (state.aspectSquare) makeCurrentCropSquare();
           updateAspectSquareButton();
           animateCropIntoPreview();
+        }
+        async function captureEditorScreenshot() {
+          if (state.mode !== "edit" || !state.clip || state.editorScreenshotBusy) return;
+          state.editorScreenshotBusy = true;
+          try {
+            const video = el.scrubVideo.classList.contains("active") ? el.scrubVideo : el.clipVideo;
+            const identity = state.clip.liveIdentity || { streamerName: location.pathname.match(/\/(BV[\w]+)/i)?.[1] || "视频" };
+            const fileName = formatScreenshotFileName(/* @__PURE__ */ new Date(), identity);
+            const blob = await captureVideoPng(video, document, state.editorCrop);
+            downloadBlob(blob, fileName);
+            showToast("截图已保存");
+          } catch (error) {
+            debugLog("captureEditorScreenshot", error);
+            showToast(error.name === "SecurityError" ? "浏览器不允许截图" : error.message, "error");
+          } finally {
+            state.editorScreenshotBusy = false;
+          }
         }
         function resizeSquareScreenRect(startRect, handle, dx, dy, boundary, minSize = MIN_SELECT_PX) {
           const centerX = (startRect.left + startRect.right) / 2;
@@ -7891,7 +7906,9 @@
         el.previewTrimBtn.addEventListener("click", previewTrimmedClip);
         el.liveRewindModeBtn.addEventListener("click", () => setLiveCaptureMode("rewind"));
         el.liveForwardModeBtn.addEventListener("click", () => setLiveCaptureMode("forward"));
-        el.aspectSquareBtn.addEventListener("click", toggleAspectSquare);
+        el.aspectSquareBtn.addEventListener("click", () => setAspectSquare(true));
+        el.aspectFreeBtn.addEventListener("click", () => setAspectSquare(false));
+        el.editorScreenshotBtn.addEventListener("click", captureEditorScreenshot);
         el.addTextBtn.addEventListener("click", addTextLayer);
         el.textLayerTabs.addEventListener("click", (event) => {
           const remove = event.target.closest?.("[data-delete-text-id]");

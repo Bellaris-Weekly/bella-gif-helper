@@ -13,18 +13,26 @@ function findScreenshotVideo(control, selectVideo) {
   return null;
 }
 
-function captureVideoPng(video, rootDocument) {
+// crop is optional and normalized (0..1) against the source frame.
+function captureVideoPng(video, rootDocument, crop = null) {
   if (!video || video.readyState < 2 || video.seeking || !video.videoWidth || !video.videoHeight) {
     return Promise.reject(new Error('暂无画面，请稍后重试'));
   }
   // Draw synchronously in the click handler, before PNG encoding or any other await.
   return new Promise((resolve, reject) => {
+    const fullWidth = video.videoWidth;
+    const fullHeight = video.videoHeight;
+    const sx = crop ? Math.round(crop.x * fullWidth) : 0;
+    const sy = crop ? Math.round(crop.y * fullHeight) : 0;
+    const sw = crop ? Math.max(1, Math.min(fullWidth - sx, Math.round(crop.w * fullWidth))) : fullWidth;
+    const sh = crop ? Math.max(1, Math.min(fullHeight - sy, Math.round(crop.h * fullHeight))) : fullHeight;
     const canvas = rootDocument.createElement('canvas');
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
+    canvas.width = sw;
+    canvas.height = sh;
     const context = canvas.getContext('2d', { alpha: false });
     if (!context) throw new Error('截图失败，请重试');
-    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    if (crop) context.drawImage(video, sx, sy, sw, sh, 0, 0, sw, sh);
+    else context.drawImage(video, 0, 0, sw, sh);
     canvas.toBlob((blob) => {
       canvas.width = canvas.height = 0;
       if (blob) resolve(blob);

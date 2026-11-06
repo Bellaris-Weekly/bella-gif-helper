@@ -1,7 +1,7 @@
 'use strict';
 
 const { bindVersionButton } = require('./update-check.js');
-const { installLiveScreenshot } = require('./live-screenshot.js');
+const { captureVideoPng, formatScreenshotFileName, installLiveScreenshot } = require('./live-screenshot.js');
 const { createLoopPreviewClock, prepareLoopPreviewFrames } = require('./loop-preview.js');
 
 const { buildPanelTemplate } = require('./ui/panel.js');
@@ -348,17 +348,6 @@ const { startPageBridge } = require('./page-bridge.js');
       left: viewportWidth / 2 - (crop.x + crop.w / 2) * width,
       top: viewportHeight / 2 - (crop.y + crop.h / 2) * height,
       scale,
-    };
-  }
-
-  function calculateInnerOverlayPosition(crop, controlWidth, controlHeight, preferredInset = 12) {
-    const availableHorizontal = Math.max(0, crop.width - controlWidth);
-    const availableVertical = Math.max(0, crop.height - controlHeight);
-    const rightInset = Math.min(preferredInset, availableHorizontal / 2);
-    const topInset = Math.min(preferredInset, availableVertical / 2);
-    return {
-      left: crop.left + availableHorizontal - rightInset,
-      top: crop.top + topInset,
     };
   }
 
@@ -2373,7 +2362,6 @@ const { startPageBridge } = require('./page-bridge.js');
     panelResize: null,
     panelLayoutRaf: 0,
     preferredPanelGeometry: null,
-    aspectSquareButtonMetrics: null,
     shortcut: DEFAULT_SHORTCUT,
     shortcutRecording: false,
     suppressLauncherClick: false,
@@ -2427,6 +2415,8 @@ const { startPageBridge } = require('./page-bridge.js');
     scrubVideo: $('#scrubVideo'),
     previewCanvas: $('#previewCanvas'),
     aspectSquareBtn: $('#aspectSquareBtn'),
+    aspectFreeBtn: $('#aspectFreeBtn'),
+    editorScreenshotBtn: $('#editorScreenshotBtn'),
     editorBoundary: $('#editorBoundary'),
     editorCropBox: $('#editorCropBox'),
     cropSizeBadge: $('#cropSizeBadge'),
@@ -3043,34 +3033,6 @@ const { startPageBridge } = require('./page-bridge.js');
     };
   }
 
-  function readAspectSquareButtonMetrics(button) {
-    const cached = state.aspectSquareButtonMetrics;
-    if (cached) return cached;
-    const width = button.offsetWidth;
-    const height = button.offsetHeight;
-    // 面板隐藏或尚未布局时量到 0，此时只返回兜底值而不缓存，
-    // 否则兜底值会被永久锁死，按钮文案或字体变化后位置就会错。
-    if (!width || !height) return { width: width || 40, height: height || 28 };
-    const metrics = { width, height };
-    state.aspectSquareButtonMetrics = metrics;
-    return metrics;
-  }
-
-  function invalidateAspectSquareButtonMetrics() {
-    state.aspectSquareButtonMetrics = null;
-  }
-
-  function positionAspectSquareButton(crop) {
-    const wrap = el.editorPreviewWrap;
-    const button = el.aspectSquareBtn;
-    if (!wrap || !button) return;
-    const metrics = readAspectSquareButtonMetrics(button);
-    const position = calculateInnerOverlayPosition(crop, metrics.width, metrics.height);
-    button.style.left = `${position.left}px`;
-    button.style.top = `${position.top}px`;
-    button.style.right = 'auto';
-  }
-
   function setOutputPreviewVisible(visible) {
     if (!el.editorMotionLayer || !el.previewCanvas) return;
     el.editorMotionLayer.classList.toggle('output-previewing', visible);
@@ -3087,7 +3049,6 @@ const { startPageBridge } = require('./page-bridge.js');
       height: `${crop.height}px`,
       visibility: 'visible',
     });
-    positionAspectSquareButton(crop);
     Object.assign(el.editorBoundary.style, {
       left: `${layout.left}px`,
       top: `${layout.top}px`,
@@ -3346,14 +3307,12 @@ const { startPageBridge } = require('./page-bridge.js');
     el.panel.style.width = `${geometry.width}px`;
     el.panel.style.height = `${geometry.height}px`;
     el.panel.style.maxHeight = `${Math.max(1, window.innerHeight - UI_SAFE_MARGIN * 2)}px`;
-    invalidateAspectSquareButtonMetrics();
   }
 
   function clearDesktopPanelGeometry() {
     ['right', 'left', 'top', 'width', 'height', 'max-height'].forEach((property) => {
       el.panel.style.removeProperty(property);
     });
-    invalidateAspectSquareButtonMetrics();
   }
 
   function updatePanelContentLayout() {
@@ -4545,10 +4504,8 @@ const { startPageBridge } = require('./page-bridge.js');
   }
 
   function updateAspectSquareButton() {
-    if (!el.aspectSquareBtn) return;
-    el.aspectSquareBtn.classList.toggle('active', state.aspectSquare);
-    el.aspectSquareBtn.setAttribute('aria-pressed', state.aspectSquare ? 'true' : 'false');
-    el.aspectSquareBtn.title = state.aspectSquare ? '已锁定 1:1，点击取消' : '锁定裁剪比例为 1:1';
+    el.aspectSquareBtn.setAttribute('aria-pressed', String(state.aspectSquare));
+    el.aspectFreeBtn.setAttribute('aria-pressed', String(!state.aspectSquare));
   }
 
   function makeCurrentCropSquare() {
@@ -4568,13 +4525,33 @@ const { startPageBridge } = require('./page-bridge.js');
     state.editorCrop = { x: x / vw, y: y / vh, w: side / vw, h: side / vh };
   }
 
-  function toggleAspectSquare() {
-    if (state.mode !== 'edit' || !state.clip) return;
-    state.aspectSquare = !state.aspectSquare;
+  function setAspectSquare(value) {
+    if (state.mode !== 'edit' || !state.clip || state.aspectSquare === value) return;
+    state.aspectSquare = value;
     saveAspectSquarePreference(state.aspectSquare);
     if (state.aspectSquare) makeCurrentCropSquare();
     updateAspectSquareButton();
     animateCropIntoPreview();
+  }
+
+  async function captureEditorScreenshot() {
+    if (state.mode !== 'edit' || !state.clip || state.editorScreenshotBusy) return;
+    state.editorScreenshotBusy = true;
+    try {
+      // Dragging the timeline shows the scrub layer; otherwise clipVideo holds the visible frame.
+      const video = el.scrubVideo.classList.contains('active') ? el.scrubVideo : el.clipVideo;
+      const identity = state.clip.liveIdentity
+        || { streamerName: location.pathname.match(/\/(BV[\w]+)/i)?.[1] || '视频' };
+      const fileName = formatScreenshotFileName(new Date(), identity);
+      const blob = await captureVideoPng(video, document, state.editorCrop);
+      downloadBlob(blob, fileName);
+      showToast('截图已保存');
+    } catch (error) {
+      debugLog('captureEditorScreenshot', error);
+      showToast(error.name === 'SecurityError' ? '浏览器不允许截图' : error.message, 'error');
+    } finally {
+      state.editorScreenshotBusy = false;
+    }
   }
 
   function resizeSquareScreenRect(startRect, handle, dx, dy, boundary, minSize = MIN_SELECT_PX) {
@@ -6722,7 +6699,9 @@ const { startPageBridge } = require('./page-bridge.js');
   el.previewTrimBtn.addEventListener('click', previewTrimmedClip);
   el.liveRewindModeBtn.addEventListener('click', () => setLiveCaptureMode('rewind'));
   el.liveForwardModeBtn.addEventListener('click', () => setLiveCaptureMode('forward'));
-  el.aspectSquareBtn.addEventListener('click', toggleAspectSquare);
+  el.aspectSquareBtn.addEventListener('click', () => setAspectSquare(true));
+  el.aspectFreeBtn.addEventListener('click', () => setAspectSquare(false));
+  el.editorScreenshotBtn.addEventListener('click', captureEditorScreenshot);
   el.addTextBtn.addEventListener('click', addTextLayer);
   el.textLayerTabs.addEventListener('click', (event) => {
     const remove = event.target.closest?.('[data-delete-text-id]');

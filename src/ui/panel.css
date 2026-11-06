@@ -318,30 +318,58 @@
     visibility: hidden;
   }
   #scrubVideo.active { visibility: visible; }
-  #aspectSquareBtn {
-    position: absolute;
-    top: 16px;
-    left: 16px;
-    z-index: 12;
-    min-width: 40px;
-    height: 28px;
-    padding: 0 8px;
-    border: 1px solid var(--color-border-strong);
-    border-radius: var(--radius-control);
-    background: rgba(21, 22, 25, .86);
-    color: var(--color-text);
-    font-size: 11px;
-    font-weight: 800;
-    cursor: pointer;
-    backdrop-filter: blur(10px);
+  .preview-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    width: min(100%, var(--editor-preview-size, 360px));
+    max-width: 520px;
+    justify-self: center;
   }
-  #aspectSquareBtn:hover { background: var(--color-surface-hover); }
-  #aspectSquareBtn.active {
-    border-color: var(--color-brand);
+  .aspect-switch {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-control);
+    background: var(--color-surface-raised);
+  }
+  .toolbar-label { padding: 0 6px 0 4px; color: var(--color-text-muted); font-size: 11px; }
+  .aspect-switch button {
+    min-width: 38px;
+    height: 24px;
+    padding: 0 8px;
+    border: 0;
+    border-radius: calc(var(--radius-control) - 2px);
+    background: transparent;
+    color: var(--color-text-secondary);
+    font-size: 11px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  .aspect-switch button:hover { color: var(--color-text); background: var(--color-surface-hover); }
+  .aspect-switch button[aria-pressed="true"] {
     background: var(--color-brand);
     color: var(--color-on-brand);
-    box-shadow: 0 4px 16px rgba(var(--color-brand-rgb), .24);
   }
+  .toolbar-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    height: 30px;
+    padding: 0 10px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-control);
+    background: var(--color-surface-raised);
+    color: var(--color-text);
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  .toolbar-btn:hover { background: var(--color-surface-hover); border-color: var(--color-border-strong); }
+  .toolbar-btn svg { display: block; }
+  .preview-toolbar button:disabled { opacity: .5; cursor: not-allowed; }
   #editorOverlay {
     position: absolute;
     inset: 0;

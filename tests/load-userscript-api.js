@@ -18,7 +18,6 @@ const exportNames = [
   'buildGifsicleCommand',
   'calculateCropViewport',
   'calculateEncoderWorkerCount',
-  'calculateInnerOverlayPosition',
   'calculateLiveFirstFrameTime',
   'calculatePanelResize',
   'calculateTimelineDraggedViewport',
