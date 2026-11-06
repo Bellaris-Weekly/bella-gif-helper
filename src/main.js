@@ -4938,25 +4938,28 @@ const { startPageBridge } = require('./page-bridge.js');
   }
 
   function updatePreviewPlaybackInfo() {
-    el.previewPlaybackInfo.classList.toggle('hidden', !state.clip);
+    // 方向与本轮进度只对「往返」有意义；普通循环与淡入淡出不显示。
+    const pingpong = normalizeLoopMode(el.loopModeSelect.value) === 'pingpong';
+    el.previewPlaybackInfo.classList.toggle('hidden', !state.clip || !pingpong);
     const preview = state.loopPreview;
-    if (preview) {
-      el.previewTrimBtn.textContent = preview.playing ? '⏸ 暂停' : '▶ 播放';
-      el.previewDirection.textContent = preview.error ? '预览失败'
-        : !preview.cache ? '准备循环…'
-          : preview.frame.blend ? '首尾衔接'
-            : preview.position.reverse ? '倒放 ←' : '正放 →';
-      el.previewCycleTime.textContent = preview.position
-        ? `本轮 ${(preview.position.elapsed / 1000).toFixed(2)} / ${(preview.position.duration / 1000).toFixed(2)} 秒`
-        : '';
-    } else {
-      const ordinary = normalizeLoopMode(el.loopModeSelect.value) === 'none';
-      const speed = Math.max(0.1, Number(el.speedSelect.value) || 1);
-      const duration = Math.max(0, state.trimEnd - state.trimStart) / speed;
-      const elapsed = clamp((el.clipVideo.currentTime - state.trimStart) / speed, 0, duration);
-      el.previewDirection.textContent = ordinary ? '正放 →' : '待预览';
-      el.previewCycleTime.textContent = ordinary ? `本轮 ${elapsed.toFixed(2)} / ${duration.toFixed(2)} 秒` : '';
+    if (preview) el.previewTrimBtn.textContent = preview.playing ? '⏸ 暂停' : '▶ 播放';
+    if (!pingpong) return;
+    let direction = 'pending';
+    let label = '待预览';
+    let time = '';
+    if (preview?.error) {
+      direction = 'error';
+      label = '预览失败';
+    } else if (preview && !preview.cache) {
+      label = '准备中…';
+    } else if (preview?.position) {
+      direction = preview.position.reverse ? 'reverse' : 'forward';
+      label = preview.position.reverse ? '← 倒放' : '正放 →';
+      time = `${(preview.position.elapsed / 1000).toFixed(2)} / ${(preview.position.duration / 1000).toFixed(2)} 秒`;
     }
+    el.previewPlaybackInfo.dataset.direction = direction;
+    el.previewDirection.textContent = label;
+    el.previewCycleTime.textContent = time;
   }
 
   function updateLoopPreviewClock() {

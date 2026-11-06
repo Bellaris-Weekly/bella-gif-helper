@@ -616,18 +616,38 @@
   }
   .preview-controls .btn { min-height: 36px; padding: 0 12px; }
   .preview-playback-info {
-    display: flex;
-    flex: 1 1 120px;
-    flex-wrap: wrap;
-    align-items: baseline;
-    gap: 2px 8px;
+    display: inline-flex;
+    flex: 0 1 auto;
+    align-items: center;
+    gap: 8px;
     min-width: 0;
+    margin-right: auto;
     color: var(--color-text-muted);
-    font-size: 11px;
+    font-size: 12px;
     font-variant-numeric: tabular-nums;
+    white-space: nowrap;
   }
-  #previewDirection { color: var(--color-text); }
-  #previewCycleTime { white-space: nowrap; }
+  #previewDirection {
+    display: inline-flex;
+    align-items: center;
+    height: 22px;
+    padding: 0 8px;
+    border-radius: 999px;
+    background: var(--color-surface-hover);
+    color: var(--color-text-secondary);
+    font-size: 11px;
+    font-weight: 650;
+  }
+  .preview-playback-info[data-direction="forward"] #previewDirection,
+  .preview-playback-info[data-direction="reverse"] #previewDirection {
+    background: var(--color-brand-soft);
+    color: var(--color-brand-hover);
+  }
+  .preview-playback-info[data-direction="error"] #previewDirection {
+    background: rgba(201, 66, 61, .16);
+    color: #e07a75;
+  }
+  #previewCycleTime:empty { display: none; }
   .live-mode-switch {
     display: inline-flex;
     flex: 0 1 auto;

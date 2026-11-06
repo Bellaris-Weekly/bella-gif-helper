@@ -30,7 +30,7 @@ function fixture() {
   let now = 0, nextRaf = 0, paints = 0;
   const element = () => {
     const classes = new Set();
-    return { textContent: '', pause() {}, classList: {
+    return { textContent: '', dataset: {}, pause() {}, classList: {
       contains: name => classes.has(name), add: name => classes.add(name), remove: name => classes.delete(name),
       toggle(name, on) { if (on) classes.add(name); else classes.delete(name); },
     } };
@@ -63,7 +63,7 @@ function fixture() {
     saveExportPreference() {}, updateEstimatedFileSize() {},
     setStatus(message) { statuses.push(message); }, friendlyError: error => error.message,
   };
-  vm.runInNewContext(editor + '\nthis.api = { startLoopPreview, stopTrimPreview, previewTrimmedClip, settleTimelinePreview, handleExportInputChange, updateLoopPreviewClock };', context);
+  vm.runInNewContext(editor + '\nthis.api = { startLoopPreview, stopTrimPreview, previewTrimmedClip, settleTimelinePreview, handleExportInputChange, updateLoopPreviewClock, updatePreviewPlaybackInfo };', context);
   return { ...context, jobs, seeks, statuses, rafs, setTime: value => { now = value; },
     get paints() { return paints; } };
 }
@@ -199,4 +199,20 @@ test('retrying a failed preparation clears its error when the preview becomes re
   await ready(f);
   assert.equal(f.statuses.at(-1), '');
   assert.equal(f.state.loopPreview.playing, true);
+});
+
+test('direction and cycle progress only show in pingpong mode', async () => {
+  const f = fixture();
+  const info = f.el.previewPlaybackInfo;
+  await ready(f, false);
+  f.api.updatePreviewPlaybackInfo();
+  assert.equal(info.classList.contains('hidden'), false);
+  assert.equal(info.dataset.direction, 'forward');
+  assert.equal(f.el.previewDirection.textContent, '正放 →');
+  assert.match(f.el.previewCycleTime.textContent, /^0\.00 \/ \d+\.\d{2} 秒$/);
+  for (const mode of ['none', 'crossfade']) {
+    f.el.loopModeSelect.value = mode;
+    f.api.handleExportInputChange({ currentTarget: f.el.loopModeSelect });
+    assert.equal(info.classList.contains('hidden'), true, mode);
+  }
 });
