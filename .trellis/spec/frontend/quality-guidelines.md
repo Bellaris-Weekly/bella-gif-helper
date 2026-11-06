@@ -86,3 +86,31 @@ Version ordering, metadata extraction, startup request, duplicate clicks, failed
 
 ### 7. Wrong vs Correct
 Wrong: compare version strings lexically or duplicate the version in UI source. Correct: compare numeric components and prerelease identifiers; derive the displayed version from the metadata at build time.
+
+## Scenario: Lightweight Loop Preview
+
+### 1. Scope / Trigger
+Changes to effect preview playback, source scrubbing, or preview resource ownership.
+
+### 2. Signatures
+`createLoopPreviewClock(loopFrames)` exposes `sample(now)` and `setRunning(value, now)`.
+`prepareLoopPreviewFrames({ clip, frameTimes, createSource, signal, createBitmap })` returns `{ frames, dispose }`.
+
+### 3. Contracts
+- Consume the existing export frame plan and delays; never implement a separate reverse/fade algorithm. The timeline remains in source coordinates; the cycle label follows output time.
+- Keep native playback for ordinary preview. Effect bitmaps have a 320px maximum edge and 24 MiB pixel budget. Cache raw source frames; blend before applying crop, captions and corners once.
+- Pause preserves the effect clock/cache. Source dragging and timing/mode changes restart at cycle start while preserving play/pause intent. Crop/text changes reuse the cache.
+- `stopTrimPreview` invalidates timeline settle tokens, cancels the timeline seek gate, removes the scrub layer, aborts preparation and releases bitmaps/RAF. A late ordinary seek must not toggle its replacement effect session.
+- Only the current session can paint, report errors or start playback. Close the source and each owned frame on success, cancellation and failure. An aborted pending bitmap conversion must close its late result.
+
+### 4. Validation & Error Matrix
+Incomplete decoding or conversion failure -> release resources and show retryable preview failure. Successful retry -> clear failure status. Obsolete completion -> dispose without repainting. Hidden/crop interaction -> freeze the effect clock.
+
+### 5. Good / Base / Bad Cases
+Good: pause during reverse, resume in reverse with the same cache. Base: short clips follow the existing plan's ordinary-frame fallback. Bad: a late source seek resumes a newly paused effect preview.
+
+### 6. Tests Required
+Exact plan order/weights/delays, partial-frame pause/resume, cache budget and disposal, cancellation during source/bitmap creation, late ordinary seeks, duplicate input/change events, and failure/retry. Browser-check WebM and fragmented MP4, crop/caption redraw and narrow panels.
+
+### 7. Wrong vs Correct
+Wrong: use `clipVideo.paused` as effect playback state or redraw the canvas on every RAF. Correct: use the effect session's play intent and clock, paint only changed output frames, and update time labels separately.

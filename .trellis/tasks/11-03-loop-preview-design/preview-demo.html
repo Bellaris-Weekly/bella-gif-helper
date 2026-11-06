@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>循环预览 · 单时间轴交互示意</title>
+  <style>
+    :root { color-scheme: light; font-family: system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; color: #24352f; background: #f3f5f1; font-synthesis: none; }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 38px 20px; }
+    main { max-width: 780px; margin: auto; }
+    .eyebrow { margin: 0 0 9px; color: #587366; font-size: 12px; font-weight: 700; letter-spacing: .12em; }
+    h1 { font-size: clamp(22px, 4vw, 30px); letter-spacing: -.04em; margin: 0 0 10px; }
+    .intro { font-size: 14px; line-height: 1.7; color: #617068; margin: 0 0 25px; }
+    .card { border: 1px solid #dce3db; background: white; border-radius: 20px; overflow: hidden; box-shadow: 0 14px 45px #21352908; }
+    .toolbar { padding: 18px 22px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+    .toolbar label { font-size: 13px; font-weight: 650; }
+    select { background: #f5f7f3; border: 1px solid #d9e0d6; border-radius: 8px; color: inherit; font: inherit; font-size: 13px; padding: 8px 30px 8px 10px; }
+    .badge { margin-left: auto; border-radius: 20px; background: #f2f4f0; color: #75816f; font-size: 11px; padding: 5px 9px; }
+    .screen { position: relative; background: #e8ede5; }
+    #preview { display: block; width: 100%; height: auto; aspect-ratio: 16/8; }
+    .screen-label { position: absolute; top: 15px; left: 18px; font-size: 11px; color: #657469; background: #ffffffb8; border-radius: 5px; padding: 5px 8px; }
+    .screen-caption { position: absolute; right: 17px; bottom: 13px; font-size: 11px; color: #657469; font-variant-numeric: tabular-nums; }
+    .controls { padding: 20px 22px 23px; }
+    .play-row { display: flex; align-items: center; gap: 14px; margin-bottom: 25px; flex-wrap: wrap; }
+    button { border: 0; background: #355d4b; color: #fff; border-radius: 9px; padding: 10px 15px; font: inherit; font-size: 13px; font-weight: 650; cursor: pointer; min-width: 84px; }
+    button:hover { background: #264c3a; }
+    :focus-visible { outline: 3px solid #c69242; outline-offset: 4px; }
+    .phase { font-size: 14px; font-weight: 650; }
+    .play-state { font-size: 11px; color: #7b857d; margin-top: 4px; }
+    .cycle { margin-left: auto; text-align: right; font-variant-numeric: tabular-nums; }
+    .cycle-title { font-size: 11px; color: #7b857d; margin-bottom: 4px; }
+    .cycle-time { font-size: 19px; font-weight: 650; letter-spacing: -.02em; }
+    .cycle-time span:last-child { font-size: 13px; color: #7b857d; font-weight: 400; }
+    .axis-header { display: flex; justify-content: space-between; font-size: 11px; color: #778278; margin-bottom: 33px; gap: 12px; }
+    .axis-header strong { color: #465b4c; font-weight: 600; }
+    .timeline { position: relative; height: 57px; border-block: 2px solid #769780; background: #e9eee6; }
+    #filmstrip { display: block; width: 100%; height: 53px; opacity: .8; }
+    .edge { position: absolute; top: -2px; bottom: -2px; width: 5px; border-radius: 2px; background: #769780; pointer-events: none; }
+    .edge.start { left: 0; } .edge.end { right: 0; }
+    .marker { position: absolute; top: -6px; bottom: -6px; width: 2px; background: #315641; transform: translateX(-1px); pointer-events: none; z-index: 2; }
+    .marker::before { content: ""; position: absolute; top: -2px; left: -4px; border: 5px solid transparent; border-top: 7px solid #315641; }
+    .marker-label { position: absolute; top: -22px; left: 0; transform: translateX(-50%); font-size: 10px; white-space: nowrap; background: #315641; color: white; padding: 3px 5px; border-radius: 4px; font-variant-numeric: tabular-nums; }
+    .ghost { background: #b17132; opacity: .5; z-index: 1; }
+    .ghost::before { border-top-color: #b17132; }
+    .ghost .marker-label { background: #b17132; }
+    #sourcePosition { position: absolute; inset: -8px 0; width: 100%; height: 73px; margin: 0; opacity: 0; cursor: ew-resize; touch-action: none; z-index: 3; }
+    .timeline:focus-within { outline: 3px solid #c69242; outline-offset: 4px; }
+    .ticks { display: flex; justify-content: space-between; padding-top: 9px; color: #809080; font-size: 10px; font-variant-numeric: tabular-nums; }
+    .axis-note { margin: 12px 0 0; font-size: 11px; color: #778278; line-height: 1.7; }
+    .feedback { min-height: 39px; margin: 17px 0 0; padding: 10px 12px; border-radius: 8px; background: #f5f7f3; font-size: 12px; color: #60705f; line-height: 1.6; }
+    .key { display: inline-block; width: 6px; height: 6px; background: #315641; border-radius: 50%; margin-right: 5px; }
+    .key.ghost-key { background: #b1713280; margin-left: 12px; }
+    details { margin: 22px 2px 0; font-size: 12px; color: #738071; line-height: 1.8; }
+    summary { cursor: pointer; color: #4d6552; }
+    details p { margin: 9px 0; }
+    code { background: #e9eee5; padding: 1px 4px; border-radius: 3px; }
+    @media (max-width: 480px) { body { padding: 24px 12px; } .toolbar, .controls { padding-inline: 16px; } .badge { font-size: 10px; } .play-row { gap: 10px; } .cycle-time { font-size: 17px; } .axis-header { font-size: 10px; } .phase { font-size: 13px; } }
+    @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto; } }
+  </style>
+</head>
+<body>
+  <main>
+    <p class="eyebrow">BELLA GIF HELPER / INTERACTION STUDY</p>
+    <h1>一条时间轴，看清整个循环</h1>
+    <p class="intro">播放头对应原片位置；方向说明画面怎么走，本轮时间说明循环走到了哪里。</p>
+    <section class="card" aria-label="循环预览交互示意">
+      <div class="toolbar">
+        <label for="mode">循环模式</label>
+        <select id="mode">
+          <option value="none">普通</option>
+          <option value="pingpong" selected>往返</option>
+          <option value="crossfade">首尾淡化</option>
+        </select>
+        <span class="badge">交互示意 · 非真实媒体</span>
+      </div>
+      <div class="screen">
+        <canvas id="preview" width="960" height="480" aria-label="用移动的圆形和方块演示当前循环画面" role="img"></canvas>
+        <span id="screenLabel" class="screen-label">循环效果预览</span>
+        <span class="screen-caption">几何示例 · 4 秒 · 10 FPS</span>
+      </div>
+      <div class="controls">
+        <div class="play-row">
+          <button id="play" type="button">▶ 播放</button>
+          <div><div id="phase" class="phase">→ 正放</div><div id="playState" class="play-state">已暂停</div></div>
+          <div class="cycle"><div id="cycleTitle" class="cycle-title">本轮时间</div><div class="cycle-time"><span id="elapsed">0.00</span> <span id="total">/ 7.80 秒</span></div></div>
+        </div>
+        <div class="axis-header"><strong>原片时间轴 · 裁剪范围 0.0–4.0 秒</strong><span id="sourceText">原片 0.0 秒</span></div>
+        <div class="timeline">
+          <canvas id="filmstrip" width="1120" height="80" aria-hidden="true"></canvas>
+          <span class="edge start" aria-hidden="true"></span><span class="edge end" aria-hidden="true"></span>
+          <div id="mainMarker" class="marker" aria-hidden="true"><span id="mainLabel" class="marker-label">0.0 s</span></div>
+          <div id="ghostMarker" class="marker ghost" aria-hidden="true" hidden><span id="ghostLabel" class="marker-label"></span></div>
+          <input id="sourcePosition" type="range" min="0" max="4" step="0.1" value="0" aria-label="原片位置，拖动查看原片，松开恢复循环画面" aria-describedby="axisNote">
+        </div>
+        <div class="ticks" aria-hidden="true"><span>0.0 s</span><span>1.0 s</span><span>2.0 s</span><span>3.0 s</span><span>4.0 s</span></div>
+        <p id="axisNote" class="axis-note">拖动时看原片，松开回到循环画面。两侧为裁剪边界示意。</p>
+        <p id="feedback" class="feedback" role="status">往返时播放头会向左走；本轮时间继续增加。</p>
+      </div>
+    </section>
+    <details>
+      <summary>示意规则与边界</summary>
+      <p>这里只有一条原片时间轴，没有第二条输出进度条。粗实线标记当前原片位置；淡化时，半透明辅助标记指出叠入的头部帧，不能单独拖动。</p>
+      <p>素材共 40 帧，每帧 100 ms，帧位置为 0.0–3.9 秒，右侧 4.0 秒是素材结束边界。普通一轮 4.00 秒；往返顺序 <code>0…39, 38…1</code>，一轮 7.80 秒。</p>
+      <p>首尾淡化取 8 帧，输出 <code>8…39</code>；最后 8 帧分别叠入头部 <code>0…7</code>，混合比例依次为 <code>1/9…8/9</code>，一轮 3.20 秒。拖到头部 0.0–0.7 秒，松开后定位到它对应的尾部混合帧。</p>
+      <p>暂停与继续保留当前帧和方向；切换模式从新模式的第一帧开始，并保留播放或暂停状态。往返模式拖动后统一从正放继续。拖动会改变本轮时间，持续播放中本轮时间单调增加，到下一轮归零。</p>
+      <p>此文件只验证交互设计：使用 canvas 几何图形，不读取视频，不调用 GIF 编码器，不支持裁剪边界编辑。</p>
+    </details>
+  </main>
+  <script>
+    'use strict';
+    const SOURCE_COUNT = 40;
+    const FRAME_MS = 100;
+    const SOURCE_SECONDS = SOURCE_COUNT * FRAME_MS / 1000;
+
+    // This isolated design demo mirrors the existing 40-frame export plan.
+    function makePlan(mode) {
+      const frame = (sourceIndex, blend = null) => ({ sourceIndex, blend, delay: FRAME_MS });
+      if (mode === 'pingpong') {
+        return [
+          ...Array.from({ length: SOURCE_COUNT }, (_, index) => frame(index)),
+          ...Array.from({ length: SOURCE_COUNT - 2 }, (_, offset) => frame(SOURCE_COUNT - 2 - offset)),
+        ];
+      }
+      if (mode === 'crossfade') {
+        const fadeCount = Math.min(Math.floor(SOURCE_COUNT * .25), Math.floor(800 / FRAME_MS));
+        const fadeStart = SOURCE_COUNT - fadeCount;
+        return Array.from({ length: SOURCE_COUNT - fadeCount }, (_, offset) => {
+          const index = fadeCount + offset;
+          const step = index - fadeStart;
+          return frame(index, index < fadeStart ? null : { sourceIndex: step, alpha: (step + 1) / (fadeCount + 1) });
+        });
+      }
+      return Array.from({ length: SOURCE_COUNT }, (_, index) => frame(index));
+    }
+
+    function outputIndexForSource(plan, sourceIndex) {
+      const direct = plan.findIndex((frame) => frame.sourceIndex === sourceIndex);
+      return direct >= 0 ? direct : plan.findIndex((frame) => frame.blend?.sourceIndex === sourceIndex);
+    }
+
+    const byId = (id) => document.getElementById(id);
+    const ui = Object.fromEntries(['mode', 'play', 'preview', 'filmstrip', 'phase', 'playState', 'elapsed', 'total', 'cycleTitle', 'sourceText', 'sourcePosition', 'mainMarker', 'mainLabel', 'ghostMarker', 'ghostLabel', 'feedback', 'screenLabel'].map((id) => [id, byId(id)]));
+    const context = ui.preview.getContext('2d');
+    const state = {
+      mode: 'pingpong', plan: makePlan('pingpong'), elapsedMs: 0,
+      playing: !window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+      drag: null, lastTick: null, notice: '', noticeUntil: 0,
+    };
+    const rawFrame = document.createElement('canvas');
+    rawFrame.width = ui.preview.width;
+    rawFrame.height = ui.preview.height;
+    const rawContext = rawFrame.getContext('2d');
+
+    function paintSource(ctx, sourceIndex, width, height) {
+      const t = sourceIndex / (SOURCE_COUNT - 1);
+      ctx.save();
+      ctx.scale(width / 960, height / 480);
+      ctx.fillStyle = '#e8ede5'; ctx.fillRect(0, 0, 960, 480);
+      ctx.strokeStyle = '#d6dfd2'; ctx.lineWidth = 1;
+      for (let x = 60; x < 960; x += 70) { ctx.beginPath(); ctx.moveTo(x, 65); ctx.lineTo(x, 395); ctx.stroke(); }
+      ctx.strokeStyle = '#c7d4c0'; ctx.beginPath(); ctx.moveTo(60, 360); ctx.lineTo(900, 360); ctx.stroke();
+      const x = 110 + t * 740;
+      const y = 248 - Math.sin(t * Math.PI * 2) * 68;
+      ctx.fillStyle = '#718b631c'; ctx.beginPath(); ctx.ellipse(x, 360, 45, 8, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#6c8c5e'; ctx.beginPath(); ctx.arc(x, y, 43, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#ffffffb8'; ctx.beginPath(); ctx.arc(x - 13, y - 12, 8, 0, Math.PI * 2); ctx.fill();
+      ctx.translate(830 - t * 700, 140 + Math.sin(t * Math.PI) * 40);
+      ctx.rotate(t * Math.PI);
+      ctx.fillStyle = '#c6a377'; ctx.fillRect(-22, -22, 44, 44);
+      ctx.restore();
+    }
+
+    function paintPreview(frame) {
+      paintSource(context, frame.sourceIndex, ui.preview.width, ui.preview.height);
+      if (frame.blend) {
+        paintSource(rawContext, frame.blend.sourceIndex, rawFrame.width, rawFrame.height);
+        context.save(); context.globalAlpha = frame.blend.alpha; context.drawImage(rawFrame, 0, 0); context.restore();
+      }
+    }
+
+    function setMarker(marker, label, sourceIndex, suffix = '') {
+      const seconds = sourceIndex * FRAME_MS / 1000;
+      marker.style.left = `${seconds / SOURCE_SECONDS * 100}%`;
+      label.textContent = `${seconds.toFixed(1)} s${suffix}`;
+      label.style.transform = sourceIndex < 3 ? 'translateX(0)' : sourceIndex > 36 ? 'translateX(-100%)' : 'translateX(-50%)';
+    }
+
+    function render() {
+      const index = Math.min(state.plan.length - 1, Math.floor(state.elapsedMs / FRAME_MS));
+      const frame = state.drag ? { sourceIndex: state.drag.sourceIndex, blend: null } : state.plan[index];
+      const reversing = !state.drag && state.mode === 'pingpong' && index >= SOURCE_COUNT;
+      paintPreview(frame);
+      ui.play.textContent = state.playing ? 'Ⅱ 暂停' : '▶ 播放';
+      ui.play.disabled = Boolean(state.drag);
+      ui.play.setAttribute('aria-label', state.playing ? '暂停循环预览' : '播放循环预览');
+      ui.phase.textContent = state.drag ? '↔ 原片定位' : frame.blend ? '⇄ 首尾衔接' : reversing ? '← 倒放' : '→ 正放';
+      ui.playState.textContent = state.drag ? '拖动中 · 循环已暂停' : state.playing ? '正在预览循环效果' : '已暂停 · 再次播放从此处继续';
+      ui.screenLabel.textContent = state.drag ? '原片定位 · 松开恢复循环画面' : '循环效果预览';
+      ui.elapsed.textContent = (state.elapsedMs / 1000).toFixed(2);
+      ui.total.textContent = `/ ${(state.plan.length * FRAME_MS / 1000).toFixed(2)} 秒`;
+      ui.cycleTitle.textContent = state.drag ? '本轮时间 · 拖动中冻结' : '本轮时间';
+      ui.sourceText.textContent = frame.blend ? `尾部 ${(frame.sourceIndex / 10).toFixed(1)} + 头部 ${(frame.blend.sourceIndex / 10).toFixed(1)} 秒` : `原片 ${(frame.sourceIndex / 10).toFixed(1)} 秒`;
+      setMarker(ui.mainMarker, ui.mainLabel, frame.sourceIndex, frame.blend ? ' 尾' : '');
+      ui.ghostMarker.hidden = !frame.blend;
+      if (frame.blend) setMarker(ui.ghostMarker, ui.ghostLabel, frame.blend.sourceIndex, ' 头');
+      if (!state.drag) ui.sourcePosition.value = frame.sourceIndex / 10;
+      ui.sourcePosition.setAttribute('aria-valuetext', `原片 ${(frame.sourceIndex / 10).toFixed(1)} 秒，${ui.phase.textContent}`);
+      if (state.drag) {
+        ui.feedback.textContent = '正在查看原片。松开后按拖动前的播放状态继续循环；往返将从正放继续。';
+      } else if (state.notice && performance.now() < state.noticeUntil) {
+        ui.feedback.textContent = state.notice;
+      } else if (frame.blend) {
+        ui.feedback.textContent = `首尾融合中：实线是尾部，半透明标记是头部；头部画面占比 ${Math.round(frame.blend.alpha * 100)}%。`;
+      } else {
+        ui.feedback.textContent = state.mode === 'pingpong' ? '往返时播放头会向左走；本轮时间继续增加。' : state.mode === 'crossfade' ? '末尾 0.8 秒与开头叠合，因此一轮为 3.20 秒。半透明标记将在融合时出现。' : '按原片顺序播放，到末尾后播放头回到起点，开始下一轮。';
+      }
+    }
+
+    function beginDrag(kind) {
+      if (state.drag) return;
+      state.drag = { kind, sourceIndex: state.plan[Math.floor(state.elapsedMs / FRAME_MS)].sourceIndex, resume: state.playing };
+      state.playing = false;
+      state.lastTick = null;
+      state.notice = '';
+      render();
+    }
+
+    function finishDrag(cancelled = false) {
+      if (!state.drag) return;
+      const drag = state.drag;
+      if (!cancelled) {
+        const outputIndex = outputIndexForSource(state.plan, drag.sourceIndex);
+        state.elapsedMs = Math.max(0, outputIndex) * FRAME_MS;
+        const mapped = state.plan[outputIndex];
+        if (mapped?.sourceIndex !== drag.sourceIndex && mapped?.blend) {
+          state.notice = `头部 ${(drag.sourceIndex / 10).toFixed(1)} 秒参与淡化，已定位到尾部 ${(mapped.sourceIndex / 10).toFixed(1)} 秒的对应混合帧。`;
+          state.noticeUntil = performance.now() + 4500;
+        }
+      }
+      state.playing = drag.resume;
+      state.drag = null;
+      state.lastTick = null;
+      render();
+    }
+
+    ui.sourcePosition.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0) return;
+      beginDrag('pointer');
+      ui.sourcePosition.setPointerCapture(event.pointerId);
+    });
+    ui.sourcePosition.addEventListener('input', () => {
+      if (!state.drag) beginDrag('input');
+      state.drag.sourceIndex = Math.min(SOURCE_COUNT - 1, Math.max(0, Math.round(Number(ui.sourcePosition.value) * 10)));
+      render();
+    });
+    ui.sourcePosition.addEventListener('pointerup', () => finishDrag());
+    ui.sourcePosition.addEventListener('pointercancel', () => finishDrag(true));
+    ui.sourcePosition.addEventListener('lostpointercapture', () => { if (state.drag?.kind === 'pointer') finishDrag(true); });
+    ui.sourcePosition.addEventListener('keydown', (event) => {
+      if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown'].includes(event.key)) beginDrag('keyboard');
+      if (event.key === 'Escape') finishDrag(true);
+    });
+    ui.sourcePosition.addEventListener('keyup', () => { if (state.drag?.kind === 'keyboard') finishDrag(); });
+    ui.sourcePosition.addEventListener('change', () => { if (state.drag?.kind === 'input') finishDrag(); });
+    ui.sourcePosition.addEventListener('blur', () => finishDrag());
+    ui.play.addEventListener('click', () => { state.playing = !state.playing; state.lastTick = null; render(); });
+    ui.mode.addEventListener('change', () => {
+      finishDrag(true);
+      state.mode = ui.mode.value;
+      state.plan = makePlan(state.mode);
+      state.elapsedMs = 0;
+      state.lastTick = null;
+      state.notice = '';
+      render();
+    });
+    document.addEventListener('visibilitychange', () => { state.lastTick = null; });
+
+    const filmContext = ui.filmstrip.getContext('2d');
+    for (let cell = 0; cell < 10; cell++) {
+      filmContext.save();
+      filmContext.translate(cell * 112, 0);
+      filmContext.beginPath(); filmContext.rect(0, 0, 111, 80); filmContext.clip();
+      paintSource(filmContext, Math.min(SOURCE_COUNT - 1, cell * 4 + 2), 112, 80);
+      filmContext.restore();
+    }
+
+    function tick(now) {
+      if (state.playing && !state.drag && !document.hidden) {
+        if (state.lastTick !== null) {
+          state.elapsedMs += Math.max(0, now - state.lastTick);
+          const duration = state.plan.length * FRAME_MS;
+          if (state.elapsedMs >= duration) {
+            state.elapsedMs %= duration;
+          }
+        }
+        state.lastTick = now;
+        render();
+      } else {
+        state.lastTick = null;
+      }
+      requestAnimationFrame(tick);
+    }
+    render();
+    requestAnimationFrame(tick);
+  </script>
+</body>
+</html>

@@ -1,0 +1,33 @@
+{
+  "id": "loop-preview-design",
+  "name": "loop-preview-design",
+  "title": "Design loop preview and timeline behavior",
+  "description": "",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "codex",
+  "assignee": "codex",
+  "createdAt": "2026-11-03",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    "src/loop-preview.js",
+    "src/main.js",
+    "src/ui/panel.html",
+    "src/ui/panel.css",
+    "tests/loop-preview.test.js",
+    "tests/loop-preview-integration.test.js"
+  ],
+  "notes": "Simplified implementation complete and verified: v1.5.21; npm run verify 87/87; real Chromium WebM/fMP4 and downscaled/one-frame preview checks pass. No commit/push requested; changes remain in workspace.",
+  "meta": {}
+}

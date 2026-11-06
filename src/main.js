@@ -2,6 +2,7 @@
 
 const { bindVersionButton } = require('./update-check.js');
 const { installLiveScreenshot } = require('./live-screenshot.js');
+const { createLoopPreviewClock, prepareLoopPreviewFrames } = require('./loop-preview.js');
 
 const { buildPanelTemplate } = require('./ui/panel.js');
 
@@ -2361,6 +2362,8 @@ const { startPageBridge } = require('./page-bridge.js');
     trimEnd: 0,
     trimPreviewToken: 0,
     trimPreviewCleanup: null,
+    loopPreview: null,
+    previewSettingsKey: null,
     exportEncodingSession: null,
     exportAbortController: null,
     exportFrameSource: null,
@@ -2438,6 +2441,9 @@ const { startPageBridge } = require('./page-bridge.js');
     trimEndValue: $('#trimEndValue'),
     trimSummary: $('#trimSummary'),
     previewTrimBtn: $('#previewTrimBtn'),
+    previewPlaybackInfo: $('#previewPlaybackInfo'),
+    previewDirection: $('#previewDirection'),
+    previewCycleTime: $('#previewCycleTime'),
     liveModeSwitch: $('#liveModeSwitch'),
     liveRewindModeBtn: $('#liveRewindModeBtn'),
     liveForwardModeBtn: $('#liveForwardModeBtn'),
@@ -3182,6 +3188,9 @@ const { startPageBridge } = require('./page-bridge.js');
   function suspendEditorBackgroundWork() {
     cancelEditorBackgroundResume();
     state.editorBackgroundIntent = true;
+    updateLoopPreviewClock();
+    const preview = state.loopPreview;
+    if (preview?.frame) el.clipVideo.currentTime = preview.times[preview.frame.sourceIndex];
     cancelEditorPreviewRender();
     setOutputPreviewVisible(false);
   }
@@ -3191,6 +3200,7 @@ const { startPageBridge } = require('./page-bridge.js');
     const intent = state.editorBackgroundIntent;
     state.editorBackgroundIntent = null;
     if (!intent || !state.clip || state.mode !== 'edit') return;
+    updateLoopPreviewClock();
     scheduleEditorPreviewRender();
   }
 
@@ -4510,6 +4520,7 @@ const { startPageBridge } = require('./page-bridge.js');
     state.activeTextId = null;
     state.timelineViewStart = 0;
     state.timelineViewEnd = state.clip.duration;
+    state.previewSettingsKey = loopPreviewSettingsKey();
     renderTextLayerTabs();
     renderTextLayers();
     updateAspectSquareButton();
@@ -4682,7 +4693,10 @@ const { startPageBridge } = require('./page-bridge.js');
   function updateTimelinePlayhead() {
     if (!state.clip) return;
     const duration = Math.max(0.001, state.clip.duration);
-    const current = clamp(Number(el.clipVideo.currentTime) || 0, 0, duration);
+    const preview = state.loopPreview;
+    const sourceTime = preview?.frame ? preview.times[preview.frame.sourceIndex] : el.clipVideo.currentTime;
+    const current = clamp(Number(sourceTime) || 0, 0, duration);
+    updatePreviewPlaybackInfo();
     const view = calculateTimelineViewport(state.timelineViewStart, state.timelineViewEnd, duration);
     const position = calculateTimelinePosition(current, view.start, view.end);
     const pct = clamp(position, 0, 1) * 100;
@@ -4801,6 +4815,11 @@ const { startPageBridge } = require('./page-bridge.js');
   function settleTimelinePreview(type, target, resumePlayback = false) {
     if (!state.clip || !Number.isFinite(target)) return;
     const token = ++state.timelineSettleToken;
+    if (normalizeLoopMode(el.loopModeSelect.value) !== 'none') {
+      el.scrubVideo.classList.remove('active');
+      void startLoopPreview(resumePlayback);
+      return;
+    }
     const video = el.scrubVideo;
     const playbackTarget = calculateTimelinePlaybackTarget(type, target, state.trimStart);
     if (!video || !Number.isFinite(playbackTarget)) return;
@@ -4873,7 +4892,7 @@ const { startPageBridge } = require('./page-bridge.js');
   function handleTimelinePointerDown(event) {
     if (event.button !== 0 || state.mode !== 'edit' || !state.clip) return;
     settleTimelineRefit();
-    state.timelineResumePlayback = Boolean(state.trimPreviewCleanup && !el.clipVideo.paused);
+    state.timelineResumePlayback = isTrimPreviewPlaying();
     stopTrimPreview();
     cancelTimelinePreview();
     try { el.scrubVideo.pause(); } catch (error) { debugLog('handleTimelinePointerDown', error); }
@@ -4933,8 +4952,131 @@ const { startPageBridge } = require('./page-bridge.js');
     updateEstimatedFileSize();
   }
 
+  function loopPreviewSettingsKey() {
+    return [state.trimStart, state.trimEnd, el.fpsSelect.value, el.speedSelect.value, el.loopModeSelect.value].join(':');
+  }
+
+  function isTrimPreviewPlaying() {
+    return state.loopPreview ? state.loopPreview.playing : Boolean(state.trimPreviewCleanup);
+  }
+
+  function updatePreviewPlaybackInfo() {
+    el.previewPlaybackInfo.classList.toggle('hidden', !state.clip);
+    const preview = state.loopPreview;
+    if (preview) {
+      el.previewTrimBtn.textContent = preview.playing ? '⏸ 暂停' : '▶ 播放';
+      el.previewDirection.textContent = preview.error ? '预览失败'
+        : !preview.cache ? '准备循环…'
+          : preview.frame.blend ? '首尾衔接'
+            : preview.position.reverse ? '倒放 ←' : '正放 →';
+      el.previewCycleTime.textContent = preview.position
+        ? `本轮 ${(preview.position.elapsed / 1000).toFixed(2)} / ${(preview.position.duration / 1000).toFixed(2)} 秒`
+        : '';
+    } else {
+      const ordinary = normalizeLoopMode(el.loopModeSelect.value) === 'none';
+      const speed = Math.max(0.1, Number(el.speedSelect.value) || 1);
+      const duration = Math.max(0, state.trimEnd - state.trimStart) / speed;
+      const elapsed = clamp((el.clipVideo.currentTime - state.trimStart) / speed, 0, duration);
+      el.previewDirection.textContent = ordinary ? '正放 →' : '待预览';
+      el.previewCycleTime.textContent = ordinary ? `本轮 ${elapsed.toFixed(2)} / ${duration.toFixed(2)} 秒` : '';
+    }
+  }
+
+  function updateLoopPreviewClock() {
+    const preview = state.loopPreview;
+    if (!preview?.clock) return;
+    const running = preview.playing && !document.hidden && !state.editorBackgroundIntent
+      && !state.editorCropSession && !state.editorViewportAnimation && !el.panel.classList.contains('hidden');
+    const now = performance.now();
+    preview.clock.setRunning(running, now);
+    preview.position = preview.clock.sample(now);
+    preview.frame = preview.position.frame;
+    if (!running) {
+      cancelAnimationFrame(preview.raf);
+      preview.raf = 0;
+    } else if (!preview.raf) {
+      preview.raf = requestAnimationFrame(() => {
+        preview.raf = 0;
+        if (state.loopPreview !== preview) return;
+        const previousIndex = preview.position.index;
+        updateLoopPreviewClock();
+        if (preview.position.index !== previousIndex) {
+          renderExportPreviewFrame();
+          updateTimelinePlayhead();
+        } else updatePreviewPlaybackInfo();
+      });
+    }
+  }
+
+  async function startLoopPreview(playing) {
+    stopTrimPreview();
+    if (!state.clip || state.mode !== 'edit') return;
+    const timing = createExportTiming(state.trimStart, state.trimEnd, Number(el.fpsSelect.value), Number(el.speedSelect.value));
+    const plan = createLoopFramePlan(timing.frameDelays, el.loopModeSelect.value);
+    const preview = { controller: new AbortController(), playing, raf: 0, times: timing.frameTimes };
+    state.loopPreview = preview;
+    state.previewSettingsKey = loopPreviewSettingsKey();
+    el.clipVideo.pause();
+    updatePreviewPlaybackInfo();
+    try {
+      const cache = await prepareLoopPreviewFrames({
+        clip: state.clip, frameTimes: timing.frameTimes, createSource: createExportFrameSource,
+        signal: preview.controller.signal,
+      });
+      if (state.loopPreview !== preview) {
+        cache.dispose();
+        return;
+      }
+      preview.cache = cache;
+      preview.clock = createLoopPreviewClock(plan);
+      updateLoopPreviewClock();
+      renderExportPreviewFrame();
+      updateTimelinePlayhead();
+      setStatus('');
+    } catch (error) {
+      if (state.loopPreview !== preview || preview.controller.signal.aborted) return;
+      preview.controller.abort();
+      cancelAnimationFrame(preview.raf);
+      preview.raf = 0;
+      preview.clock = null;
+      if (preview.blendCanvas) preview.blendCanvas.width = preview.blendCanvas.height = 1;
+      preview.cache?.dispose();
+      preview.cache = null;
+      preview.playing = false;
+      preview.error = true;
+      updatePreviewPlaybackInfo();
+      setStatus(`循环预览失败：${friendlyError(error)}`, 'error');
+    }
+  }
+
+  function currentLoopPreviewSource() {
+    const preview = state.loopPreview;
+    if (!preview?.cache || !preview.frame) return null;
+    const base = preview.cache.frames[preview.frame.sourceIndex];
+    const blend = preview.frame.blend;
+    if (!blend) return base;
+    preview.blendCanvas ||= new OffscreenCanvas(base.width, base.height);
+    const ctx = preview.blendCanvas.getContext('2d');
+    ctx.globalAlpha = 1;
+    ctx.drawImage(base, 0, 0);
+    ctx.globalAlpha = blend.alpha;
+    ctx.drawImage(preview.cache.frames[blend.sourceIndex], 0, 0, base.width, base.height);
+    return preview.blendCanvas;
+  }
+
   function stopTrimPreview({ keepPosition = true } = {}) {
     state.trimPreviewToken += 1;
+    state.timelineSettleToken += 1;
+    cancelTimelinePreview();
+    el.scrubVideo?.classList.remove('active');
+    const preview = state.loopPreview;
+    state.loopPreview = null;
+    if (preview) {
+      preview.controller.abort();
+      cancelAnimationFrame(preview.raf);
+      preview.cache?.dispose();
+      if (preview.blendCanvas) preview.blendCanvas.width = preview.blendCanvas.height = 1;
+    }
     if (typeof state.trimPreviewCleanup === 'function') state.trimPreviewCleanup();
     state.trimPreviewCleanup = null;
     if (state.previewSnapshot) {
@@ -4946,21 +5088,34 @@ const { startPageBridge } = require('./page-bridge.js');
       try { el.clipVideo.currentTime = state.trimStart; } catch (error) { debugLog('stopTrimPreview', error); }
       updateTimelinePlayhead();
     }
+    updatePreviewPlaybackInfo();
     renderExportPreviewFrame();
   }
 
   async function ensureTrimPreviewPlaying() {
-    if (state.mode !== 'edit' || !state.clip || state.trimPreviewCleanup) return;
+    if (state.mode !== 'edit' || !state.clip || isTrimPreviewPlaying()) return;
     await previewTrimmedClip();
   }
 
   async function previewTrimmedClip({ startAt = null } = {}) {
     if (state.mode !== 'edit' || !state.clip) return;
+    if (normalizeLoopMode(el.loopModeSelect.value) !== 'none') {
+      const preview = state.loopPreview;
+      if (!preview || preview.error) await startLoopPreview(true);
+      else {
+        preview.playing = !preview.playing;
+        updateLoopPreviewClock();
+        renderExportPreviewFrame();
+        updateTimelinePlayhead();
+      }
+      return;
+    }
     if (state.trimPreviewCleanup) {
       stopTrimPreview();
       return;
     }
     const previewToken = ++state.trimPreviewToken;
+    const controller = new AbortController();
 
     let stopped = false;
     let jumping = false;
@@ -4968,10 +5123,13 @@ const { startPageBridge } = require('./page-bridge.js');
     const stop = () => {
       if (stopped) return;
       stopped = true;
+      controller.abort();
       stopFramePump?.();
       el.clipVideo.removeEventListener('timeupdate', check);
-      state.trimPreviewCleanup = null;
-      el.previewTrimBtn.textContent = '▶ 播放';
+      if (previewToken === state.trimPreviewToken) {
+        state.trimPreviewCleanup = null;
+        el.previewTrimBtn.textContent = '▶ 播放';
+      }
     };
     const check = async () => {
       if (stopped || jumping) return;
@@ -4979,9 +5137,10 @@ const { startPageBridge } = require('./page-bridge.js');
       if (el.clipVideo.currentTime < state.trimEnd - 0.001 && !el.clipVideo.ended) return;
       jumping = true;
       try {
-        await seekVideo(el.clipVideo, state.trimStart, state.clip.duration);
+        await seekVideo(el.clipVideo, state.trimStart, state.clip.duration, controller.signal);
         if (!stopped && el.clipVideo.paused) await el.clipVideo.play();
       } catch (error) {
+        if (stopped || previewToken !== state.trimPreviewToken) return;
         stop();
         setStatus(friendlyError(error), 'error');
       } finally {
@@ -4989,6 +5148,10 @@ const { startPageBridge } = require('./page-bridge.js');
       }
     };
 
+    state.trimPreviewCleanup = () => {
+      try { el.clipVideo.pause(); } catch (error) { debugLog('previewTrimmedClip', error); }
+      stop();
+    };
     try {
       const current = Number(el.clipVideo.currentTime);
       const resumeAt = Number.isFinite(startAt)
@@ -4999,14 +5162,10 @@ const { startPageBridge } = require('./page-bridge.js');
           ? current
           : state.trimStart);
       el.clipVideo.pause();
-      await seekVideo(el.clipVideo, resumeAt, state.clip.duration);
+      await seekVideo(el.clipVideo, resumeAt, state.clip.duration, controller.signal);
       if (previewToken !== state.trimPreviewToken) return;
       state.previewSnapshot = { playbackRate: el.clipVideo.playbackRate };
       el.clipVideo.addEventListener('timeupdate', check);
-      state.trimPreviewCleanup = () => {
-        try { el.clipVideo.pause(); } catch (error) { debugLog('previewTrimmedClip', error); }
-        stop();
-      };
       el.previewTrimBtn.textContent = '⏸ 暂停';
       el.clipVideo.playbackRate = Math.max(0.1, Number(el.speedSelect.value) || 1);
       const drawPreview = () => {
@@ -5022,12 +5181,10 @@ const { startPageBridge } = require('./page-bridge.js');
         (error) => setStatus(friendlyError(error), 'error'),
       );
       await el.clipVideo.play();
-      if (previewToken !== state.trimPreviewToken) {
-        el.clipVideo.pause();
-        return;
-      }
+      if (previewToken !== state.trimPreviewToken) return;
       setStatus('');
     } catch (error) {
+      if (stopped || previewToken !== state.trimPreviewToken) return;
       stopTrimPreview();
       setStatus(friendlyError(error), 'error');
     }
@@ -5401,12 +5558,13 @@ const { startPageBridge } = require('./page-bridge.js');
     if (state.editorCropSession || state.editorViewportAnimation || state.editorBackgroundIntent) return;
     const nextSettings = updatePreviewCanvasLayout(settings);
     const sourceVideo = el.scrubVideo?.classList.contains('active') ? el.scrubVideo : el.clipVideo;
-    if (!nextSettings || !sourceVideo || sourceVideo.readyState < 2) return;
+    const loopSource = sourceVideo === el.clipVideo ? currentLoopPreviewSource() : null;
+    if (!nextSettings || (!loopSource && (!sourceVideo || sourceVideo.readyState < 2))) return;
     const ctx = el.previewCanvas.getContext('2d', { alpha: true, colorSpace: 'srgb' });
     if (!ctx) return;
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
-    drawExportCanvasFrame(ctx, nextSettings, sourceVideo);
+    drawExportCanvasFrame(ctx, nextSettings, loopSource || sourceVideo);
     setOutputPreviewVisible(true);
   }
 
@@ -6463,6 +6621,17 @@ const { startPageBridge } = require('./page-bridge.js');
   function handleExportInputChange(event) {
     saveExportPreference(event?.currentTarget);
     if (state.mode === 'edit' && state.clip) {
+      if ([el.loopModeSelect, el.fpsSelect, el.speedSelect].includes(event?.currentTarget)
+        && state.previewSettingsKey !== loopPreviewSettingsKey()) {
+        const playing = isTrimPreviewPlaying();
+        stopTrimPreview();
+        state.previewSettingsKey = loopPreviewSettingsKey();
+        if (normalizeLoopMode(el.loopModeSelect.value) !== 'none') void startLoopPreview(playing);
+        else {
+          el.clipVideo.currentTime = state.trimStart;
+          if (playing) void previewTrimmedClip({ startAt: state.trimStart });
+        }
+      }
       if (state.trimPreviewCleanup && el.speedSelect) {
         el.clipVideo.playbackRate = Math.max(0.1, Number(el.speedSelect.value) || 1);
       }
@@ -6604,6 +6773,7 @@ const { startPageBridge } = require('./page-bridge.js');
   $$('.export-input').forEach((input) => input.addEventListener('input', handleExportInputChange));
   $$('.export-input').forEach((input) => input.addEventListener('change', handleExportInputChange));
 
+  document.addEventListener('visibilitychange', updateLoopPreviewClock);
   document.addEventListener('keydown', handleGlobalShortcutKeyDown, true);
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {

@@ -580,12 +580,26 @@
   #trimEndValue { text-align: right; color: var(--color-brand-hover); }
   .preview-controls {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
     gap: 8px;
     margin-top: 5px;
   }
   .preview-controls .btn { min-height: 36px; padding: 0 12px; }
+  .preview-playback-info {
+    display: flex;
+    flex: 1 1 120px;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 2px 8px;
+    min-width: 0;
+    color: var(--color-text-muted);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+  }
+  #previewDirection { color: var(--color-text); }
+  #previewCycleTime { white-space: nowrap; }
   .live-mode-switch {
     display: inline-flex;
     flex: 0 1 auto;
