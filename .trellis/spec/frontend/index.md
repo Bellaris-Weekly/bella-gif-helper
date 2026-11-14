@@ -19,6 +19,7 @@ This directory contains guidelines for frontend development. Fill in each file w
 | [Hook Guidelines](./hook-guidelines.md) | Custom hooks, data fetching patterns | To fill |
 | [State Management](./state-management.md) | Local state, global state, server state | To fill |
 | [Quality Guidelines](./quality-guidelines.md) | Offline media export, loop preview and test requirements | Active |
+| [Screenshot Shortcut](./screenshot-shortcut.md) | Shared screenshot settings, keyboard ownership and fullscreen contracts | Active |
 | [Type Safety](./type-safety.md) | Type patterns, validation | To fill |
 
 ---

@@ -2,6 +2,7 @@
 
 const { bindVersionButton } = require('./update-check.js');
 const { captureVideoPng, formatScreenshotFileName, installLiveScreenshot } = require('./live-screenshot.js');
+const { SCREENSHOT_PREF_KEY, createScreenshotShortcut, bindScreenshotShortcut } = require('./screenshot-shortcut.js');
 const { createLoopPreviewClock, prepareLoopPreviewFrames } = require('./loop-preview.js');
 
 const { buildPanelTemplate } = require('./ui/panel.js');
@@ -54,7 +55,7 @@ const { startPageBridge } = require('./page-bridge.js');
     const shiftKey = Boolean(value?.shiftKey);
     const metaKey = Boolean(value?.metaKey);
     if (!code || /^(Control|Alt|Shift|Meta|OS)(Left|Right)?$/i.test(code) || /^Fn$/i.test(code)) return null;
-    if (!ctrlKey && !altKey && !metaKey) return null;
+    if (['Escape', 'Unidentified'].includes(code)) return null;
     return Object.freeze({ code, ctrlKey, altKey, shiftKey, metaKey });
   }
 
@@ -2214,6 +2215,16 @@ const { startPageBridge } = require('./page-bridge.js');
     return;
   }
   let initialLiveCaptureMode = 'rewind';
+  let screenshotShortcut;
+  const startScreenshotShortcut = () => {
+    screenshotShortcut = createScreenshotShortcut({
+      document, clientId: 'gif',
+      read: () => GM_getValue(SCREENSHOT_PREF_KEY, null),
+      write: (value) => GM_setValue(SCREENSHOT_PREF_KEY, value),
+    });
+  };
+  if (document.documentElement) startScreenshotShortcut();
+  else document.addEventListener('DOMContentLoaded', startScreenshotShortcut, { once: true });
   if (IS_LIVE_PAGE) {
     try {
       initialLiveCaptureMode = readPrefs().liveCaptureMode === 'forward' ? 'forward' : 'rewind';
@@ -2585,15 +2596,17 @@ const { startPageBridge } = require('./page-bridge.js');
 
   function restoreShortcutPreference() {
     state.shortcut = normalizeShortcut(readPrefs().shortcut) || DEFAULT_SHORTCUT;
+    screenshotShortcut.registerAction('gif-launcher', state.shortcut);
   }
 
   function saveShortcutPreference() {
     writePrefs({ shortcut: state.shortcut });
+    screenshotShortcut.registerAction('gif-launcher', state.shortcut);
   }
 
   function renderShortcutSetting() {
     const label = formatShortcut(state.shortcut);
-    el.shortcutInput.value = state.shortcutRecording ? '按组合键' : label;
+    el.shortcutInput.value = state.shortcutRecording ? '按下快捷键' : label;
     el.shortcutInput.classList.toggle('recording', state.shortcutRecording);
   }
 
@@ -2616,8 +2629,9 @@ const { startPageBridge } = require('./page-bridge.js');
       return;
     }
     const shortcut = shortcutFromKeyboardEvent(event);
-    if (!shortcut) {
-      showToast('快捷键必须包含 Ctrl、Alt 或 Meta，并带一个主键。', 'error');
+    if (!shortcut || event.repeat) return;
+    if (screenshotShortcut.conflicts(shortcut, 'gif-launcher')) {
+      showToast('快捷键已被占用', 'error');
       return;
     }
     state.shortcut = shortcut;
@@ -7008,6 +7022,10 @@ const { startPageBridge } = require('./page-bridge.js');
   restoreExportPreferences();
   restoreShortcutPreference();
   renderShortcutSetting();
+  bindScreenshotShortcut({
+    input: $('#screenshotShortcutInput'), shortcut: screenshotShortcut, format: formatShortcut,
+    onConflict: () => showToast('快捷键已被占用', 'error'),
+  });
   state.preferredPanelGeometry = readSavedPanelGeometry();
   liveMediaCollector?.setEnabled(state.liveCaptureMode === 'rewind');
   liveMediaCollector?.setStatusListener((status) => updateLiveRewindTitle(status));

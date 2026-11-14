@@ -58,9 +58,9 @@ test('shortcut matching requires the exact modifier set', () => {
   assert.equal(matchesShortcut({ ...event, isComposing: true }, DEFAULT_SHORTCUT), false);
 });
 
-test('shortcut validation rejects bare, shift-only, and modifier-only keys', () => {
-  assert.equal(normalizeShortcut({ code: 'KeyG' }), null);
-  assert.equal(normalizeShortcut({ code: 'KeyG', shiftKey: true }), null);
+test('shortcut validation accepts single keys and rejects modifier-only keys', () => {
+  assert.equal(formatShortcut(normalizeShortcut({ code: 'KeyG' })), 'G');
+  assert.equal(formatShortcut(normalizeShortcut({ code: 'KeyG', shiftKey: true })), 'Shift+G');
   assert.equal(normalizeShortcut({ code: 'ControlLeft', ctrlKey: true }), null);
   assert.equal(shortcutFromKeyboardEvent({ code: 'KeyG', ctrlKey: true, isComposing: true }), null);
 });
