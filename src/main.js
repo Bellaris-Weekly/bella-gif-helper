@@ -4993,6 +4993,36 @@ const { startPageBridge } = require('./page-bridge.js');
     return [state.trimStart, state.trimEnd, el.fpsSelect.value, el.speedSelect.value, el.loopModeSelect.value].join(':');
   }
 
+  // 循环预览只缓存当前裁剪区，尺寸按预览框的显示像素（含屏幕像素比，最多 2 倍）决定。
+  function loopPreviewTarget() {
+    const crop = state.editorCrop;
+    const region = crop ? { x: crop.x, y: crop.y, w: crop.w, h: crop.h } : null;
+    const box = el.previewCanvas?.getBoundingClientRect?.();
+    const ratio = Math.min(2, Math.max(1, Number(globalThis.devicePixelRatio) || 1));
+    const edge = box ? Math.max(box.width, box.height) * ratio : 0;
+    return { region, maxEdge: edge > 0 ? edge : undefined };
+  }
+
+  function loopPlanFrameReady(cache, frame) {
+    return Boolean(frame) && cache.has(frame.sourceIndex) && (!frame.blend || cache.has(frame.blend.sourceIndex));
+  }
+
+  function loopFrameUses(frame, sourceIndex) {
+    return Boolean(frame) && (frame.sourceIndex === sourceIndex || frame.blend?.sourceIndex === sourceIndex);
+  }
+
+  // 告诉缓存接下来要播的几帧；压缩档会提前解码它们并释放窗口外的位图。
+  function requestLoopPreviewFrames(preview) {
+    if (!preview?.cache || !preview.position || !preview.plan?.length) return;
+    const wanted = [];
+    for (let step = 0; step < Math.min(8, preview.plan.length); step += 1) {
+      const frame = preview.plan[(preview.position.index + step) % preview.plan.length];
+      wanted.push(frame.sourceIndex);
+      if (frame.blend) wanted.push(frame.blend.sourceIndex);
+    }
+    preview.cache.request(wanted);
+  }
+
   function isTrimPreviewPlaying() {
     return state.loopPreview ? state.loopPreview.playing : Boolean(state.trimPreviewCleanup);
   }
@@ -5015,6 +5045,7 @@ const { startPageBridge } = require('./page-bridge.js');
     } else if (preview?.position) {
       direction = preview.position.reverse ? 'reverse' : 'forward';
       label = preview.position.reverse ? '← 倒放' : '正放 →';
+      if (preview.position.waiting && preview.playing) label = '缓冲中…';
       time = `${(preview.position.elapsed / 1000).toFixed(2)} / ${(preview.position.duration / 1000).toFixed(2)} 秒`;
     }
     el.previewPlaybackInfo.dataset.direction = direction;
@@ -5031,6 +5062,7 @@ const { startPageBridge } = require('./page-bridge.js');
     preview.clock.setRunning(running, now);
     preview.position = preview.clock.sample(now);
     preview.frame = preview.position.frame;
+    requestLoopPreviewFrames(preview);
     if (!running) {
       cancelAnimationFrame(preview.raf);
       preview.raf = 0;
@@ -5053,26 +5085,39 @@ const { startPageBridge } = require('./page-bridge.js');
     if (!state.clip || state.mode !== 'edit') return;
     const timing = createExportTiming(state.trimStart, state.trimEnd, Number(el.fpsSelect.value), Number(el.speedSelect.value));
     const plan = createLoopFramePlan(timing.frameDelays, el.loopModeSelect.value);
-    const preview = { controller: new AbortController(), playing, raf: 0, times: timing.frameTimes };
+    const target = loopPreviewTarget();
+    const preview = {
+      controller: new AbortController(), playing, raf: 0, times: timing.frameTimes, plan, region: target.region,
+    };
     state.loopPreview = preview;
     state.previewSettingsKey = loopPreviewSettingsKey();
     el.clipVideo.pause();
     updatePreviewPlaybackInfo();
+    // 第一帧就绪就开始播：后续帧边解边播，时钟追上解码进度时停在上一帧等待。
+    const attach = (cache) => {
+      if (state.loopPreview !== preview || preview.cache) return;
+      preview.cache = cache;
+      preview.clock = createLoopPreviewClock(plan, { isReady: (index) => loopPlanFrameReady(cache, plan[index]) });
+      updateLoopPreviewClock();
+      renderExportPreviewFrame();
+      updateTimelinePlayhead();
+      setStatus('');
+    };
     try {
       const cache = await prepareLoopPreviewFrames({
         clip: state.clip, frameTimes: timing.frameTimes, createSource: createExportFrameSource,
-        signal: preview.controller.signal,
+        signal: preview.controller.signal, region: target.region, maxEdge: target.maxEdge,
+        onFrame: attach,
+        onDecoded: (index) => {
+          if (state.loopPreview === preview && loopFrameUses(preview.frame, index)) renderExportPreviewFrame();
+        },
       });
       if (state.loopPreview !== preview) {
         cache.dispose();
         return;
       }
-      preview.cache = cache;
-      preview.clock = createLoopPreviewClock(plan);
-      updateLoopPreviewClock();
-      renderExportPreviewFrame();
-      updateTimelinePlayhead();
-      setStatus('');
+      attach(cache);
+      updatePreviewPlaybackInfo();
     } catch (error) {
       if (state.loopPreview !== preview || preview.controller.signal.aborted) return;
       preview.controller.abort();
@@ -5092,15 +5137,19 @@ const { startPageBridge } = require('./page-bridge.js');
   function currentLoopPreviewSource() {
     const preview = state.loopPreview;
     if (!preview?.cache || !preview.frame) return null;
-    const base = preview.cache.frames[preview.frame.sourceIndex];
+    const base = preview.cache.get(preview.frame.sourceIndex);
+    if (!base) return null;
     const blend = preview.frame.blend;
-    if (!blend) return base;
-    preview.blendCanvas ||= new OffscreenCanvas(base.width, base.height);
+    const overlay = blend ? preview.cache.get(blend.sourceIndex) : null;
+    if (!overlay) return base;
+    if (!preview.blendCanvas || preview.blendCanvas.width !== base.width || preview.blendCanvas.height !== base.height) {
+      preview.blendCanvas = new OffscreenCanvas(base.width, base.height);
+    }
     const ctx = preview.blendCanvas.getContext('2d');
     ctx.globalAlpha = 1;
     ctx.drawImage(base, 0, 0);
     ctx.globalAlpha = blend.alpha;
-    ctx.drawImage(preview.cache.frames[blend.sourceIndex], 0, 0, base.width, base.height);
+    ctx.drawImage(overlay, 0, 0, base.width, base.height);
     return preview.blendCanvas;
   }
 
@@ -5600,13 +5649,49 @@ const { startPageBridge } = require('./page-bridge.js');
     const nextSettings = updatePreviewCanvasLayout(settings);
     const sourceVideo = el.scrubVideo?.classList.contains('active') ? el.scrubVideo : el.clipVideo;
     const loopSource = sourceVideo === el.clipVideo ? currentLoopPreviewSource() : null;
+    if (state.loopPreview && loopPreviewRegionStale()) scheduleLoopPreviewRegionRefresh();
+    // 循环缓存已建立但当前帧还在解码：保留上一帧画面，不回退去画暂停中的原片。
+    if (!loopSource && sourceVideo === el.clipVideo && state.loopPreview?.cache) return;
     if (!nextSettings || (!loopSource && (!sourceVideo || sourceVideo.readyState < 2))) return;
     const ctx = el.previewCanvas.getContext('2d', { alpha: true, colorSpace: 'srgb' });
     if (!ctx) return;
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
-    drawExportCanvasFrame(ctx, nextSettings, loopSource || sourceVideo);
+    drawExportCanvasFrame(ctx, loopSource ? loopPreviewDrawSettings(nextSettings) : nextSettings, loopSource || sourceVideo);
     setOutputPreviewVisible(true);
+  }
+
+  // 循环缓存只覆盖建立时的裁剪区：把导出裁剪换算到缓存图内的相对坐标。
+  function loopPreviewDrawSettings(settings) {
+    const region = state.loopPreview?.cache?.region;
+    if (!region) return settings;
+    const crop = settings.crop;
+    return {
+      ...settings,
+      crop: {
+        x: (crop.x - region.x) / region.w,
+        y: (crop.y - region.y) / region.h,
+        w: crop.w / region.w,
+        h: crop.h / region.h,
+      },
+    };
+  }
+
+  function loopPreviewRegionStale() {
+    const region = state.loopPreview?.region;
+    const crop = state.editorCrop;
+    if (!region || !crop) return false;
+    return ['x', 'y', 'w', 'h'].some((key) => Math.abs(region[key] - crop[key]) > 1e-4);
+  }
+
+  // 裁剪框调整完后按新裁剪区重建循环缓存（裁剪拖动中不重建）。
+  function scheduleLoopPreviewRegionRefresh() {
+    clearTimeout(state.loopPreviewRegionTimer);
+    state.loopPreviewRegionTimer = setTimeout(() => {
+      const preview = state.loopPreview;
+      if (!preview || state.mode !== 'edit' || state.editorCropSession || state.editorViewportAnimation) return;
+      if (loopPreviewRegionStale()) void startLoopPreview(preview.playing);
+    }, 180);
   }
 
   async function readUserscriptResource(name) {

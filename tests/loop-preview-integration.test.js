@@ -52,7 +52,7 @@ function fixture() {
     cancelAnimationFrame(id) { rafs.delete(id); },
     prepareLoopPreviewFrames(options) {
       const job = deferred();
-      const cache = { frames: [], closed: 0, dispose() { this.closed++; } };
+      const cache = { closed: 0, region: null, has: () => true, get: () => null, request() {}, dispose() { this.closed++; } };
       jobs.push({ ...job, options, cache });
       return job.promise;
     },
@@ -215,4 +215,44 @@ test('direction and cycle progress only show in pingpong mode', async () => {
     f.api.handleExportInputChange({ currentTarget: f.el.loopModeSelect });
     assert.equal(info.classList.contains('hidden'), true, mode);
   }
+});
+
+test('playback starts on the first decoded frame and waits at the decoding edge instead of skipping', async () => {
+  const f = fixture();
+  const pending = f.api.startLoopPreview(true);
+  const job = f.jobs.at(-1);
+  let decoded = 2;
+  const cache = { ...job.cache, has: (index) => index < decoded };
+  job.options.onFrame(cache);
+  assert.equal(f.state.loopPreview.cache, cache, 'attached before preparation finished');
+  assert.equal(f.state.loopPreview.playing, true);
+  f.setTime(10_000);
+  f.api.updateLoopPreviewClock();
+  assert.equal(f.state.loopPreview.position.waiting, true);
+  assert.equal(f.state.loopPreview.frame.sourceIndex, 1, 'holds on the last decoded frame');
+  f.api.updatePreviewPlaybackInfo();
+  assert.equal(f.el.previewDirection.textContent, '缓冲中…');
+  decoded = Infinity;
+  f.setTime(10_200);
+  f.api.updateLoopPreviewClock();
+  assert.equal(f.state.loopPreview.position.waiting, false);
+  assert.ok(f.state.loopPreview.frame.sourceIndex >= 2, 'resumes from where it waited, not from wall-clock time');
+  job.options.onFrame(cache);
+  job.resolve(cache);
+  await pending;
+  assert.equal(f.state.loopPreview.cache, cache, 'completion does not re-attach or restart');
+  assert.equal(f.jobs.length, 1);
+});
+
+test('a decoder failure after playback started tears the partial cache down and reports once', async () => {
+  const f = fixture();
+  const pending = f.api.startLoopPreview(true);
+  const job = f.jobs.at(-1);
+  job.options.onFrame(job.cache);
+  job.reject(new Error('decoder lost'));
+  await pending;
+  assert.equal(job.cache.closed, 1);
+  assert.equal(f.state.loopPreview.error, true);
+  assert.equal(f.state.loopPreview.cache, null);
+  assert.equal(f.statuses.filter((message) => message.includes('decoder lost')).length, 1);
 });

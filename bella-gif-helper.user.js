@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         贝报 GIF 助手
 // @namespace    https://www.bk0717.com/
-// @version      1.6.1
+// @version      1.6.2
 // @description  B站直播回溯、视频框选录制与 GIF 编辑
 // @author       贝极星周报
 // @homepageURL  https://github.com/Bellaris-Weekly/bella-gif-helper
@@ -78,7 +78,7 @@
   var define_SCRIPT_METADATA_default;
   var init_define_SCRIPT_METADATA = __esm({
     "<define:__SCRIPT_METADATA__>"() {
-      define_SCRIPT_METADATA_default = { version: "1.6.1", updateURL: "https://share.bellaris.fans/bella-gif-helper.user.js", downloadURL: "https://share.bellaris.fans/bella-gif-helper.user.js" };
+      define_SCRIPT_METADATA_default = { version: "1.6.2", updateURL: "https://share.bellaris.fans/bella-gif-helper.user.js", downloadURL: "https://share.bellaris.fans/bella-gif-helper.user.js" };
     }
   });
 
@@ -321,25 +321,66 @@
     "src/loop-preview.js"(exports, module) {
       "use strict";
       init_define_SCRIPT_METADATA();
-      var PREVIEW_CACHE_BYTES = 24 * 1024 * 1024;
-      var PREVIEW_MAX_EDGE = 320;
-      function createLoopPreviewClock(plan) {
+      var RAW_BUDGET_BYTES = 64 * 1024 * 1024;
+      var COMPRESSED_BUDGET_BYTES = 96 * 1024 * 1024;
+      var COMPRESSED_BYTES_PER_PIXEL = 0.35;
+      var PREVIEW_MAX_EDGE = 960;
+      var PREVIEW_MIN_EDGE = 240;
+      var DECODED_WINDOW = 12;
+      var MAX_PENDING_DECODES = 3;
+      var HOLD_MS = 1e-3;
+      function createLoopPreviewClock(plan, { isReady = null } = {}) {
         const ends = [];
         let duration = 0;
         for (const frame of plan) ends.push(duration += frame.delay);
         let elapsed = 0;
         let previous = null;
         let running = false;
-        const sample = (now) => {
-          if (running && previous !== null) elapsed = (elapsed + Math.max(0, now - previous)) % duration;
-          previous = now;
+        let waiting = false;
+        const indexAt = (time) => {
           let index = 0;
-          while (index < ends.length - 1 && elapsed >= ends[index]) index += 1;
+          while (index < ends.length - 1 && time >= ends[index]) index += 1;
+          return index;
+        };
+        const advance = (delta) => {
+          if (!isReady) {
+            elapsed = (elapsed + delta) % duration;
+            waiting = false;
+            return;
+          }
+          let index = indexAt(elapsed);
+          if (!isReady(index)) {
+            waiting = true;
+            return;
+          }
+          let next = elapsed + delta;
+          const followingOf = (value) => value + 1 < plan.length ? value + 1 : 0;
+          for (let guard = 0; guard <= plan.length && next >= ends[index]; guard += 1) {
+            const following = followingOf(index);
+            if (!isReady(following)) {
+              next = Math.max(elapsed, ends[index] - HOLD_MS);
+              break;
+            }
+            if (following === 0) {
+              next -= duration;
+              elapsed -= duration;
+            }
+            index = following;
+          }
+          elapsed = Math.max(0, next) % duration;
+          waiting = elapsed >= ends[index] - HOLD_MS * 1.5 && !isReady(followingOf(index));
+        };
+        const sample = (now) => {
+          if (running && previous !== null) advance(Math.max(0, now - previous));
+          else if (isReady) waiting = !isReady(indexAt(elapsed));
+          previous = now;
+          const index = indexAt(elapsed);
           return {
             frame: plan[index],
             index,
             elapsed,
             duration,
+            waiting,
             reverse: index > 0 && plan[index].sourceIndex < plan[index - 1].sourceIndex
           };
         };
@@ -351,14 +392,181 @@
           }
         };
       }
-      async function prepareLoopPreviewFrames({ clip, frameTimes, createSource, signal, createBitmap = createImageBitmap }) {
-        const frames = [];
-        let source = null;
-        let disposed = false;
-        const closeFrames = () => {
-          for (const frame of frames) frame.close();
-          frames.length = 0;
+      function fullRegion() {
+        return { x: 0, y: 0, w: 1, h: 1 };
+      }
+      function normalizeRegion(region) {
+        const r = region || fullRegion();
+        const x = Math.min(1, Math.max(0, Number(r.x) || 0));
+        const y = Math.min(1, Math.max(0, Number(r.y) || 0));
+        const w = Math.min(1 - x, Math.max(1e-4, Number(r.w) || 1));
+        const h = Math.min(1 - y, Math.max(1e-4, Number(r.h) || 1));
+        return { x, y, w, h };
+      }
+      function planPreviewStorage({
+        sourceWidth,
+        sourceHeight,
+        region,
+        frameCount,
+        maxEdge = PREVIEW_MAX_EDGE,
+        rawBudgetBytes = RAW_BUDGET_BYTES,
+        compressedBudgetBytes = COMPRESSED_BUDGET_BYTES
+      }) {
+        const rect = {
+          sx: Math.floor(region.x * sourceWidth),
+          sy: Math.floor(region.y * sourceHeight),
+          sw: Math.max(1, Math.round(region.w * sourceWidth)),
+          sh: Math.max(1, Math.round(region.h * sourceHeight))
         };
+        rect.sw = Math.min(rect.sw, sourceWidth - rect.sx);
+        rect.sh = Math.min(rect.sh, sourceHeight - rect.sy);
+        const edge = Math.max(PREVIEW_MIN_EDGE, Math.min(PREVIEW_MAX_EDGE, Math.round(maxEdge) || PREVIEW_MAX_EDGE));
+        let scale = Math.min(1, edge / Math.max(rect.sw, rect.sh));
+        const pixels = () => Math.max(1, Math.floor(rect.sw * scale)) * Math.max(1, Math.floor(rect.sh * scale));
+        const count = Math.max(1, frameCount);
+        let mode = "raw";
+        if (pixels() * 4 * count > rawBudgetBytes) {
+          mode = "compressed";
+          const estimate = pixels() * COMPRESSED_BYTES_PER_PIXEL * count;
+          if (estimate > compressedBudgetBytes) scale *= Math.sqrt(compressedBudgetBytes / estimate);
+        }
+        return {
+          mode,
+          rect,
+          size: {
+            resizeWidth: Math.max(1, Math.floor(rect.sw * scale)),
+            resizeHeight: Math.max(1, Math.floor(rect.sh * scale)),
+            resizeQuality: "medium"
+          }
+        };
+      }
+      async function defaultEncodeBitmap(bitmap) {
+        const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+        canvas.getContext("2d").drawImage(bitmap, 0, 0);
+        return canvas.convertToBlob({ type: "image/jpeg", quality: 0.85 });
+      }
+      function defaultCreateBitmap(frame, options) {
+        return createImageBitmap(frame, options.sx, options.sy, options.sw, options.sh, {
+          resizeWidth: options.resizeWidth,
+          resizeHeight: options.resizeHeight,
+          resizeQuality: options.resizeQuality
+        });
+      }
+      function createPreviewFrameStore({ count, region, decodeBlob, onDecoded, window: window2 = DECODED_WINDOW }) {
+        const bitmaps = new Array(count).fill(null);
+        const blobs = new Array(count).fill(null);
+        const pending = /* @__PURE__ */ new Map();
+        let mode = "raw";
+        let filled = 0;
+        let disposed = false;
+        let wanted = /* @__PURE__ */ new Set();
+        let order = [];
+        const closeBitmap = (index) => {
+          const bitmap = bitmaps[index];
+          bitmaps[index] = null;
+          try {
+            bitmap?.close();
+          } catch (_) {
+          }
+        };
+        function evict() {
+          if (mode !== "compressed") return;
+          order = order.filter((index) => bitmaps[index]);
+          while (order.length > window2) {
+            const victim = order.find((index) => !wanted.has(index));
+            if (victim === void 0) break;
+            order.splice(order.indexOf(victim), 1);
+            closeBitmap(victim);
+          }
+        }
+        function decode(index) {
+          const job = Promise.resolve().then(() => decodeBlob(blobs[index])).then((bitmap) => {
+            pending.delete(index);
+            if (disposed || bitmaps[index] || !blobs[index]) {
+              bitmap.close();
+              return;
+            }
+            bitmaps[index] = bitmap;
+            order.push(index);
+            evict();
+            onDecoded?.(index);
+          }, () => {
+            pending.delete(index);
+          });
+          pending.set(index, job);
+        }
+        return {
+          count,
+          region,
+          get mode() {
+            return mode;
+          },
+          get filled() {
+            return filled;
+          },
+          get complete() {
+            return filled === count;
+          },
+          setMode(next) {
+            mode = next;
+          },
+          has: (index) => Boolean(bitmaps[index]),
+          get: (index) => bitmaps[index] || null,
+          stored: (index) => Boolean(bitmaps[index] || blobs[index]),
+          putBitmap(index, bitmap) {
+            if (disposed) {
+              bitmap.close();
+              return;
+            }
+            bitmaps[index] = bitmap;
+            filled += 1;
+          },
+          putBlob(index, blob) {
+            if (disposed) return;
+            blobs[index] = blob;
+            filled += 1;
+          },
+          // 声明接下来要用的帧：compressed 档会解码缺的帧，并把窗口外的位图释放掉。
+          request(indices) {
+            if (disposed || mode !== "compressed") return;
+            wanted = new Set(indices);
+            for (const index of indices) {
+              if (pending.size >= MAX_PENDING_DECODES) break;
+              if (index < 0 || index >= count || bitmaps[index] || !blobs[index] || pending.has(index)) continue;
+              decode(index);
+            }
+            evict();
+          },
+          dispose() {
+            if (disposed) return;
+            disposed = true;
+            for (let index = 0; index < count; index += 1) closeBitmap(index);
+            blobs.fill(null);
+          }
+        };
+      }
+      async function prepareLoopPreviewFrames({
+        clip,
+        frameTimes,
+        createSource,
+        signal,
+        createBitmap = defaultCreateBitmap,
+        encodeBitmap = defaultEncodeBitmap,
+        decodeBlob = (blob) => createImageBitmap(blob),
+        region = null,
+        maxEdge = PREVIEW_MAX_EDGE,
+        rawBudgetBytes = RAW_BUDGET_BYTES,
+        compressedBudgetBytes = COMPRESSED_BUDGET_BYTES,
+        onFrame = null,
+        onDecoded = null
+      }) {
+        const store = createPreviewFrameStore({
+          count: frameTimes.length,
+          region: normalizeRegion(region),
+          decodeBlob,
+          onDecoded
+        });
+        let source = null;
         const disposeSource = () => {
           const owned = source;
           source = null;
@@ -372,53 +580,57 @@
           checkCancelled();
           source = await createSource(clip);
           checkCancelled();
-          let size;
+          let storage;
           for await (const decoded of source.framesAt(frameTimes, { signal })) {
             let bitmap;
             try {
               checkCancelled();
-              if (!size) {
-                const width = decoded.frame.displayWidth || clip.width;
-                const height = decoded.frame.displayHeight || clip.height;
-                const scale = Math.min(
-                  1,
-                  PREVIEW_MAX_EDGE / Math.max(width, height),
-                  Math.sqrt(PREVIEW_CACHE_BYTES / (frameTimes.length * width * height * 4))
-                );
-                size = {
-                  resizeWidth: Math.max(1, Math.floor(width * scale)),
-                  resizeHeight: Math.max(1, Math.floor(height * scale)),
-                  resizeQuality: "low"
-                };
+              if (!storage) {
+                storage = planPreviewStorage({
+                  sourceWidth: decoded.frame.displayWidth || clip.width,
+                  sourceHeight: decoded.frame.displayHeight || clip.height,
+                  region: store.region,
+                  frameCount: frameTimes.length,
+                  maxEdge,
+                  rawBudgetBytes,
+                  compressedBudgetBytes
+                });
+                store.setMode(storage.mode);
               }
-              bitmap = await createBitmap(decoded.frame, size);
+              bitmap = await createBitmap(decoded.frame, { ...storage.rect, ...storage.size });
               checkCancelled();
-              frames.push(bitmap);
-              bitmap = null;
+              const index = decoded.index ?? store.filled;
+              if (storage.mode === "raw") {
+                store.putBitmap(index, bitmap);
+                bitmap = null;
+              } else {
+                const blob = await encodeBitmap(bitmap);
+                checkCancelled();
+                store.putBlob(index, blob);
+              }
             } finally {
               bitmap?.close();
               decoded.frame.close();
             }
+            onFrame?.(store);
           }
           checkCancelled();
-          if (frames.length !== frameTimes.length) throw new Error("循环预览画面不完整。");
-          return {
-            frames,
-            dispose() {
-              if (disposed) return;
-              disposed = true;
-              closeFrames();
-            }
-          };
+          if (!store.complete) throw new Error("循环预览画面不完整。");
+          return store;
         } catch (error) {
-          closeFrames();
+          store.dispose();
           throw error;
         } finally {
           signal.removeEventListener("abort", disposeSource);
           disposeSource();
         }
       }
-      module.exports = { createLoopPreviewClock, prepareLoopPreviewFrames };
+      module.exports = {
+        createLoopPreviewClock,
+        createPreviewFrameStore,
+        planPreviewStorage,
+        prepareLoopPreviewFrames
+      };
     }
   });
 
@@ -759,14 +971,8 @@
     visibility: hidden;
     pointer-events: none;
     image-rendering: auto;
-    background-color: #202226;
-    background-image:
-      linear-gradient(45deg, rgba(255,255,255,.08) 25%, transparent 25%),
-      linear-gradient(-45deg, rgba(255,255,255,.08) 25%, transparent 25%),
-      linear-gradient(45deg, transparent 75%, rgba(255,255,255,.08) 75%),
-      linear-gradient(-45deg, transparent 75%, rgba(255,255,255,.08) 75%);
-    background-position: 0 0, 0 7px, 7px -7px, -7px 0;
-    background-size: 14px 14px;
+    /* 导出后透明的像素（圆角）直接透出舞台的深色，与背景融为一体 */
+    background: var(--color-stage);
   }
   #clipVideo { z-index: 0; }
   #scrubVideo {
@@ -7343,6 +7549,30 @@
         function loopPreviewSettingsKey() {
           return [state.trimStart, state.trimEnd, el.fpsSelect.value, el.speedSelect.value, el.loopModeSelect.value].join(":");
         }
+        function loopPreviewTarget() {
+          const crop = state.editorCrop;
+          const region = crop ? { x: crop.x, y: crop.y, w: crop.w, h: crop.h } : null;
+          const box = el.previewCanvas?.getBoundingClientRect?.();
+          const ratio = Math.min(2, Math.max(1, Number(globalThis.devicePixelRatio) || 1));
+          const edge = box ? Math.max(box.width, box.height) * ratio : 0;
+          return { region, maxEdge: edge > 0 ? edge : void 0 };
+        }
+        function loopPlanFrameReady(cache, frame) {
+          return Boolean(frame) && cache.has(frame.sourceIndex) && (!frame.blend || cache.has(frame.blend.sourceIndex));
+        }
+        function loopFrameUses(frame, sourceIndex) {
+          return Boolean(frame) && (frame.sourceIndex === sourceIndex || frame.blend?.sourceIndex === sourceIndex);
+        }
+        function requestLoopPreviewFrames(preview) {
+          if (!preview?.cache || !preview.position || !preview.plan?.length) return;
+          const wanted = [];
+          for (let step = 0; step < Math.min(8, preview.plan.length); step += 1) {
+            const frame = preview.plan[(preview.position.index + step) % preview.plan.length];
+            wanted.push(frame.sourceIndex);
+            if (frame.blend) wanted.push(frame.blend.sourceIndex);
+          }
+          preview.cache.request(wanted);
+        }
         function isTrimPreviewPlaying() {
           return state.loopPreview ? state.loopPreview.playing : Boolean(state.trimPreviewCleanup);
         }
@@ -7363,6 +7593,7 @@
           } else if (preview?.position) {
             direction = preview.position.reverse ? "reverse" : "forward";
             label = preview.position.reverse ? "← 倒放" : "正放 →";
+            if (preview.position.waiting && preview.playing) label = "缓冲中…";
             time = `${(preview.position.elapsed / 1e3).toFixed(2)} / ${(preview.position.duration / 1e3).toFixed(2)} 秒`;
           }
           el.previewPlaybackInfo.dataset.direction = direction;
@@ -7377,6 +7608,7 @@
           preview.clock.setRunning(running, now);
           preview.position = preview.clock.sample(now);
           preview.frame = preview.position.frame;
+          requestLoopPreviewFrames(preview);
           if (!running) {
             cancelAnimationFrame(preview.raf);
             preview.raf = 0;
@@ -7398,28 +7630,47 @@
           if (!state.clip || state.mode !== "edit") return;
           const timing = createExportTiming(state.trimStart, state.trimEnd, Number(el.fpsSelect.value), Number(el.speedSelect.value));
           const plan = createLoopFramePlan(timing.frameDelays, el.loopModeSelect.value);
-          const preview = { controller: new AbortController(), playing, raf: 0, times: timing.frameTimes };
+          const target = loopPreviewTarget();
+          const preview = {
+            controller: new AbortController(),
+            playing,
+            raf: 0,
+            times: timing.frameTimes,
+            plan,
+            region: target.region
+          };
           state.loopPreview = preview;
           state.previewSettingsKey = loopPreviewSettingsKey();
           el.clipVideo.pause();
           updatePreviewPlaybackInfo();
+          const attach = (cache) => {
+            if (state.loopPreview !== preview || preview.cache) return;
+            preview.cache = cache;
+            preview.clock = createLoopPreviewClock(plan, { isReady: (index) => loopPlanFrameReady(cache, plan[index]) });
+            updateLoopPreviewClock();
+            renderExportPreviewFrame();
+            updateTimelinePlayhead();
+            setStatus("");
+          };
           try {
             const cache = await prepareLoopPreviewFrames({
               clip: state.clip,
               frameTimes: timing.frameTimes,
               createSource: createExportFrameSource,
-              signal: preview.controller.signal
+              signal: preview.controller.signal,
+              region: target.region,
+              maxEdge: target.maxEdge,
+              onFrame: attach,
+              onDecoded: (index) => {
+                if (state.loopPreview === preview && loopFrameUses(preview.frame, index)) renderExportPreviewFrame();
+              }
             });
             if (state.loopPreview !== preview) {
               cache.dispose();
               return;
             }
-            preview.cache = cache;
-            preview.clock = createLoopPreviewClock(plan);
-            updateLoopPreviewClock();
-            renderExportPreviewFrame();
-            updateTimelinePlayhead();
-            setStatus("");
+            attach(cache);
+            updatePreviewPlaybackInfo();
           } catch (error) {
             if (state.loopPreview !== preview || preview.controller.signal.aborted) return;
             preview.controller.abort();
@@ -7438,15 +7689,19 @@
         function currentLoopPreviewSource() {
           const preview = state.loopPreview;
           if (!preview?.cache || !preview.frame) return null;
-          const base = preview.cache.frames[preview.frame.sourceIndex];
+          const base = preview.cache.get(preview.frame.sourceIndex);
+          if (!base) return null;
           const blend = preview.frame.blend;
-          if (!blend) return base;
-          preview.blendCanvas ||= new OffscreenCanvas(base.width, base.height);
+          const overlay = blend ? preview.cache.get(blend.sourceIndex) : null;
+          if (!overlay) return base;
+          if (!preview.blendCanvas || preview.blendCanvas.width !== base.width || preview.blendCanvas.height !== base.height) {
+            preview.blendCanvas = new OffscreenCanvas(base.width, base.height);
+          }
           const ctx = preview.blendCanvas.getContext("2d");
           ctx.globalAlpha = 1;
           ctx.drawImage(base, 0, 0);
           ctx.globalAlpha = blend.alpha;
-          ctx.drawImage(preview.cache.frames[blend.sourceIndex], 0, 0, base.width, base.height);
+          ctx.drawImage(overlay, 0, 0, base.width, base.height);
           return preview.blendCanvas;
         }
         function stopTrimPreview({ keepPosition = true } = {}) {
@@ -7923,13 +8178,43 @@
           const nextSettings = updatePreviewCanvasLayout(settings);
           const sourceVideo = el.scrubVideo?.classList.contains("active") ? el.scrubVideo : el.clipVideo;
           const loopSource = sourceVideo === el.clipVideo ? currentLoopPreviewSource() : null;
+          if (state.loopPreview && loopPreviewRegionStale()) scheduleLoopPreviewRegionRefresh();
+          if (!loopSource && sourceVideo === el.clipVideo && state.loopPreview?.cache) return;
           if (!nextSettings || !loopSource && (!sourceVideo || sourceVideo.readyState < 2)) return;
           const ctx = el.previewCanvas.getContext("2d", { alpha: true, colorSpace: "srgb" });
           if (!ctx) return;
           ctx.imageSmoothingEnabled = true;
           ctx.imageSmoothingQuality = "high";
-          drawExportCanvasFrame(ctx, nextSettings, loopSource || sourceVideo);
+          drawExportCanvasFrame(ctx, loopSource ? loopPreviewDrawSettings(nextSettings) : nextSettings, loopSource || sourceVideo);
           setOutputPreviewVisible(true);
+        }
+        function loopPreviewDrawSettings(settings) {
+          const region = state.loopPreview?.cache?.region;
+          if (!region) return settings;
+          const crop = settings.crop;
+          return {
+            ...settings,
+            crop: {
+              x: (crop.x - region.x) / region.w,
+              y: (crop.y - region.y) / region.h,
+              w: crop.w / region.w,
+              h: crop.h / region.h
+            }
+          };
+        }
+        function loopPreviewRegionStale() {
+          const region = state.loopPreview?.region;
+          const crop = state.editorCrop;
+          if (!region || !crop) return false;
+          return ["x", "y", "w", "h"].some((key) => Math.abs(region[key] - crop[key]) > 1e-4);
+        }
+        function scheduleLoopPreviewRegionRefresh() {
+          clearTimeout(state.loopPreviewRegionTimer);
+          state.loopPreviewRegionTimer = setTimeout(() => {
+            const preview = state.loopPreview;
+            if (!preview || state.mode !== "edit" || state.editorCropSession || state.editorViewportAnimation) return;
+            if (loopPreviewRegionStale()) void startLoopPreview(preview.playing);
+          }, 180);
         }
         async function readUserscriptResource(name) {
           if (typeof GM_getResourceText === "function") return GM_getResourceText(name);
