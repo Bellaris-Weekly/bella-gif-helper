@@ -42,12 +42,13 @@ tests/               测试与真实媒体素材
 `sync-r2.yml` 里 upload job 的 `needs: test` 不得放宽或绕过。
 
 上传到 R2 的不是仓库里提交的产物，而是 upload job 用 `npm run build -- --release` 重新构建的发布版：
-它从 Secret `LOG_SERVICE_CONFIG`（与 bella-live-clip 共用）注入日志接收地址，并在元数据头补一行
+它从 Secret `LOG_SERVICE_CONFIG`（与 bella-live-clip 同名、指向同一日志服务）注入日志接收地址，并在元数据头补一行
 对应的 `@connect`。除此之外两者完全相同（test job 仍校验提交的产物与源码一致）。
 Secret 缺失或格式不对时发布构建直接失败、不上传，不会静默发出一版没有日志的脚本。
 
 - 日志地址**不得**写进仓库（源码、`header.txt`、提交的产物、文档都不行），只能由 CI 注入。
-- 本仓库需要配置 `LOG_SERVICE_CONFIG` Secret，值与 bella-live-clip 仓库相同。
+- 本仓库的 `LOG_SERVICE_CONFIG` Secret 只放 `{"worker":{"domain":"…"}}`——构建只读
+  `worker.domain`。不要把 bella-live-clip 那份含 Cloudflare 部署凭证的完整配置复制过来。
 
 ## 红线
 
