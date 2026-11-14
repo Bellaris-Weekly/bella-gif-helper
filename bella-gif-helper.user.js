@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         贝报 GIF 助手
 // @namespace    https://www.bk0717.com/
-// @version      1.5.25
+// @version      1.6.0
 // @description  B站直播回溯、视频框选录制与 GIF 编辑
 // @author       贝极星周报
 // @homepageURL  https://github.com/Bellaris-Weekly/bella-gif-helper
@@ -78,7 +78,7 @@
   var define_SCRIPT_METADATA_default;
   var init_define_SCRIPT_METADATA = __esm({
     "<define:__SCRIPT_METADATA__>"() {
-      define_SCRIPT_METADATA_default = { version: "1.5.25", updateURL: "https://share.bellaris.fans/bella-gif-helper.user.js", downloadURL: "https://share.bellaris.fans/bella-gif-helper.user.js" };
+      define_SCRIPT_METADATA_default = { version: "1.6.0", updateURL: "https://share.bellaris.fans/bella-gif-helper.user.js", downloadURL: "https://share.bellaris.fans/bella-gif-helper.user.js" };
     }
   });
 
@@ -425,44 +425,56 @@
   // src/ui/panel.css
   var require_panel = __commonJS({
     "src/ui/panel.css"(exports, module) {
-      module.exports = `
-  :host {
+      module.exports = `  :host {
     all: initial;
-    --color-bg: #151619;
-    --color-surface: #1b1d21;
-    --color-surface-raised: #22252a;
-    --color-surface-hover: #2a2e34;
-    --color-text: #f7f8fa;
-    --color-text-secondary: #c6cbd3;
-    --color-text-muted: #959ca8;
-    --color-border: rgba(255, 255, 255, .10);
-    --color-border-strong: rgba(255, 255, 255, .18);
+    /* 浅色毛玻璃。--glass-* 只给面板外壳与浮层用，内部卡片用实色 surface 保证对比度。 */
+    --glass-bg: rgba(246, 246, 249, .80);
+    --glass-bg-strong: rgba(250, 250, 252, .92);
+    --glass-filter: saturate(180%) blur(28px);
+    --glass-edge: inset 0 0 0 1px rgba(255, 255, 255, .55);
+    --color-surface: rgba(255, 255, 255, .78);
+    --color-surface-solid: #ffffff;
+    --color-fill: rgba(60, 60, 67, .08);
+    --color-fill-hover: rgba(60, 60, 67, .13);
+    --color-text: #1d1d1f;
+    --color-text-secondary: #46464d;
+    --color-text-muted: #6e6e78;
+    --color-border: rgba(0, 0, 0, .08);
+    --color-border-strong: rgba(0, 0, 0, .14);
     --color-brand: #db7d74;
     --color-brand-rgb: 219, 125, 116;
-    --color-brand-hover: #e79890;
-    --color-brand-soft: rgba(var(--color-brand-rgb), .16);
-    --color-on-brand: #151619;
-    --color-success: #70d9aa;
-    --color-danger: #c9423d;
-    --color-focus: #f2aaa4;
-    --radius-panel: 14px;
-    --radius-control: 8px;
-    --radius-compact: 6px;
-    --shadow-panel: 0 24px 72px rgba(0, 0, 0, .52), 0 2px 10px rgba(0, 0, 0, .28);
+    --color-brand-strong: #c45a51;
+    --color-brand-strong-hover: #b54f47;
+    --color-brand-text: #b4544b;
+    --color-brand-soft: rgba(var(--color-brand-rgb), .14);
+    --color-on-brand: #ffffff;
+    --color-success: #1e8a57;
+    --color-danger: #d43d37;
+    --color-danger-hover: #bf3530;
+    --color-focus: rgba(var(--color-brand-rgb), .60);
+    --color-stage: #121316;
+    --radius-panel: 18px;
+    --radius-card: 12px;
+    --radius-control: 9px;
+    --radius-compact: 7px;
+    --shadow-panel: 0 24px 64px rgba(15, 15, 20, .24), 0 2px 10px rgba(15, 15, 20, .10);
+    --shadow-float: 0 12px 36px rgba(15, 15, 20, .22), 0 1px 4px rgba(15, 15, 20, .10);
+    --shadow-control: 0 1px 2px rgba(0, 0, 0, .10), 0 1px 1px rgba(0, 0, 0, .04);
     --motion-fast: 120ms ease-out;
-    --motion-standard: 180ms ease-out;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
-    font-size: 14px;
+    --motion-standard: 200ms cubic-bezier(.2, .8, .2, 1);
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+    font-size: 13px;
     line-height: 1.5;
     letter-spacing: 0;
+    color: var(--color-text);
   }
   * { box-sizing: border-box; }
-  button, input, select, textarea { font: inherit; }
+  button, input, select, textarea { font: inherit; color: inherit; }
   button {
     touch-action: manipulation;
     -webkit-tap-highlight-color: transparent;
   }
-  button, select, textarea, input { color-scheme: dark; }
+  button, select, textarea, input { color-scheme: light; }
   button:focus-visible,
   select:focus-visible,
   textarea:focus-visible,
@@ -473,6 +485,7 @@
   }
   .hidden { display: none !important; }
 
+  /* ---------- 悬浮球 ---------- */
   #launcher {
     position: fixed;
     right: 18px;
@@ -481,19 +494,20 @@
     width: 54px;
     height: 54px;
     border: 0;
-    border-radius: 14px;
+    border-radius: 16px;
     overflow: hidden;
     background-image: url('https://i0.hdslb.com/bfs/garb/item/70de4619ce5e8a7b5bbe5c4124aa69353d8102e4.png');
+    background-color: #fff;
     background-position: center;
     background-size: cover;
     background-repeat: no-repeat;
-    box-shadow: 0 10px 28px rgba(0, 0, 0, .34), 0 0 0 1px rgba(255, 255, 255, .12);
+    box-shadow: 0 10px 28px rgba(0, 0, 0, .22), 0 0 0 1px rgba(255, 255, 255, .7), 0 0 0 2px rgba(0, 0, 0, .06);
     cursor: grab;
     touch-action: none;
     user-select: none;
     transition: transform var(--motion-fast), filter var(--motion-fast), box-shadow var(--motion-fast);
   }
-  #launcher:hover { transform: translateY(-2px); filter: brightness(1.06); }
+  #launcher:hover { transform: translateY(-2px); filter: brightness(1.04); }
   #launcher.dragging { cursor: grabbing; transition: none; transform: none !important; }
   #launcher.recording {
     outline: 3px solid #ff514a;
@@ -517,6 +531,7 @@
     50% { box-shadow: 0 10px 36px rgba(233, 75, 69, .68); }
   }
 
+  /* ---------- 面板外壳 ---------- */
   #panel {
     position: fixed;
     right: 14px;
@@ -524,15 +539,20 @@
     z-index: 2147483639;
     display: flex;
     flex-direction: column;
-    width: min(420px, calc(100vw - 20px));
+    width: min(400px, calc(100vw - 20px));
     height: calc(100vh - 28px);
     max-height: calc(100vh - 28px);
     overflow: visible;
-    border: 1px solid var(--color-border-strong);
+    border: 1px solid rgba(255, 255, 255, .6);
     border-radius: var(--radius-panel);
-    background: var(--color-bg);
+    background: var(--glass-bg);
+    -webkit-backdrop-filter: var(--glass-filter);
+    backdrop-filter: var(--glass-filter);
     color: var(--color-text);
-    box-shadow: var(--shadow-panel);
+    box-shadow: var(--shadow-panel), 0 0 0 .5px rgba(0, 0, 0, .12);
+  }
+  @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+    #panel { background: var(--glass-bg-strong); }
   }
   .panel-resize-handle {
     position: absolute;
@@ -545,7 +565,7 @@
     content: "";
     position: absolute;
     opacity: 0;
-    background: var(--color-brand-hover);
+    background: var(--color-brand);
     transition: opacity var(--motion-fast);
   }
   .panel-resize-handle:hover::after,
@@ -562,7 +582,8 @@
   [data-panel-resize="n"]::after, [data-panel-resize="s"]::after {
     left: 50%;
     width: 40px;
-    height: 2px;
+    height: 3px;
+    border-radius: 99px;
     transform: translateX(-50%);
   }
   [data-panel-resize="n"]::after { top: 2px; }
@@ -577,8 +598,9 @@
   [data-panel-resize="w"] { left: -12px; }
   [data-panel-resize="e"]::after, [data-panel-resize="w"]::after {
     top: 50%;
-    width: 2px;
+    width: 3px;
     height: 40px;
+    border-radius: 99px;
     transform: translateY(-50%);
   }
   [data-panel-resize="e"]::after { right: 2px; }
@@ -595,13 +617,15 @@
   [data-panel-resize="nw"]::after, [data-panel-resize="ne"]::after,
   [data-panel-resize="sw"]::after, [data-panel-resize="se"]::after {
     inset: 4px;
-    border: 2px solid var(--color-brand-hover);
+    border: 2px solid var(--color-brand);
     background: transparent;
   }
-  [data-panel-resize="nw"]::after { border-right: 0; border-bottom: 0; }
-  [data-panel-resize="ne"]::after { border-left: 0; border-bottom: 0; }
-  [data-panel-resize="sw"]::after { border-right: 0; border-top: 0; }
-  [data-panel-resize="se"]::after { border-left: 0; border-top: 0; }
+  [data-panel-resize="nw"]::after { border-right: 0; border-bottom: 0; border-top-left-radius: 8px; }
+  [data-panel-resize="ne"]::after { border-left: 0; border-bottom: 0; border-top-right-radius: 8px; }
+  [data-panel-resize="sw"]::after { border-right: 0; border-top: 0; border-bottom-left-radius: 8px; }
+  [data-panel-resize="se"]::after { border-left: 0; border-top: 0; border-bottom-right-radius: 8px; }
+
+  /* ---------- 标题栏 ---------- */
   .header {
     position: relative;
     z-index: 10;
@@ -609,61 +633,56 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 12px;
-    min-height: 52px;
-    padding: 8px 10px 8px 14px;
+    gap: 10px;
+    min-height: 48px;
+    padding: 6px 8px 6px 14px;
     border-bottom: 1px solid var(--color-border);
-    background: var(--color-surface);
-    border-radius: calc(var(--radius-panel) - 1px) calc(var(--radius-panel) - 1px) 0 0;
     user-select: none;
     touch-action: none;
+    cursor: grab;
   }
   .title-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
-  .title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 700; font-size: 15px; }
+  .title-avatar {
+    flex: 0 0 auto;
+    width: 22px;
+    height: 22px;
+    border-radius: 7px;
+    background: #fff url('https://i0.hdslb.com/bfs/garb/item/70de4619ce5e8a7b5bbe5c4124aa69353d8102e4.png') center / cover no-repeat;
+    box-shadow: 0 0 0 1px var(--color-border);
+  }
+  .title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 650; font-size: 14px; }
   #versionBtn {
     flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px;
-    padding: 2px 5px; min-height: 22px; border: 1px solid transparent;
-    border-radius: 5px; background: transparent; color: var(--color-text-muted);
-    font-size: 10px; line-height: 16px; white-space: nowrap; cursor: pointer;
+    padding: 1px 7px; min-height: 20px; border: 0;
+    border-radius: 99px; background: var(--color-fill); color: var(--color-text-muted);
+    font-size: 10.5px; line-height: 18px; white-space: nowrap; cursor: pointer;
+    font-variant-numeric: tabular-nums;
   }
-  #versionBtn:hover { background: var(--color-surface); border-color: var(--color-border-strong); }
-  #versionBtn:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+  #versionBtn:hover { background: var(--color-fill-hover); color: var(--color-text-secondary); }
   #versionBtn[aria-busy="true"] { opacity: .6; cursor: progress; }
-  #versionBtn.update-available { color: #f07878; border-color: #f0787870; background: #f078780a; }
+  #versionBtn.update-available { color: var(--color-brand-text); background: var(--color-brand-soft); }
   #versionBtn.update-available::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
-  .header-actions { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; }
-  .shortcut-setting { display: flex; align-items: center; gap: 5px; }
-  #shortcutInput {
-    width: 84px;
-    height: 30px;
-    padding: 0 6px;
-    border: 1px solid var(--color-border-strong);
-    border-radius: var(--radius-compact);
-    outline: none;
-    background: var(--color-surface-raised);
-    color: var(--color-text);
-    font-size: 11px;
-    font-weight: 700;
-    text-align: center;
-    cursor: pointer;
-  }
-  #shortcutInput:hover { background: var(--color-surface-hover); }
-  #shortcutInput.recording { border-color: var(--color-brand-hover); box-shadow: 0 0 0 3px var(--color-brand-soft); }
+  .header-actions { display: flex; align-items: center; gap: 2px; flex: 0 0 auto; }
   .icon-btn {
     flex: 0 0 auto;
-    width: 36px;
-    height: 36px;
-    border: 1px solid transparent;
+    display: inline-grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border: 0;
     border-radius: var(--radius-control);
     background: transparent;
     color: var(--color-text-secondary);
-    font-size: 17px;
-    line-height: 1;
     cursor: pointer;
-    transition: color var(--motion-fast), background var(--motion-fast), border-color var(--motion-fast);
+    transition: color var(--motion-fast), background var(--motion-fast);
   }
-  .icon-btn:hover { border-color: var(--color-border); background: var(--color-surface-hover); color: var(--color-text); }
+  .icon-btn svg { display: block; }
+  .icon-btn:hover { background: var(--color-fill); color: var(--color-text); }
+  .icon-btn[aria-expanded="true"] { background: var(--color-brand-soft); color: var(--color-brand-text); }
+
   .body {
+    position: relative;
     flex: 1 1 auto;
     min-height: 0;
     overflow: hidden;
@@ -678,11 +697,21 @@
     overflow: hidden;
   }
 
+  /* ---------- 预览 ---------- */
   .workspace {
     flex: 0 0 auto;
     display: grid;
     gap: 8px;
-    padding: 10px 10px 0;
+    padding: 10px 12px 0;
+  }
+  .preview-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    width: min(100%, var(--editor-preview-size, 360px));
+    max-width: 520px;
+    justify-self: center;
   }
   #editorPreviewWrap {
     position: relative;
@@ -694,9 +723,9 @@
     aspect-ratio: 1 / 1;
     height: auto;
     overflow: hidden;
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-control);
-    background: #000;
+    border-radius: var(--radius-card);
+    background: var(--color-stage);
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, .10), 0 6px 18px rgba(0, 0, 0, .14);
     user-select: none;
     touch-action: none;
   }
@@ -745,58 +774,77 @@
     visibility: hidden;
   }
   #scrubVideo.active { visibility: visible; }
-  .preview-toolbar {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    width: min(100%, var(--editor-preview-size, 360px));
-    max-width: 520px;
-    justify-self: center;
-  }
-  .aspect-switch {
+
+  /* 分段按钮：导出参数、裁剪比例、直播模式、反馈类型共用 */
+  .segmented {
     display: inline-flex;
-    align-items: center;
+    align-items: stretch;
+    min-width: 0;
     padding: 2px;
-    border: 1px solid var(--color-border);
+    gap: 2px;
     border-radius: var(--radius-control);
-    background: var(--color-surface-raised);
+    background: var(--color-fill);
   }
-  .aspect-switch button {
-    min-width: 38px;
-    height: 24px;
+  .segmented.wide { display: flex; width: 100%; }
+  .segmented-option {
+    flex: 1 1 0;
+    min-width: 0;
+    height: 26px;
     padding: 0 8px;
     border: 0;
-    border-radius: calc(var(--radius-control) - 2px);
+    border-radius: var(--radius-compact);
     background: transparent;
     color: var(--color-text-secondary);
-    font-size: 11px;
-    font-weight: 700;
+    font-size: 12px;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
     cursor: pointer;
+    transition: background var(--motion-fast), color var(--motion-fast), box-shadow var(--motion-fast);
   }
-  .aspect-switch button:hover { color: var(--color-text); background: var(--color-surface-hover); }
-  .aspect-switch button[aria-pressed="true"] {
-    background: var(--color-brand);
-    color: var(--color-on-brand);
+  .segmented-option:hover { color: var(--color-text); background: rgba(255, 255, 255, .5); }
+  .segmented-option[aria-checked="true"],
+  .segmented-option[aria-pressed="true"],
+  .segmented-option[aria-selected="true"] {
+    background: var(--color-surface-solid);
+    color: var(--color-text);
+    font-weight: 650;
+    box-shadow: var(--shadow-control);
   }
+  .segmented-option:disabled { cursor: not-allowed; opacity: .5; }
+  .segmented-option:focus-visible { outline-offset: 0; }
+  .segmented-source {
+    position: absolute !important;
+    width: 1px !important;
+    height: 1px !important;
+    margin: -1px !important;
+    padding: 0 !important;
+    overflow: hidden !important;
+    clip: rect(0 0 0 0) !important;
+    clip-path: inset(50%) !important;
+    border: 0 !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+  }
+  .aspect-switch .segmented-option { flex: 0 0 auto; min-width: 44px; }
   .toolbar-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
+    display: inline-grid;
+    place-items: center;
     width: 30px;
     height: 30px;
     padding: 0;
-    border: 1px solid var(--color-border);
+    border: 0;
     border-radius: var(--radius-control);
-    background: var(--color-surface-raised);
-    color: var(--color-text);
-    font-size: 12px;
-    font-weight: 700;
+    background: var(--color-fill);
+    color: var(--color-text-secondary);
     cursor: pointer;
+    transition: background var(--motion-fast), color var(--motion-fast);
   }
-  .toolbar-btn:hover { background: var(--color-surface-hover); border-color: var(--color-border-strong); }
+  .toolbar-btn:hover { background: var(--color-fill-hover); color: var(--color-text); }
   .toolbar-btn svg { display: block; }
   .preview-toolbar button:disabled { opacity: .5; cursor: not-allowed; }
+
+  /* ---------- 画面裁剪（位于深色舞台上，保持高对比） ---------- */
   #editorOverlay {
     position: absolute;
     inset: 0;
@@ -814,7 +862,7 @@
     z-index: 2;
     border: 2px solid var(--color-brand);
     border-radius: var(--crop-frame-radius, 6px);
-    box-shadow: 0 0 0 9999px rgba(0,0,0,.36), 0 0 0 1px rgba(0,0,0,.42) inset;
+    box-shadow: 0 0 0 9999px rgba(0,0,0,.42), 0 0 0 1px rgba(0,0,0,.42) inset;
     pointer-events: auto;
     cursor: move;
     touch-action: none;
@@ -828,28 +876,28 @@
     background-image:
       linear-gradient(to right, transparent calc(33.333% - .5px), rgba(255,255,255,.38) 33.333%, transparent calc(33.333% + .5px), transparent calc(66.666% - .5px), rgba(255,255,255,.38) 66.666%, transparent calc(66.666% + .5px)),
       linear-gradient(to bottom, transparent calc(33.333% - .5px), rgba(255,255,255,.38) 33.333%, transparent calc(33.333% + .5px), transparent calc(66.666% - .5px), rgba(255,255,255,.38) 66.666%, transparent calc(66.666% + .5px));
-    opacity: .24;
+    opacity: .2;
     pointer-events: none;
     transition: opacity var(--motion-fast);
   }
-  #editorCropBox:hover::before { opacity: .52; }
+  #editorCropBox:hover::before { opacity: .5; }
   #cropSizeBadge {
     position: absolute;
     left: 7px;
     top: 7px;
     z-index: 8;
-    padding: 2px 6px;
-    border: 1px solid rgba(255,255,255,.16);
-    border-radius: 5px;
-    background: rgba(16,17,19,.78);
+    padding: 1px 7px;
+    border-radius: 99px;
+    background: rgba(16,17,19,.62);
     color: #fff;
     font-size: 10px;
-    font-weight: 650;
-    line-height: 1.4;
+    font-weight: 600;
+    line-height: 1.6;
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
     pointer-events: none;
-    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(8px);
+    backdrop-filter: blur(8px);
   }
   #editorPreviewWrap.viewport-transitioning .crop-handle,
   #editorPreviewWrap.viewport-transitioning #cropSizeBadge {
@@ -892,7 +940,7 @@
   [data-resize="se"] { right: -11px; bottom: -11px; cursor: nwse-resize; }
   [data-resize="nw"]::after, [data-resize="ne"]::after,
   [data-resize="sw"]::after, [data-resize="se"]::after {
-    left: 50%; top: 50%; width: 9px; height: 9px; border-radius: 3px; transform: translate(-50%, -50%);
+    left: 50%; top: 50%; width: 10px; height: 10px; border-radius: 50%; transform: translate(-50%, -50%);
   }
 
   #captionLayer {
@@ -930,29 +978,56 @@
     -webkit-text-stroke-color: transparent !important;
   }
 
+  /* ---------- 时间轴 ---------- */
   .trim-block {
-    padding: 8px 10px;
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-control);
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: start;
+    column-gap: 10px;
+    row-gap: 4px;
+    padding: 8px 10px 6px;
+    border-radius: var(--radius-card);
     background: var(--color-surface);
+    box-shadow: 0 0 0 1px var(--color-border);
   }
+  .play-btn {
+    height: 40px;
+    min-width: 62px;
+    padding: 0 10px;
+    border: 0;
+    border-radius: var(--radius-control);
+    background: var(--color-fill);
+    color: var(--color-text);
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: background var(--motion-fast);
+  }
+  .play-btn:hover { background: var(--color-fill-hover); }
+  .play-btn:disabled { opacity: .5; cursor: not-allowed; }
+  .timeline-col { min-width: 0; padding: 0 7px; }
   #timelineTrack {
     position: relative;
-    height: 30px;
-    margin: 0 7px;
+    height: 40px;
     cursor: pointer;
     touch-action: none;
   }
+  .timeline-clip {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    border-radius: 8px;
+    background: #2a2c31;
+    pointer-events: none;
+  }
   #timelineFilmstrip {
     position: absolute;
-    inset: 3px 0;
+    inset: 0;
     z-index: 0;
     display: grid;
     grid-template-columns: repeat(8, minmax(0, 1fr));
     overflow: hidden;
-    border: 1px solid var(--color-border);
-    border-radius: 6px;
-    background: var(--color-surface-raised);
     pointer-events: none;
     transition: opacity 160ms ease;
   }
@@ -961,7 +1036,7 @@
     display: block;
     width: 100%;
     height: 100%;
-    border-right: 1px solid rgba(255,255,255,.08);
+    border-right: 1px solid rgba(0,0,0,.25);
     opacity: .22;
     transition: opacity 160ms ease;
   }
@@ -969,50 +1044,61 @@
   #timelineFilmstrip canvas:last-child { border-right: 0; }
   #timelineRail {
     position: absolute;
-    left: 0; right: 0; top: 3px;
+    inset: 0;
     z-index: 1;
-    height: 24px;
-    border-radius: 6px;
-    background: rgba(0,0,0,.24);
-    box-shadow: inset 0 0 0 1px rgba(255,255,255,.06);
+    box-shadow: inset 0 0 0 1px rgba(0,0,0,.12);
+    border-radius: inherit;
   }
+  /* 选区外压暗：阴影向两侧铺开，由 .timeline-clip 裁剪在轨道内 */
   #timelineSelected {
     position: absolute;
-    top: 3px;
+    top: 0;
+    bottom: 0;
     z-index: 2;
-    height: 24px;
-    border-radius: 5px;
-    background: rgba(var(--color-brand-rgb), .12);
-    box-shadow: inset 0 0 0 2px var(--color-brand);
+    border-top: 2px solid var(--color-brand);
+    border-bottom: 2px solid var(--color-brand);
+    box-shadow: 0 0 0 9999px rgba(246, 246, 249, .62);
     pointer-events: none;
   }
   #timelinePlayhead {
     position: absolute;
-    top: 0;
+    top: -3px;
+    bottom: -3px;
     z-index: 4;
     width: 2px;
-    height: 30px;
     border-radius: 99px;
     background: #fff;
-    box-shadow: 0 0 0 1px rgba(0,0,0,.3), 0 2px 7px rgba(0,0,0,.4);
+    box-shadow: 0 0 0 1px rgba(0,0,0,.35), 0 2px 6px rgba(0,0,0,.35);
     transform: translateX(-1px);
     pointer-events: none;
   }
   .timeline-handle {
     position: absolute;
-    top: 2px;
+    top: 0;
     z-index: 3;
     width: 14px;
-    height: 26px;
+    height: 40px;
     margin-left: -7px;
     padding: 0;
-    border: 2px solid #fff;
+    border: 0;
     border-radius: 6px;
     background: var(--color-brand);
-    box-shadow: 0 3px 10px rgba(0,0,0,.42);
+    box-shadow: 0 2px 6px rgba(0,0,0,.28);
     cursor: ew-resize;
     touch-action: none;
   }
+  .timeline-handle::after {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 2px;
+    height: 14px;
+    border-radius: 99px;
+    background: rgba(255,255,255,.92);
+    transform: translate(-50%, -50%);
+  }
+  .timeline-handle:hover { background: var(--color-brand-strong); }
   #timelineTrack.timeline-refitting .timeline-handle,
   #timelineTrack.timeline-refitting #timelineSelected,
   #timelineTrack.timeline-refitting #timelinePlayhead {
@@ -1025,255 +1111,241 @@
     grid-template-columns: 1fr auto 1fr;
     align-items: center;
     gap: 8px;
-    margin-top: 0;
+    margin-top: 4px;
     color: var(--color-text-muted);
     font-size: 11px;
     font-variant-numeric: tabular-nums;
   }
-  #trimStartValue { text-align: left; color: var(--color-brand-hover); }
-  #trimSummary { text-align: center; color: var(--color-success); font-weight: 650; }
-  #trimEndValue { text-align: right; color: var(--color-brand-hover); }
-  .preview-controls {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    margin-top: 5px;
+  #trimStartValue { text-align: left; }
+  #trimSummary {
+    text-align: center;
+    padding: 0 8px;
+    border-radius: 99px;
+    background: var(--color-brand-soft);
+    color: var(--color-brand-text);
+    font-weight: 650;
   }
-  .preview-controls .btn { min-height: 36px; padding: 0 12px; }
+  #trimEndValue { text-align: right; }
   .preview-playback-info {
-    display: inline-flex;
-    flex: 0 1 auto;
+    display: flex;
+    flex: 1 1 auto;
     align-items: center;
-    gap: 8px;
+    justify-content: center;
+    gap: 6px;
     min-width: 0;
-    margin-right: auto;
+    overflow: hidden;
     color: var(--color-text-muted);
-    font-size: 12px;
+    font-size: 11px;
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
   #previewDirection {
     display: inline-flex;
     align-items: center;
-    height: 22px;
+    height: 20px;
     padding: 0 8px;
     border-radius: 999px;
-    background: var(--color-surface-hover);
+    background: var(--color-fill);
     color: var(--color-text-secondary);
-    font-size: 11px;
-    font-weight: 650;
+    font-weight: 600;
   }
   .preview-playback-info[data-direction="forward"] #previewDirection,
   .preview-playback-info[data-direction="reverse"] #previewDirection {
     background: var(--color-brand-soft);
-    color: var(--color-brand-hover);
+    color: var(--color-brand-text);
   }
   .preview-playback-info[data-direction="error"] #previewDirection {
-    background: rgba(201, 66, 61, .16);
-    color: #e07a75;
+    background: rgba(212, 61, 55, .12);
+    color: var(--color-danger);
   }
   #previewCycleTime:empty { display: none; }
-  .live-mode-switch {
-    display: inline-flex;
-    flex: 0 1 auto;
-    min-width: 0;
-    gap: 4px;
-  }
-  .live-mode-switch button {
-    min-width: 0;
-    height: 28px;
-    padding: 0 5px;
-    border: 0;
-    background: transparent;
-    color: var(--color-text-muted);
-    font-size: 12px;
-    white-space: nowrap;
-    cursor: pointer;
-  }
-  .live-mode-switch button:hover { color: var(--color-text); }
-  .live-mode-switch button.active {
-    color: var(--color-brand-hover);
-    font-weight: 700;
-    box-shadow: inset 0 -2px 0 var(--color-brand);
-  }
-  .live-mode-switch button:disabled { cursor: default; opacity: .55; }
 
+  /* ---------- 设置区 ---------- */
   #editorSettingsScroll {
     flex: 1 1 auto;
     min-height: 0;
     overflow-y: auto;
     overscroll-behavior: contain;
-    color-scheme: dark;
     scrollbar-width: thin;
-    scrollbar-color: rgba(255,255,255,.20) transparent;
-    padding: 0 10px 10px;
+    scrollbar-color: rgba(0,0,0,.22) transparent;
+    padding: 10px 12px 10px;
   }
   #editorSettingsScroll::-webkit-scrollbar { width: 8px; }
   #editorSettingsScroll::-webkit-scrollbar-track { background: transparent; }
   #editorSettingsScroll::-webkit-scrollbar-thumb {
     border: 2px solid transparent;
     border-radius: 999px;
-    background: rgba(255,255,255,.20);
+    background: rgba(0,0,0,.22);
     background-clip: padding-box;
   }
-
-  .compact-section {
-    margin-top: 12px;
-    padding-top: 12px;
-    border-top: 1px solid var(--color-border);
+  .settings-group {
+    display: grid;
+    gap: 6px;
+    padding: 8px 10px;
+    border-radius: var(--radius-card);
+    background: var(--color-surface);
+    box-shadow: 0 0 0 1px var(--color-border);
   }
-  .section-head {
+  .settings-tabs { margin-bottom: 8px; }
+  .settings-tabs .segmented-option { height: 28px; font-size: 12.5px; }
+  /* 有文字图层时在「文字」页签上点一个小圆点，提醒导出会带上文字 */
+  #editorSettingsScroll:has(#textLayerTabs .text-tab) #settingsTabText::after {
+    content: "";
+    display: inline-block;
+    width: 5px;
+    height: 5px;
+    margin-left: 5px;
+    border-radius: 50%;
+    background: var(--color-brand);
+    vertical-align: middle;
+  }
+  .group-head {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 10px;
-    margin-bottom: 8px;
+    min-height: 26px;
     color: var(--color-text);
-    font-size: 13px;
-    font-weight: 700;
+    font-size: 12px;
+    font-weight: 650;
   }
-  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-  .grid-2.text-options { margin-top: 8px; }
-  .grid-2.export-options {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    margin-top: 10px;
+  .setting-row {
+    display: grid;
+    grid-template-columns: 34px minmax(0, 1fr);
+    align-items: center;
+    gap: 8px;
+    min-height: 30px;
   }
-  .export-options .field > label { font-size: 11px; white-space: nowrap; }
-  .field { min-width: 0; }
-  .field > label {
-    display: block;
-    margin-bottom: 5px;
+  .setting-row > label {
     color: var(--color-text-muted);
     font-size: 12px;
-    line-height: 1.35;
+    white-space: nowrap;
+  }
+  .setting-row > .segmented { width: 100%; }
+  .select-wrap { position: relative; min-width: 0; }
+  .select-wrap::after {
+    content: "";
+    position: absolute;
+    right: 11px;
+    top: 50%;
+    width: 6px;
+    height: 6px;
+    border-right: 1.5px solid var(--color-text-muted);
+    border-bottom: 1.5px solid var(--color-text-muted);
+    transform: translateY(-70%) rotate(45deg);
+    pointer-events: none;
   }
   select, textarea, input[type="text"] {
     width: 100%;
-    border: 1px solid var(--color-border-strong);
+    border: 0;
     border-radius: var(--radius-control);
     outline: none;
-    background: var(--color-surface-raised);
+    background: var(--color-fill);
     color: var(--color-text);
-    transition: border-color var(--motion-fast), background var(--motion-fast), box-shadow var(--motion-fast);
+    transition: background var(--motion-fast), box-shadow var(--motion-fast);
   }
-  select:hover, textarea:hover, input[type="text"]:hover { background: var(--color-surface-hover); }
-  select, input[type="text"] { height: 40px; padding: 0 10px; }
-  textarea { min-height: 56px; padding: 9px 10px; resize: vertical; line-height: 1.45; }
+  select:hover, textarea:hover, input[type="text"]:hover { background: var(--color-fill-hover); }
+  select {
+    -webkit-appearance: none;
+    appearance: none;
+    height: 30px;
+    padding: 0 28px 0 10px;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    cursor: pointer;
+  }
+  input[type="text"] { height: 32px; padding: 0 10px; }
+  textarea { min-height: 52px; padding: 8px 10px; resize: vertical; line-height: 1.45; }
   select:focus-visible, textarea:focus-visible, input[type="text"]:focus-visible {
-    border-color: var(--color-brand-hover);
-    box-shadow: 0 0 0 3px var(--color-brand-soft);
+    outline: none;
+    background: var(--color-surface-solid);
+    box-shadow: 0 0 0 2px var(--color-focus);
   }
-  select option { background: var(--color-surface-raised); color: var(--color-text); }
-  input[type="color"] {
-    width: 100%;
-    height: 40px;
-    padding: 3px;
-    border: 1px solid var(--color-border-strong);
-    border-radius: var(--radius-control);
-    background: var(--color-surface-raised);
+  textarea:focus, input[type="text"]:focus {
+    background: var(--color-surface-solid);
+    box-shadow: 0 0 0 2px var(--color-focus);
   }
-  .text-color-control {
+  select option { background: #fff; color: var(--color-text); }
+  .size-estimate { display: none; }
+
+  /* 文字图层 */
+  .text-group #textEditor { display: grid; gap: 6px; }
+  .text-group #textEditor.hidden { display: none !important; }
+  .range-control {
     display: grid;
-    grid-template-columns: minmax(40px, 1fr) repeat(3, 40px);
-    gap: 4px;
+    grid-template-columns: minmax(0, 1fr) 34px;
     align-items: center;
+    gap: 8px;
   }
-  .text-color-control input[type="color"] { min-width: 0; }
+  #fontScaleValue {
+    color: var(--color-text-muted);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+  }
+  input[type="range"] {
+    width: 100%;
+    height: 24px;
+    margin: 0;
+    accent-color: var(--color-brand);
+    cursor: pointer;
+  }
+  .color-row, .stroke-control {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+  .stroke-control .segmented { flex: 1 1 auto; }
   .color-swatch {
     position: relative;
-    width: 40px;
-    height: 40px;
+    flex: 0 0 auto;
+    width: 28px;
+    height: 28px;
     padding: 0;
     border: 0;
     border-radius: 50%;
-    outline-offset: 0;
     background: transparent;
     cursor: pointer;
   }
   .color-swatch::before {
     content: '';
     position: absolute;
-    inset: 8px;
-    border: 1px solid rgba(255, 255, 255, .42);
+    inset: 4px;
     border-radius: 50%;
     background: var(--swatch-color);
-    box-shadow: 0 1px 4px rgba(0, 0, 0, .34);
+    box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .14);
     transition: transform var(--motion-fast), box-shadow var(--motion-fast);
   }
-  .color-swatch:hover::before { transform: scale(1.1); }
+  .color-swatch:hover::before { transform: scale(1.08); }
   .color-swatch[aria-pressed="true"]::before {
-    box-shadow: 0 0 0 2px var(--color-surface), 0 0 0 4px var(--color-text), 0 1px 4px rgba(0, 0, 0, .34);
+    box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .14), 0 0 0 2px #fff, 0 0 0 4px var(--color-brand);
   }
   .color-swatch:disabled { cursor: default; opacity: .5; }
-  input[type="checkbox"] { accent-color: var(--color-brand); }
-  input[type="range"] {
-    width: 100%;
-    height: 36px;
-    margin: 0;
-    accent-color: var(--color-brand);
-    cursor: pointer;
-  }
-  .size-estimate {
+  input[type="color"] {
+    -webkit-appearance: none;
+    appearance: none;
     flex: 0 0 auto;
-    color: var(--color-success);
-    font-size: 11px;
-    font-weight: 760;
-    font-variant-numeric: tabular-nums;
-    white-space: nowrap;
-  }
-
-  .btn {
-    min-height: 42px;
-    padding: 0 12px;
-    border: 1px solid transparent;
-    border-radius: var(--radius-control);
-    color: #fff;
-    font-weight: 700;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: var(--color-fill);
     cursor: pointer;
-    transition: background var(--motion-fast), border-color var(--motion-fast), filter var(--motion-fast);
   }
-  .btn.primary { background: var(--color-brand); color: var(--color-on-brand); }
-  .btn.primary:hover { background: var(--color-brand-hover); }
-  #generateBtn {
-    display: grid;
-    place-content: center;
-    gap: 2px;
-    line-height: 1.05;
+  input[type="color"]::-webkit-color-swatch-wrapper { padding: 4px; }
+  input[type="color"]::-webkit-color-swatch { border: 0; border-radius: 50%; box-shadow: inset 0 0 0 1px rgba(0,0,0,.14); }
+  input[type="color"]::-moz-color-swatch { border: 0; border-radius: 50%; }
+  input[type="color"].custom-color {
+    background: conic-gradient(from 90deg, #ff5f5f, #ffd25f, #6ee07a, #5fd8ff, #7a6bff, #ff6bd6, #ff5f5f);
   }
-  #actionEstimate {
-    color: rgba(21,22,25,.72);
-    font-size: 10px;
-    font-weight: 650;
-    font-variant-numeric: tabular-nums;
-  }
-  .btn.secondary { border-color: var(--color-border); background: var(--color-surface-raised); color: var(--color-text-secondary); }
-  .btn.secondary:hover { border-color: var(--color-border-strong); background: var(--color-surface-hover); color: var(--color-text); }
-  .btn.danger { background: var(--color-danger); }
-  .btn.danger:hover { background: #bf3935; }
-  .btn:active, .small-btn:active, .icon-btn:active { filter: brightness(.92); }
-  .btn:disabled, .small-btn:disabled, select:disabled, textarea:disabled, input:disabled {
-    cursor: not-allowed;
-    opacity: .48;
-  }
-  .small-btn {
-    min-height: 34px;
-    padding: 0 10px;
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-control);
-    background: var(--color-surface-raised);
-    color: var(--color-text-secondary);
-    cursor: pointer;
-    white-space: nowrap;
-    transition: background var(--motion-fast), border-color var(--motion-fast), color var(--motion-fast);
-  }
-  .small-btn:hover { border-color: var(--color-border-strong); background: var(--color-surface-hover); color: var(--color-text); }
+  input[type="color"]:disabled { cursor: not-allowed; opacity: .5; }
+  input[type="checkbox"] { accent-color: var(--color-brand); }
 
   .text-tabs {
     display: flex;
     gap: 6px;
-    margin-bottom: 8px;
     overflow-x: auto;
     scrollbar-width: thin;
   }
@@ -1281,15 +1353,16 @@
     flex: 0 0 auto;
     display: inline-flex;
     align-items: center;
-    gap: 5px;
+    gap: 4px;
     max-width: 150px;
-    height: 31px;
-    padding: 0 5px 0 10px;
+    height: 28px;
+    padding: 0 4px 0 10px;
     overflow: hidden;
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-compact);
-    background: var(--color-surface-raised);
+    border: 0;
+    border-radius: 99px;
+    background: var(--color-fill);
     color: var(--color-text-secondary);
+    font-size: 12px;
     white-space: nowrap;
     cursor: pointer;
   }
@@ -1307,66 +1380,215 @@
     height: 20px;
     border-radius: 999px;
     color: var(--color-text-muted);
-    font-size: 15px;
+    font-size: 14px;
     font-weight: 700;
     line-height: 1;
   }
   .text-tab-delete:hover {
-    background: rgba(255,96,86,.16);
-    color: #ff9f99;
+    background: rgba(212, 61, 55, .12);
+    color: var(--color-danger);
   }
   .text-tab.active {
-    border-color: var(--color-brand);
     background: var(--color-brand-soft);
-    color: var(--color-brand-hover);
+    color: var(--color-brand-text);
+    font-weight: 600;
   }
   .text-tab:disabled { cursor: not-allowed; opacity: .48; }
-  .text-empty { display: none !important; }
+  .text-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    min-height: 28px;
+  }
+  .text-toolbar .text-tabs { flex: 1 1 auto; min-width: 0; }
+  .text-toolbar .small-btn { flex: 0 0 auto; margin-left: auto; }
+  .text-empty { color: var(--color-text-muted); font-size: 12px; padding: 2px 0 4px; }
+
+  /* ---------- 按钮 ---------- */
+  .btn {
+    min-height: 42px;
+    padding: 0 14px;
+    border: 0;
+    border-radius: 11px;
+    font-weight: 650;
+    cursor: pointer;
+    transition: background var(--motion-fast), color var(--motion-fast), filter var(--motion-fast), box-shadow var(--motion-fast);
+  }
+  .btn.primary {
+    background: var(--color-brand-strong);
+    color: var(--color-on-brand);
+    box-shadow: 0 4px 14px rgba(var(--color-brand-rgb), .38);
+  }
+  .btn.primary:hover { background: var(--color-brand-strong-hover); }
+  .btn.secondary { background: var(--color-fill); color: var(--color-text); }
+  .btn.secondary:hover { background: var(--color-fill-hover); }
+  .btn.danger { background: var(--color-danger); color: #fff; }
+  .btn.danger:hover { background: var(--color-danger-hover); }
+  .btn:active, .small-btn:active, .icon-btn:active, .segmented-option:active { filter: brightness(.95); }
+  .btn:disabled, .small-btn:disabled, select:disabled, textarea:disabled, input:disabled {
+    cursor: not-allowed;
+    opacity: .48;
+    box-shadow: none;
+  }
+  .small-btn {
+    height: 26px;
+    padding: 0 10px;
+    border: 0;
+    border-radius: 99px;
+    background: var(--color-brand-soft);
+    color: var(--color-brand-text);
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background var(--motion-fast);
+  }
+  .small-btn:hover { background: rgba(var(--color-brand-rgb), .22); }
+  #generateBtn {
+    display: grid;
+    place-content: center;
+    gap: 1px;
+    line-height: 1.1;
+  }
+  #actionEstimate {
+    color: rgba(255, 255, 255, .82);
+    font-size: 10.5px;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ---------- 底栏：状态、进度、主操作，始终可见 ---------- */
+  .dock {
+    flex: 0 0 auto;
+    z-index: 9;
+    display: grid;
+    gap: 8px;
+    padding: 10px 12px 12px;
+    border-top: 1px solid var(--color-border);
+  }
   #status {
-    min-height: 0;
-    margin-top: 10px;
-    padding: 9px 10px;
-    border: 1px solid var(--color-border);
+    padding: 7px 10px;
     border-radius: var(--radius-control);
-    background: var(--color-surface);
-    color: var(--color-text-muted);
+    background: var(--color-fill);
+    color: var(--color-text-secondary);
     font-size: 12px;
     line-height: 1.45;
   }
-  #status.success { color: var(--color-success); border-color: rgba(112, 217, 170, .26); }
-  #status.error { color: #ff938e; border-color: rgba(255, 113, 107, .28); background: rgba(255, 113, 107, .07); }
+  #status.success { background: rgba(30, 138, 87, .10); color: var(--color-success); }
+  #status.error { background: rgba(212, 61, 55, .10); color: var(--color-danger); }
   .progress-wrap {
-    height: 7px;
-    margin-top: 10px;
+    height: 6px;
     overflow: hidden;
     border-radius: 999px;
-    background: var(--color-surface-raised);
+    background: var(--color-fill);
   }
   #progress {
     width: 0;
     height: 100%;
     border-radius: inherit;
-    background: var(--color-brand);
+    background: linear-gradient(90deg, var(--color-brand), var(--color-brand-strong));
     transition: width .12s linear;
   }
   .action-dock {
-    flex: 0 0 auto;
-    z-index: 9;
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
     gap: 8px;
-    margin: 0;
-    padding: 10px;
-    border-top: 1px solid var(--color-border);
-    background: var(--color-surface);
   }
   .action-dock.one { grid-template-columns: 1fr; }
 
+  /* ---------- 覆盖页：设置 / 反馈 ---------- */
+  .sheet-layer {
+    position: absolute;
+    inset: 0;
+    z-index: 30;
+    display: flex;
+    flex-direction: column;
+    margin: 0;
+    background: var(--glass-bg-strong);
+    -webkit-backdrop-filter: var(--glass-filter);
+    backdrop-filter: var(--glass-filter);
+    animation: sheetIn var(--motion-standard);
+  }
+  @keyframes sheetIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: none; }
+  }
+  .sheet { display: flex; flex-direction: column; min-height: 0; height: 100%; }
+  .sheet-head {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 8px 12px 2px 6px;
+  }
+  .sheet-head h2 { margin: 0; font-size: 17px; font-weight: 700; }
+  .sheet-body {
+    display: grid;
+    align-content: start;
+    gap: 12px;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 6px 12px 16px;
+  }
+  .sheet-card {
+    display: grid;
+    gap: 8px;
+    padding: 12px;
+    border-radius: var(--radius-card);
+    background: var(--color-surface-solid);
+    box-shadow: 0 0 0 1px var(--color-border);
+  }
+  .sheet-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .sheet-row-text { min-width: 0; display: grid; gap: 2px; }
+  .sheet-label { color: var(--color-text); font-size: 13px; font-weight: 600; }
+  .sheet-hint { margin: 0; color: var(--color-text-muted); font-size: 11.5px; line-height: 1.5; }
+  .shortcut-input {
+    flex: 0 0 auto;
+    width: 96px !important;
+    height: 32px;
+    padding: 0 8px !important;
+    font-size: 12px;
+    font-weight: 650;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+    cursor: pointer;
+  }
+  .shortcut-input.recording {
+    background: var(--color-surface-solid);
+    color: var(--color-brand-text);
+    box-shadow: 0 0 0 2px var(--color-brand);
+  }
+  .feedback-field { display: grid; gap: 6px; }
+  .feedback-field label {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    color: var(--color-text);
+    font-size: 13px;
+    font-weight: 600;
+  }
+  .feedback-field .counter { color: var(--color-text-muted); font-size: 11px; font-weight: 400; font-variant-numeric: tabular-nums; }
+  .feedback-field textarea { min-height: 150px; background: var(--color-surface-solid); box-shadow: 0 0 0 1px var(--color-border); }
+  .inline-error {
+    margin: 0;
+    padding: 7px 10px;
+    border-radius: var(--radius-control);
+    background: rgba(212, 61, 55, .10);
+    color: var(--color-danger);
+    font-size: 12px;
+  }
+
+  /* ---------- 页面框选与录制 ---------- */
   #pageSelectionMarker {
     position: fixed;
     z-index: 2147483640;
     border: 2px solid var(--color-brand);
-    border-radius: 6px;
+    border-radius: 8px;
     background: rgba(var(--color-brand-rgb), .04);
     box-shadow: 0 0 0 1px rgba(0,0,0,.38) inset, 0 4px 18px rgba(0,0,0,.16);
     cursor: move;
@@ -1388,45 +1610,54 @@
     z-index: 2147483644;
     display: flex;
     align-items: center;
-    gap: 6px;
-    min-height: 38px;
-    padding: 5px 6px;
-    border: 1px solid var(--color-border-strong);
-    border-radius: 10px;
-    background: var(--color-surface);
+    gap: 4px;
+    min-height: 40px;
+    padding: 4px;
+    border: 1px solid rgba(255, 255, 255, .6);
+    border-radius: 99px;
+    background: var(--glass-bg-strong);
+    -webkit-backdrop-filter: var(--glass-filter);
+    backdrop-filter: var(--glass-filter);
     color: var(--color-text);
-    box-shadow: 0 10px 34px rgba(0,0,0,.42);
+    box-shadow: var(--shadow-float);
     white-space: nowrap;
   }
   #selectionRecordBtn {
-    height: 34px;
-    padding: 0 12px;
+    height: 32px;
+    padding: 0 14px;
     border: 0;
-    border-radius: var(--radius-control);
+    border-radius: 99px;
     background: var(--color-danger);
     color: #fff;
-    font-weight: 850;
+    font-size: 13px;
+    font-weight: 700;
     cursor: pointer;
   }
-  #selectionRecordBtn.recording { background: #bf3935; }
+  #selectionRecordBtn:hover { background: var(--color-danger-hover); }
+  #selectionRecordBtn.recording { background: var(--color-danger-hover); }
   #selectionTimer {
-    min-width: 54px;
-    color: #ffaaa5;
-    font-size: 12px;
-    font-weight: 800;
+    min-width: 58px;
+    padding: 0 6px;
+    color: var(--color-danger);
+    font-size: 13px;
+    font-weight: 700;
     font-variant-numeric: tabular-nums;
     text-align: center;
   }
   #selectionReselectBtn, #selectionClearBtn {
-    height: 34px;
-    padding: 0 9px;
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-control);
-    background: var(--color-surface-raised);
+    height: 32px;
+    min-width: 32px;
+    padding: 0 12px;
+    border: 0;
+    border-radius: 99px;
+    background: transparent;
     color: var(--color-text-secondary);
     font-size: 12px;
+    font-weight: 600;
     cursor: pointer;
   }
+  #selectionClearBtn { padding: 0; }
+  #selectionReselectBtn:hover, #selectionClearBtn:hover { background: var(--color-fill); color: var(--color-text); }
   #selectionToolbar button:disabled { opacity: .48; cursor: not-allowed; }
 
   #pageSelectOverlay {
@@ -1441,7 +1672,7 @@
   #pageSelectBoundary {
     position: absolute;
     border: 2px dashed rgba(255,255,255,.9);
-    border-radius: 6px;
+    border-radius: 8px;
     box-shadow: 0 0 0 9999px rgba(0,0,0,.12);
     pointer-events: none;
   }
@@ -1449,42 +1680,65 @@
     position: absolute;
     display: none;
     border: 2px solid var(--color-brand);
-    border-radius: 6px;
+    border-radius: 8px;
     background: var(--color-brand-soft);
     box-shadow: 0 0 0 9999px rgba(0,0,0,.36);
+    pointer-events: none;
+  }
+  .page-select-hint {
+    position: fixed;
+    left: 50%;
+    top: 18px;
+    padding: 8px 16px;
+    border-radius: 99px;
+    background: var(--glass-bg-strong);
+    -webkit-backdrop-filter: var(--glass-filter);
+    backdrop-filter: var(--glass-filter);
+    color: var(--color-text);
+    font-size: 13px;
+    font-weight: 600;
+    box-shadow: var(--shadow-float);
+    transform: translateX(-50%);
     pointer-events: none;
   }
   #pageSelectCancel {
     position: fixed;
     right: 18px;
     top: 16px;
-    height: 40px;
-    padding: 0 13px;
-    border: 1px solid rgba(255,255,255,.2);
-    border-radius: var(--radius-control);
-    background: var(--color-surface);
+    height: 38px;
+    padding: 0 16px;
+    border: 0;
+    border-radius: 99px;
+    background: var(--glass-bg-strong);
+    -webkit-backdrop-filter: var(--glass-filter);
+    backdrop-filter: var(--glass-filter);
     color: var(--color-text);
+    font-weight: 600;
+    box-shadow: var(--shadow-float);
     cursor: pointer;
   }
 
   #toast {
     position: fixed;
     left: 50%;
-    bottom: 24px;
+    bottom: 28px;
     z-index: 2147483646;
     max-width: min(520px, calc(100vw - 28px));
     transform: translateX(-50%);
-    padding: 10px 14px;
-    border: 1px solid rgba(255,255,255,.15);
-    border-radius: var(--radius-control);
-    background: var(--color-surface-raised);
+    padding: 9px 16px;
+    border: 1px solid rgba(255, 255, 255, .6);
+    border-radius: 99px;
+    background: var(--glass-bg-strong);
+    -webkit-backdrop-filter: var(--glass-filter);
+    backdrop-filter: var(--glass-filter);
     color: var(--color-text);
-    font-size: 12px;
+    font-size: 12.5px;
+    font-weight: 500;
     line-height: 1.45;
-    box-shadow: 0 14px 40px rgba(0,0,0,.42);
+    box-shadow: var(--shadow-float);
     pointer-events: none;
   }
-  #toast.error { color: #ffaaa5; border-color: rgba(255,105,96,.32); }
+  #toast.error { color: var(--color-danger); }
   #toast.success { color: var(--color-success); }
 
   @media (prefers-reduced-motion: reduce) {
@@ -1495,7 +1749,8 @@
     textarea,
     input { transition-duration: 0.01ms !important; }
     #launcher.recording,
-    #pageSelectionMarker.recording { animation: none !important; }
+    #pageSelectionMarker.recording,
+    .sheet-layer { animation: none !important; }
     #timelineFilmstrip,
     #timelineTrack.timeline-refitting .timeline-handle,
     #timelineTrack.timeline-refitting #timelineSelected,
@@ -1511,10 +1766,11 @@
       max-height: calc(100dvh - 20px);
     }
     .panel-resize-handle { display: none; }
-    .header { min-height: 54px; }
+    .header { min-height: 52px; cursor: default; }
     .icon-btn { width: 40px; height: 40px; }
-    .action-dock { padding-bottom: max(10px, env(safe-area-inset-bottom)); }
-    .action-dock .btn { min-height: 44px; }
+    .segmented-option { height: 32px; }
+    .dock { padding-bottom: max(12px, env(safe-area-inset-bottom)); }
+    .action-dock .btn { min-height: 46px; }
     #pageSelectCancel { min-height: 44px; }
     #selectionRecordBtn, #selectionReselectBtn, #selectionClearBtn { min-height: 40px; }
   }
@@ -1525,7 +1781,7 @@
   // src/ui/panel.html
   var require_panel2 = __commonJS({
     "src/ui/panel.html"(exports, module) {
-      module.exports = '\n\n<button id="launcher" title="框选视频制作 GIF" aria-label="贝报GIF助手"></button>\n\n<section id="panel" class="hidden" aria-label="__SCRIPT_NAME__">\n  <div class="header">\n    <div class="title-row">\n      <div class="title">贝报GIF助手</div>\n      <button id="versionBtn" type="button"></button>\n    </div>\n    <div class="header-actions">\n      <div class="shortcut-setting">\n        <input id="shortcutInput" class="shortcut-input" type="text" readonly aria-label="启动快捷键" title="点击后按下新快捷键" value="Ctrl+Z">\n      </div>\n      <button id="closeBtn" class="icon-btn" type="button" title="关闭">✕</button>\n    </div>\n  </div>\n\n  <div class="body">\n    <div id="editStage" class="hidden">\n      <div class="workspace">\n        <div class="preview-toolbar">\n          <div class="aspect-switch" role="group" aria-label="裁剪比例">\n            <button id="aspectFreeBtn" class="edit-lockable" type="button" aria-pressed="true" title="自由裁剪">自由</button>\n            <button id="aspectSquareBtn" class="edit-lockable" type="button" aria-pressed="false" title="锁定裁剪比例为 1:1">1:1</button>\n          </div>\n          <button id="editorScreenshotBtn" class="toolbar-btn edit-lockable" type="button" title="截取当前帧（裁剪区域，原始分辨率 PNG）" aria-label="截图">\n            <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="currentColor" fill-rule="evenodd" d="M8 5l1.5-2h5L16 5h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z M12 8a4.5 4.5 0 1 0 0 9a4.5 4.5 0 0 0 0-9z"/></svg>\n          </button>\n        </div>\n        <div id="editorPreviewWrap">\n          <div id="editorMotionLayer">\n            <video id="clipVideo" muted playsinline preload="auto"></video>\n            <video id="scrubVideo" muted playsinline preload="auto" aria-hidden="true"></video>\n            <canvas id="previewCanvas" aria-hidden="true"></canvas>\n            <div id="editorOverlay">\n              <div id="editorBoundary"></div>\n              <div id="editorCropBox">\n                <span id="cropSizeBadge" aria-hidden="true">-- × --</span>\n                <i class="crop-handle" data-resize="n"></i>\n                <i class="crop-handle" data-resize="s"></i>\n                <i class="crop-handle" data-resize="e"></i>\n                <i class="crop-handle" data-resize="w"></i>\n                <i class="crop-handle" data-resize="nw"></i>\n                <i class="crop-handle" data-resize="ne"></i>\n                <i class="crop-handle" data-resize="sw"></i>\n                <i class="crop-handle" data-resize="se"></i>\n              </div>\n            </div>\n            <div id="captionLayer"></div>\n          </div>\n        </div>\n\n        <div class="trim-block">\n          <div id="timelineTrack" class="edit-lockable" aria-label="片段剪辑时间轴">\n            <div id="timelineFilmstrip" aria-hidden="true"></div>\n            <div id="timelineRail"></div>\n            <div id="timelineSelected"></div>\n            <div id="timelinePlayhead"></div>\n            <button id="timelineStartHandle" class="timeline-handle" data-timeline-handle="start" title="拖动设置起点"></button>\n            <button id="timelineEndHandle" class="timeline-handle" data-timeline-handle="end" title="拖动设置终点"></button>\n          </div>\n          <div class="timeline-labels">\n            <span id="trimStartValue">00:00.000</span>\n            <span id="trimSummary">1.00 秒</span>\n            <span id="trimEndValue">00:01.000</span>\n          </div>\n          <div class="preview-controls">\n            <button id="previewTrimBtn" class="btn secondary edit-lockable">▶ 播放</button>\n            <div id="previewPlaybackInfo" class="preview-playback-info hidden" aria-label="往返预览进度">\n              <span id="previewDirection">待预览</span>\n              <span id="previewCycleTime"></span>\n            </div>\n            <div id="liveModeSwitch" class="live-mode-switch hidden" role="group" aria-label="下次录制模式">\n              <button id="liveRewindModeBtn" type="button" class="edit-lockable" aria-pressed="true">回溯</button>\n              <button id="liveForwardModeBtn" type="button" class="edit-lockable" aria-pressed="false">录制</button>\n            </div>\n          </div>\n        </div>\n      </div>\n\n      <div id="editorSettingsScroll">\n      <section class="compact-section">\n        <div class="section-head">\n          <span>文字</span>\n          <button id="addTextBtn" class="small-btn edit-lockable">＋ 添加</button>\n        </div>\n        <div id="textLayerTabs" class="text-tabs"></div>\n        <div id="textEditorEmpty" class="text-empty">暂无文字</div>\n        <div id="textEditor" class="hidden">\n          <textarea id="captionText" class="edit-lockable export-input" maxlength="120" placeholder="输入文字"></textarea>\n          <div class="grid-2 text-options">\n            <div class="field">\n              <label for="fontScale">大小 <span id="fontScaleValue">9%</span></label>\n              <input id="fontScale" class="edit-lockable export-input" type="range" min="0.035" max="0.30" step="0.005" value="0.09">\n            </div>\n            <div class="field">\n              <label for="strokeScale">描边</label>\n              <select id="strokeScale" class="edit-lockable export-input">\n                <option value="0.08">细</option>\n                <option value="0.14" selected>标准</option>\n                <option value="0.20">粗</option>\n              </select>\n            </div>\n            <div class="field">\n              <label for="textColor">文字颜色</label>\n              <div class="text-color-control">\n                <input id="textColor" class="edit-lockable export-input" type="color" value="#ffffff" title="自定义文字颜色" aria-label="自定义文字颜色">\n                <button type="button" class="color-swatch edit-lockable" data-text-color="#db7d74" style="--swatch-color: #db7d74" aria-label="文字颜色 #db7d74" aria-pressed="false" title="#db7d74"></button>\n                <button type="button" class="color-swatch edit-lockable" data-text-color="#576690" style="--swatch-color: #576690" aria-label="文字颜色 #576690" aria-pressed="false" title="#576690"></button>\n                <button type="button" class="color-swatch edit-lockable" data-text-color="#e799b0" style="--swatch-color: #e799b0" aria-label="文字颜色 #e799b0" aria-pressed="false" title="#e799b0"></button>\n              </div>\n            </div>\n            <div class="field">\n              <label for="strokeColor">描边颜色</label>\n              <input id="strokeColor" class="edit-lockable export-input" type="color" value="#ffffff">\n            </div>\n          </div>\n        </div>\n      </section>\n\n      <section class="compact-section">\n        <div class="section-head"><span>导出</span><span id="estimatedSize" class="size-estimate">预计 --</span></div>\n        <div class="grid-2">\n          <div class="field">\n            <label for="resolutionSelect">分辨率</label>\n            <select id="resolutionSelect" class="edit-lockable export-input"></select>\n          </div>\n          <div class="field">\n            <label for="fpsSelect">帧率</label>\n            <select id="fpsSelect" class="edit-lockable export-input">\n              <option value="8">8 FPS</option>\n              <option value="10">10 FPS</option>\n              <option value="12" selected>12 FPS</option>\n              <option value="15">15 FPS</option>\n              <option value="20">20 FPS</option>\n            </select>\n          </div>\n        </div>\n\n        <div class="grid-2 export-options">\n          <div class="field">\n            <label for="speedSelect">播放速度</label>\n            <select id="speedSelect" class="edit-lockable export-input">\n              <option value="0.75">0.75×</option>\n              <option value="1" selected>1.0×</option>\n              <option value="1.25">1.25×</option>\n              <option value="1.5">1.5×</option>\n            </select>\n          </div>\n          <div class="field">\n            <label for="qualitySelect">画质</label>\n            <select id="qualitySelect" class="edit-lockable export-input">\n              <option value="nai">高</option>\n              <option value="bei" selected>中</option>\n              <option value="ran">低</option>\n            </select>\n          </div>\n          <div class="field">\n            <label for="cornerRadiusSelect">圆角</label>\n            <select id="cornerRadiusSelect" class="edit-lockable export-input">\n              <option value="0" selected>无圆角</option>\n              <option value="0.04">4%</option>\n              <option value="0.08">8%</option>\n              <option value="0.12">12%</option>\n              <option value="0.16">16%</option>\n              <option value="0.24">24%</option>\n            </select>\n          </div>\n          <div class="field">\n            <label for="loopModeSelect">循环</label>\n            <select id="loopModeSelect" class="edit-lockable export-input">\n              <option value="none" selected>无</option>\n              <option value="pingpong">往返</option>\n              <option value="crossfade">淡入淡出</option>\n            </select>\n          </div>\n        </div>\n      </section>\n\n      <div id="status" class="hidden" role="status" aria-live="polite"></div>\n      <div id="progressWrap" class="progress-wrap hidden" role="progressbar" aria-label="GIF 导出进度" aria-valuemin="0" aria-valuemax="100"><div id="progress"></div></div>\n      </div>\n\n      <div id="mainActions" class="action-dock">\n        <button id="newRecordingBtn" class="btn secondary edit-lockable">重新录制</button>\n        <button id="generateBtn" class="btn primary edit-lockable"><span>导出 GIF</span><small id="actionEstimate">预计 --</small></button>\n      </div>\n      <div id="cancelExportWrap" class="action-dock one hidden">\n        <button id="cancelExportBtn" class="btn danger">取消导出</button>\n      </div>\n    </div>\n  </div>\n  <span class="panel-resize-handle" data-panel-resize="n" role="button" aria-label="调整窗口上边缘" tabindex="0"></span>\n  <span class="panel-resize-handle" data-panel-resize="s" role="button" aria-label="调整窗口下边缘" tabindex="0"></span>\n  <span class="panel-resize-handle" data-panel-resize="e" role="button" aria-label="调整窗口右边缘" tabindex="0"></span>\n  <span class="panel-resize-handle" data-panel-resize="w" role="button" aria-label="调整窗口左边缘" tabindex="0"></span>\n  <span class="panel-resize-handle" data-panel-resize="nw" role="button" aria-label="调整窗口左上角" tabindex="0"></span>\n  <span class="panel-resize-handle" data-panel-resize="ne" role="button" aria-label="调整窗口右上角" tabindex="0"></span>\n  <span class="panel-resize-handle" data-panel-resize="sw" role="button" aria-label="调整窗口左下角" tabindex="0"></span>\n  <span class="panel-resize-handle" data-panel-resize="se" role="button" aria-label="调整窗口右下角" tabindex="0"></span>\n</section>\n\n<div id="pageSelectionMarker" class="hidden">\n  <i class="page-resize-handle" data-resize="n"></i>\n  <i class="page-resize-handle" data-resize="s"></i>\n  <i class="page-resize-handle" data-resize="e"></i>\n  <i class="page-resize-handle" data-resize="w"></i>\n  <i class="page-resize-handle" data-resize="nw"></i>\n  <i class="page-resize-handle" data-resize="ne"></i>\n  <i class="page-resize-handle" data-resize="sw"></i>\n  <i class="page-resize-handle" data-resize="se"></i>\n</div>\n\n<div id="selectionToolbar" class="hidden">\n  <button id="selectionRecordBtn">● 录制</button>\n  <span id="selectionTimer" class="hidden">00:00.0</span>\n  <button id="selectionReselectBtn">重选</button>\n  <button id="selectionClearBtn" title="清除选区">✕</button>\n</div>\n\n<div id="pageSelectOverlay" class="hidden">\n  <div id="pageSelectBoundary"></div>\n  <div id="pageSelectBox"></div>\n  <button id="pageSelectCancel">取消</button>\n</div>\n\n<div id="toast" class="hidden"></div>\n';
+      module.exports = '<button id="launcher" title="框选视频制作 GIF" aria-label="贝报GIF助手"></button>\n\n<section id="panel" class="hidden" aria-label="__SCRIPT_NAME__">\n  <div class="header">\n    <div class="title-row">\n      <span class="title-avatar" aria-hidden="true"></span>\n      <div class="title">贝报GIF助手</div>\n      <button id="versionBtn" type="button"></button>\n    </div>\n    <div class="header-actions">\n      <button id="feedbackBtn" class="icon-btn hidden" type="button" title="反馈" aria-label="反馈" aria-haspopup="dialog">\n        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M4 5.5A1.5 1.5 0 0 1 5.5 4h13A1.5 1.5 0 0 1 20 5.5v9a1.5 1.5 0 0 1-1.5 1.5H10l-4.2 3.6c-.3.3-.8 0-.8-.4V16h0a1 1 0 0 1-1-1z"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M8.5 8.8h7M8.5 11.8h4.5"/></svg>\n      </button>\n      <button id="settingsBtn" class="icon-btn" type="button" title="设置" aria-label="设置" aria-haspopup="dialog">\n        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M10.3 3.6a1.7 1.7 0 0 1 3.4 0l.1.6a1.7 1.7 0 0 0 2.5 1l.5-.3a1.7 1.7 0 0 1 2.4 2.4l-.3.5a1.7 1.7 0 0 0 1 2.5l.6.1a1.7 1.7 0 0 1 0 3.4l-.6.1a1.7 1.7 0 0 0-1 2.5l.3.5a1.7 1.7 0 0 1-2.4 2.4l-.5-.3a1.7 1.7 0 0 0-2.5 1l-.1.6a1.7 1.7 0 0 1-3.4 0l-.1-.6a1.7 1.7 0 0 0-2.5-1l-.5.3a1.7 1.7 0 0 1-2.4-2.4l.3-.5a1.7 1.7 0 0 0-1-2.5l-.6-.1a1.7 1.7 0 0 1 0-3.4l.6-.1a1.7 1.7 0 0 0 1-2.5l-.3-.5a1.7 1.7 0 0 1 2.4-2.4l.5.3a1.7 1.7 0 0 0 2.5-1z"/><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>\n      </button>\n      <button id="closeBtn" class="icon-btn" type="button" title="关闭" aria-label="关闭">\n        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></svg>\n      </button>\n    </div>\n  </div>\n\n  <div class="body">\n    <div id="editStage" class="hidden">\n      <div class="workspace">\n        <div class="preview-toolbar">\n          <div class="aspect-switch segmented" role="group" aria-label="裁剪比例">\n            <button id="aspectFreeBtn" class="segmented-option edit-lockable" type="button" aria-pressed="true" title="自由裁剪">自由</button>\n            <button id="aspectSquareBtn" class="segmented-option edit-lockable" type="button" aria-pressed="false" title="锁定裁剪比例为 1:1">1:1</button>\n          </div>\n          <div id="previewPlaybackInfo" class="preview-playback-info hidden" aria-label="往返预览进度">\n            <span id="previewDirection">待预览</span>\n            <span id="previewCycleTime"></span>\n          </div>\n          <button id="editorScreenshotBtn" class="toolbar-btn edit-lockable" type="button" title="截取当前帧（裁剪区域，原始分辨率 PNG）" aria-label="截图">\n            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" fill-rule="evenodd" d="M8 5l1.5-2h5L16 5h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z M12 8a4.5 4.5 0 1 0 0 9a4.5 4.5 0 0 0 0-9z"/></svg>\n          </button>\n        </div>\n        <div id="editorPreviewWrap">\n          <div id="editorMotionLayer">\n            <video id="clipVideo" muted playsinline preload="auto"></video>\n            <video id="scrubVideo" muted playsinline preload="auto" aria-hidden="true"></video>\n            <canvas id="previewCanvas" aria-hidden="true"></canvas>\n            <div id="editorOverlay">\n              <div id="editorBoundary"></div>\n              <div id="editorCropBox">\n                <span id="cropSizeBadge" aria-hidden="true">-- × --</span>\n                <i class="crop-handle" data-resize="n"></i>\n                <i class="crop-handle" data-resize="s"></i>\n                <i class="crop-handle" data-resize="e"></i>\n                <i class="crop-handle" data-resize="w"></i>\n                <i class="crop-handle" data-resize="nw"></i>\n                <i class="crop-handle" data-resize="ne"></i>\n                <i class="crop-handle" data-resize="sw"></i>\n                <i class="crop-handle" data-resize="se"></i>\n              </div>\n            </div>\n            <div id="captionLayer"></div>\n          </div>\n        </div>\n\n        <div class="trim-block">\n          <button id="previewTrimBtn" class="play-btn edit-lockable" type="button">▶ 播放</button>\n          <div class="timeline-col">\n            <div id="timelineTrack" class="edit-lockable" aria-label="片段剪辑时间轴">\n              <div class="timeline-clip" aria-hidden="true">\n                <div id="timelineFilmstrip"></div>\n                <div id="timelineRail"></div>\n                <div id="timelineSelected"></div>\n              </div>\n              <div id="timelinePlayhead"></div>\n              <button id="timelineStartHandle" class="timeline-handle" type="button" data-timeline-handle="start" title="拖动设置起点" aria-label="起点"></button>\n              <button id="timelineEndHandle" class="timeline-handle" type="button" data-timeline-handle="end" title="拖动设置终点" aria-label="终点"></button>\n            </div>\n            <div class="timeline-labels">\n              <span id="trimStartValue">00:00.000</span>\n              <span id="trimSummary">1.00 秒</span>\n              <span id="trimEndValue">00:01.000</span>\n            </div>\n          </div>\n        </div>\n      </div>\n\n      <div id="editorSettingsScroll">\n        <div class="settings-tabs segmented wide" role="tablist" aria-label="编辑选项">\n          <button id="settingsTabExport" class="segmented-option" type="button" role="tab" aria-selected="true" aria-controls="settingsPanelExport">导出</button>\n          <button id="settingsTabEffects" class="segmented-option" type="button" role="tab" aria-selected="false" aria-controls="settingsPanelEffects">效果</button>\n          <button id="settingsTabText" class="segmented-option" type="button" role="tab" aria-selected="false" aria-controls="settingsPanelText">文字</button>\n        </div>\n        <section id="settingsPanelExport" class="settings-group" role="tabpanel" aria-labelledby="settingsTabExport">\n          <div class="setting-row">\n            <label for="resolutionSelect">尺寸</label>\n            <div class="select-wrap"><select id="resolutionSelect" class="edit-lockable export-input"></select></div>\n          </div>\n          <div class="setting-row">\n            <label for="fpsSelect">帧率</label>\n            <select id="fpsSelect" class="edit-lockable export-input" data-segmented>\n              <option value="8" title="8 FPS">8</option>\n              <option value="10" title="10 FPS">10</option>\n              <option value="12" title="12 FPS" selected>12</option>\n              <option value="15" title="15 FPS">15</option>\n              <option value="20" title="20 FPS">20</option>\n            </select>\n          </div>\n          <div class="setting-row">\n            <label for="qualitySelect">画质</label>\n            <select id="qualitySelect" class="edit-lockable export-input" data-segmented>\n              <option value="nai" title="误差扩散抖动 + 无损优化">高</option>\n              <option value="bei" title="轻度有损压缩" selected>中</option>\n              <option value="ran" title="更高压缩强度">低</option>\n            </select>\n          </div>\n          <span id="estimatedSize" class="size-estimate">预计 --</span>\n        </section>\n        <section id="settingsPanelEffects" class="settings-group hidden" role="tabpanel" aria-labelledby="settingsTabEffects">\n          <div class="setting-row">\n            <label for="speedSelect">速度</label>\n            <select id="speedSelect" class="edit-lockable export-input" data-segmented>\n              <option value="0.75">0.75×</option>\n              <option value="1" selected>1×</option>\n              <option value="1.25">1.25×</option>\n              <option value="1.5">1.5×</option>\n            </select>\n          </div>\n          <div class="setting-row">\n            <label for="loopModeSelect">循环</label>\n            <select id="loopModeSelect" class="edit-lockable export-input" data-segmented>\n              <option value="none" selected>无</option>\n              <option value="pingpong">往返</option>\n              <option value="crossfade">淡入淡出</option>\n            </select>\n          </div>\n          <div class="setting-row">\n            <label for="cornerRadiusSelect">圆角</label>\n            <select id="cornerRadiusSelect" class="edit-lockable export-input" data-segmented>\n              <option value="0" selected>无</option>\n              <option value="0.04">4%</option>\n              <option value="0.08">8%</option>\n              <option value="0.12">12%</option>\n              <option value="0.16">16%</option>\n              <option value="0.24">24%</option>\n            </select>\n          </div>\n        </section>\n        <section id="settingsPanelText" class="settings-group text-group hidden" role="tabpanel" aria-labelledby="settingsTabText">\n          <div class="text-toolbar">\n            <div id="textLayerTabs" class="text-tabs"></div>\n            <button id="addTextBtn" class="small-btn edit-lockable" type="button">＋ 添加</button>\n          </div>\n          <div id="textEditorEmpty" class="text-empty">还没有文字。点「＋ 添加」后可直接在画面上拖动位置。</div>\n          <div id="textEditor" class="hidden">\n            <textarea id="captionText" class="edit-lockable export-input" maxlength="120" rows="2" placeholder="输入文字"></textarea>\n            <div class="setting-row">\n              <label for="fontScale">大小</label>\n              <div class="range-control">\n                <input id="fontScale" class="edit-lockable export-input" type="range" min="0.035" max="0.30" step="0.005" value="0.09">\n                <span id="fontScaleValue">9%</span>\n              </div>\n            </div>\n            <div class="setting-row">\n              <label for="textColor">颜色</label>\n              <div class="color-row">\n                <button type="button" class="color-swatch edit-lockable" data-text-color="#ffffff" style="--swatch-color: #ffffff" aria-label="文字颜色 白色" aria-pressed="false" title="白色"></button>\n                <button type="button" class="color-swatch edit-lockable" data-text-color="#db7d74" style="--swatch-color: #db7d74" aria-label="文字颜色 #db7d74" aria-pressed="false" title="#db7d74"></button>\n                <button type="button" class="color-swatch edit-lockable" data-text-color="#576690" style="--swatch-color: #576690" aria-label="文字颜色 #576690" aria-pressed="false" title="#576690"></button>\n                <button type="button" class="color-swatch edit-lockable" data-text-color="#e799b0" style="--swatch-color: #e799b0" aria-label="文字颜色 #e799b0" aria-pressed="false" title="#e799b0"></button>\n                <input id="textColor" class="edit-lockable export-input custom-color" type="color" value="#ffffff" title="自定义文字颜色" aria-label="自定义文字颜色">\n              </div>\n            </div>\n            <div class="setting-row">\n              <label for="strokeScale">描边</label>\n              <div class="stroke-control">\n                <select id="strokeScale" class="edit-lockable export-input" data-segmented>\n                  <option value="0.08">细</option>\n                  <option value="0.14" selected>标准</option>\n                  <option value="0.2">粗</option>\n                </select>\n                <input id="strokeColor" class="edit-lockable export-input" type="color" value="#ffffff" title="描边颜色" aria-label="描边颜色">\n              </div>\n            </div>\n          </div>\n        </section>\n      </div>\n\n      <div class="dock">\n        <div id="status" class="hidden" role="status" aria-live="polite"></div>\n        <div id="progressWrap" class="progress-wrap hidden" role="progressbar" aria-label="GIF 导出进度" aria-valuemin="0" aria-valuemax="100"><div id="progress"></div></div>\n        <div id="mainActions" class="action-dock">\n          <button id="newRecordingBtn" class="btn secondary edit-lockable" type="button">重新录制</button>\n          <button id="generateBtn" class="btn primary edit-lockable" type="button"><span>导出 GIF</span><small id="actionEstimate">预计 --</small></button>\n        </div>\n        <div id="cancelExportWrap" class="action-dock one hidden">\n          <button id="cancelExportBtn" class="btn danger" type="button">取消导出</button>\n        </div>\n      </div>\n    </div>\n\n    <div id="settingsSheet" class="sheet-layer hidden" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">\n      <div class="sheet">\n        <div class="sheet-head">\n          <button id="settingsCloseBtn" class="icon-btn" type="button" title="返回编辑" aria-label="返回编辑">\n            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M14.5 5.5L8 12l6.5 6.5"/></svg>\n          </button>\n          <h2 id="settingsTitle">设置</h2>\n        </div>\n        <div class="sheet-body">\n          <section class="sheet-card">\n            <div class="sheet-row">\n              <div class="sheet-row-text">\n                <label class="sheet-label" for="shortcutInput">启动快捷键</label>\n                <div class="sheet-hint">点击后按下新的组合键，需包含 Ctrl、Alt 或 Meta。在输入框里打字时不会触发。</div>\n              </div>\n              <input id="shortcutInput" class="shortcut-input" type="text" readonly title="点击后按下新快捷键" value="Ctrl+Z">\n            </div>\n          </section>\n          <section id="liveModeSwitch" class="sheet-card hidden" role="group" aria-labelledby="liveModeLabel">\n            <div class="sheet-label" id="liveModeLabel">直播剪辑方式</div>\n            <div class="segmented wide">\n              <button id="liveRewindModeBtn" type="button" class="segmented-option edit-lockable" aria-pressed="true">回溯</button>\n              <button id="liveForwardModeBtn" type="button" class="segmented-option edit-lockable" aria-pressed="false">录制</button>\n            </div>\n            <div class="sheet-hint">回溯：点击后直接剪辑此前最多 60 秒。录制：从点击时开始框选录制，最长 60 秒。切到录制会释放回溯缓存，切回后需要重新预热。</div>\n          </section>\n        </div>\n      </div>\n    </div>\n\n    <form id="feedbackSheet" class="sheet-layer hidden" role="dialog" aria-modal="true" aria-labelledby="feedbackTitle" novalidate>\n      <div class="sheet">\n        <div class="sheet-head">\n          <button id="feedbackCloseBtn" class="icon-btn" type="button" title="返回编辑" aria-label="返回编辑">\n            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M14.5 5.5L8 12l6.5 6.5"/></svg>\n          </button>\n          <h2 id="feedbackTitle">反馈</h2>\n        </div>\n        <div class="sheet-body">\n          <div class="segmented wide" role="group" aria-label="反馈类型">\n            <button type="button" class="segmented-option" data-feedback-kind="issue" aria-pressed="true">问题反馈</button>\n            <button type="button" class="segmented-option" data-feedback-kind="suggestion" aria-pressed="false">功能建议</button>\n          </div>\n          <div class="feedback-field">\n            <label for="feedbackText"><span id="feedbackFieldLabel">遇到了什么问题</span><span id="feedbackCounter" class="counter">0/2000</span></label>\n            <textarea id="feedbackText" rows="7" maxlength="2000"></textarea>\n          </div>\n          <p class="sheet-hint">会一起附上插件版本、浏览器和当前页面与片段信息，方便排查。</p>\n          <p id="feedbackError" class="inline-error hidden" role="alert"></p>\n          <button id="feedbackSubmitBtn" class="btn primary" type="submit" disabled>发送问题反馈</button>\n        </div>\n      </div>\n    </form>\n  </div>\n  <span class="panel-resize-handle" data-panel-resize="n" role="button" aria-label="调整窗口上边缘" tabindex="0"></span>\n  <span class="panel-resize-handle" data-panel-resize="s" role="button" aria-label="调整窗口下边缘" tabindex="0"></span>\n  <span class="panel-resize-handle" data-panel-resize="e" role="button" aria-label="调整窗口右边缘" tabindex="0"></span>\n  <span class="panel-resize-handle" data-panel-resize="w" role="button" aria-label="调整窗口左边缘" tabindex="0"></span>\n  <span class="panel-resize-handle" data-panel-resize="nw" role="button" aria-label="调整窗口左上角" tabindex="0"></span>\n  <span class="panel-resize-handle" data-panel-resize="ne" role="button" aria-label="调整窗口右上角" tabindex="0"></span>\n  <span class="panel-resize-handle" data-panel-resize="sw" role="button" aria-label="调整窗口左下角" tabindex="0"></span>\n  <span class="panel-resize-handle" data-panel-resize="se" role="button" aria-label="调整窗口右下角" tabindex="0"></span>\n</section>\n\n<div id="pageSelectionMarker" class="hidden">\n  <i class="page-resize-handle" data-resize="n"></i>\n  <i class="page-resize-handle" data-resize="s"></i>\n  <i class="page-resize-handle" data-resize="e"></i>\n  <i class="page-resize-handle" data-resize="w"></i>\n  <i class="page-resize-handle" data-resize="nw"></i>\n  <i class="page-resize-handle" data-resize="ne"></i>\n  <i class="page-resize-handle" data-resize="sw"></i>\n  <i class="page-resize-handle" data-resize="se"></i>\n</div>\n\n<div id="selectionToolbar" class="hidden">\n  <button id="selectionRecordBtn" type="button">● 录制</button>\n  <span id="selectionTimer" class="hidden">00:00.0</span>\n  <button id="selectionReselectBtn" type="button">重选</button>\n  <button id="selectionClearBtn" type="button" title="清除选区" aria-label="清除选区">✕</button>\n</div>\n\n<div id="pageSelectOverlay" class="hidden">\n  <div id="pageSelectBoundary"></div>\n  <div id="pageSelectBox"></div>\n  <div class="page-select-hint">拖动框选要录制的画面 · Esc 取消</div>\n  <button id="pageSelectCancel" type="button">取消</button>\n</div>\n\n<div id="toast" class="hidden"></div>\n';
     }
   });
 
@@ -1541,6 +1797,667 @@
         return `<style>${panelCss}</style>${html}`;
       }
       module.exports = { buildPanelTemplate };
+    }
+  });
+
+  // src/ui/controls.js
+  var require_controls = __commonJS({
+    "src/ui/controls.js"(exports, module) {
+      "use strict";
+      init_define_SCRIPT_METADATA();
+      var SEGMENTED_SELECTOR = "select[data-segmented]";
+      var syncers = /* @__PURE__ */ new WeakMap();
+      function syncSegmentedSelect(select) {
+        syncers.get(select)?.();
+      }
+      function enhanceSegmentedSelect(select) {
+        if (!select || select.dataset.segmentedReady === "true") return null;
+        const doc = select.ownerDocument;
+        const group = doc.createElement("div");
+        group.className = "segmented";
+        group.setAttribute("role", "radiogroup");
+        const labelledBy = select.id ? select.getRootNode().querySelector?.(`label[for="${select.id}"]`) : null;
+        if (labelledBy) {
+          if (!labelledBy.id) labelledBy.id = `${select.id}Label`;
+          group.setAttribute("aria-labelledby", labelledBy.id);
+        } else if (select.getAttribute("aria-label")) {
+          group.setAttribute("aria-label", select.getAttribute("aria-label"));
+        }
+        select.dataset.segmentedReady = "true";
+        select.classList.add("segmented-source");
+        select.tabIndex = -1;
+        select.setAttribute("aria-hidden", "true");
+        select.insertAdjacentElement("afterend", group);
+        const buttons = () => Array.from(group.querySelectorAll(".segmented-option"));
+        function sync() {
+          const current = select.value;
+          for (const button of buttons()) {
+            const checked = button.dataset.value === current;
+            button.setAttribute("aria-checked", String(checked));
+            button.tabIndex = checked ? 0 : -1;
+          }
+        }
+        function render() {
+          group.textContent = "";
+          for (const option of Array.from(select.options)) {
+            const button = doc.createElement("button");
+            button.type = "button";
+            button.className = "segmented-option edit-lockable";
+            button.setAttribute("role", "radio");
+            button.dataset.value = option.value;
+            button.textContent = option.textContent;
+            if (option.title) button.title = option.title;
+            button.disabled = select.disabled;
+            group.appendChild(button);
+          }
+          sync();
+        }
+        function choose(value, focus) {
+          const target = buttons().find((button) => button.dataset.value === value);
+          if (!target || target.disabled) return;
+          if (focus) target.focus();
+          if (select.value === value) return;
+          select.value = value;
+          const EventCtor = doc.defaultView?.Event || Event;
+          select.dispatchEvent(new EventCtor("input", { bubbles: true }));
+          select.dispatchEvent(new EventCtor("change", { bubbles: true }));
+        }
+        group.addEventListener("click", (event) => {
+          const button = event.target.closest?.(".segmented-option");
+          if (button && group.contains(button)) choose(button.dataset.value, false);
+        });
+        group.addEventListener("keydown", (event) => {
+          const step = { ArrowLeft: -1, ArrowUp: -1, ArrowRight: 1, ArrowDown: 1 }[event.key];
+          const all = buttons();
+          let index = all.findIndex((button) => button.dataset.value === select.value);
+          if (event.key === "Home") index = 0;
+          else if (event.key === "End") index = all.length - 1;
+          else if (step) index = Math.min(all.length - 1, Math.max(0, index + step));
+          else return;
+          event.preventDefault();
+          if (all[index]) choose(all[index].dataset.value, true);
+        });
+        syncers.set(select, sync);
+        select.addEventListener("change", sync);
+        select.addEventListener("input", sync);
+        const View = doc.defaultView;
+        if (View?.MutationObserver) {
+          new View.MutationObserver(render).observe(select, { childList: true, subtree: true });
+        }
+        render();
+        return group;
+      }
+      function enhanceSegmentedSelects(root) {
+        return Array.from(root.querySelectorAll(SEGMENTED_SELECTOR)).map(enhanceSegmentedSelect).filter(Boolean);
+      }
+      function bindSheet(sheet, { openers = [], closers = [], onOpen, onClose } = {}) {
+        let returnFocus = null;
+        const isOpen = () => !sheet.classList.contains("hidden");
+        function setOpen(open, opener = null) {
+          if (open === isOpen()) return;
+          sheet.classList.toggle("hidden", !open);
+          for (const button of openers) button.setAttribute("aria-expanded", String(open));
+          if (open) {
+            returnFocus = opener;
+            onOpen?.();
+          } else {
+            onClose?.();
+            const target = returnFocus;
+            returnFocus = null;
+            target?.focus?.();
+          }
+        }
+        for (const button of openers) {
+          button.setAttribute("aria-expanded", "false");
+          button.addEventListener("click", () => setOpen(!isOpen(), button));
+        }
+        for (const button of closers) button.addEventListener("click", () => setOpen(false));
+        sheet.addEventListener("keydown", (event) => {
+          if (event.key !== "Escape" || event.defaultPrevented) return;
+          event.preventDefault();
+          event.stopPropagation();
+          setOpen(false);
+        });
+        return { open: (opener) => setOpen(true, opener), close: () => setOpen(false), isOpen };
+      }
+      function bindTabs(tablist, { onChange } = {}) {
+        const tabs = Array.from(tablist.querySelectorAll('[role="tab"]'));
+        const root = tablist.getRootNode();
+        const panelOf = (tab) => root.getElementById?.(tab.getAttribute("aria-controls"));
+        function select(tab, focus = false) {
+          if (!tab) return;
+          for (const item of tabs) {
+            const selected = item === tab;
+            item.setAttribute("aria-selected", String(selected));
+            item.tabIndex = selected ? 0 : -1;
+            panelOf(item)?.classList.toggle("hidden", !selected);
+          }
+          if (focus) tab.focus();
+          onChange?.(tab);
+        }
+        tablist.addEventListener("click", (event) => {
+          const tab = event.target.closest?.('[role="tab"]');
+          if (tab && tabs.includes(tab)) select(tab);
+        });
+        tablist.addEventListener("keydown", (event) => {
+          const step = { ArrowLeft: -1, ArrowRight: 1 }[event.key];
+          if (!step) return;
+          event.preventDefault();
+          const current = tabs.findIndex((tab) => tab.getAttribute("aria-selected") === "true");
+          select(tabs[(current + step + tabs.length) % tabs.length], true);
+        });
+        select(tabs.find((tab) => tab.getAttribute("aria-selected") === "true") || tabs[0]);
+        return { select: (id) => select(tabs.find((tab) => tab.id === id)) };
+      }
+      module.exports = { enhanceSegmentedSelects, enhanceSegmentedSelect, syncSegmentedSelect, bindSheet, bindTabs };
+    }
+  });
+
+  // src/ui/feedback.js
+  var require_feedback = __commonJS({
+    "src/ui/feedback.js"(exports, module) {
+      "use strict";
+      init_define_SCRIPT_METADATA();
+      var KINDS = Object.freeze({
+        issue: Object.freeze({
+          label: "问题反馈",
+          field: "遇到了什么问题",
+          placeholder: "在哪个页面、做了什么操作、出现了什么情况。需要回复的话，可以留下联系方式。"
+        }),
+        suggestion: Object.freeze({
+          label: "功能建议",
+          field: "想要什么功能或改进",
+          placeholder: "想用它做什么、现在哪里不方便。需要回复的话，可以留下联系方式。"
+        })
+      });
+      var FAILURES = Object.freeze({
+        rate_limited: "提交太频繁了，请过一分钟再试。",
+        failed: "没有发送成功，请检查网络后重试。"
+      });
+      function bindFeedbackForm({ form, send, onSent, limit = 2e3 }) {
+        const $ = (selector) => form.querySelector(selector);
+        const textarea = $("#feedbackText");
+        const counter = $("#feedbackCounter");
+        const fieldLabel = $("#feedbackFieldLabel");
+        const error = $("#feedbackError");
+        const submit = $("#feedbackSubmitBtn");
+        const kindButtons = Array.from(form.querySelectorAll("[data-feedback-kind]"));
+        let kind = "issue";
+        let sending = false;
+        function setError(message) {
+          error.textContent = message || "";
+          error.classList.toggle("hidden", !message);
+        }
+        function render() {
+          const current = KINDS[kind];
+          for (const button of kindButtons) {
+            button.setAttribute("aria-pressed", String(button.dataset.feedbackKind === kind));
+            button.disabled = sending;
+          }
+          fieldLabel.textContent = current.field;
+          textarea.placeholder = current.placeholder;
+          textarea.disabled = sending;
+          counter.textContent = `${textarea.value.length}/${limit}`;
+          submit.disabled = sending || !textarea.value.trim();
+          submit.textContent = sending ? "正在发送…" : `发送${current.label}`;
+        }
+        for (const button of kindButtons) {
+          button.addEventListener("click", () => {
+            if (sending || !KINDS[button.dataset.feedbackKind]) return;
+            kind = button.dataset.feedbackKind;
+            setError("");
+            render();
+          });
+        }
+        textarea.addEventListener("input", () => {
+          setError("");
+          render();
+        });
+        form.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const message = textarea.value.trim();
+          if (!message || sending) return;
+          sending = true;
+          setError("");
+          render();
+          let result = "failed";
+          try {
+            result = await send(kind, message);
+          } catch (_) {
+            result = "failed";
+          }
+          sending = false;
+          if (result !== "sent") {
+            setError(FAILURES[result] || FAILURES.failed);
+            render();
+            return;
+          }
+          const label = KINDS[kind].label;
+          textarea.value = "";
+          render();
+          onSent?.(label);
+        });
+        render();
+        return {
+          focus: () => textarea.focus({ preventScroll: true }),
+          reset() {
+            if (sending) return;
+            setError("");
+            render();
+          }
+        };
+      }
+      module.exports = { bindFeedbackForm, FEEDBACK_KINDS: KINDS };
+    }
+  });
+
+  // src/log-redaction.js
+  var require_log_redaction = __commonJS({
+    "src/log-redaction.js"(exports, module) {
+      "use strict";
+      init_define_SCRIPT_METADATA();
+      var REDACTED = "[REDACTED]";
+      var secretNames = /* @__PURE__ */ new Set([
+        "cookie",
+        "setcookie",
+        "authorization",
+        "proxyauthorization",
+        "password",
+        "passwd",
+        "token",
+        "accesstoken",
+        "refreshtoken",
+        "idtoken",
+        "authtoken",
+        "bearertoken",
+        "apikey",
+        "secret",
+        "clientsecret",
+        "apisecret",
+        "secretkey",
+        "privatekey",
+        "accesskeyid",
+        "secretaccesskey",
+        "signature",
+        "sign",
+        "authkey",
+        "auth",
+        "sessdata",
+        "bilijct",
+        "wrid",
+        "wssecret",
+        "upsig",
+        "hdnts",
+        "hdnea"
+      ]);
+      function secretName(name) {
+        const normalized = name.toLowerCase().replace(/[-_\s]/g, "");
+        return secretNames.has(normalized) || /(?:token|cookie|password|secret|signature|apikey)$/.test(normalized) || /^(?:xamz|xgoog)(?:credential|signature|securitytoken)$/.test(normalized) || /^(?:xapi|xauth)(?:key|token)$/.test(normalized);
+      }
+      function redactUrl(raw) {
+        try {
+          const url = new URL(raw);
+          if (url.username || url.password) {
+            url.username = REDACTED;
+            url.password = "";
+          }
+          for (const key of new Set(url.searchParams.keys())) {
+            if (secretName(key)) url.searchParams.set(key, REDACTED);
+          }
+          if (url.hash.includes("=")) {
+            const fragment = new URLSearchParams(url.hash.slice(1));
+            for (const key of new Set(fragment.keys())) {
+              if (secretName(key)) fragment.set(key, REDACTED);
+            }
+            url.hash = fragment.toString();
+          }
+          return url.href;
+        } catch {
+          return raw;
+        }
+      }
+      function redactText(value) {
+        return value.replace(/https?:\/\/[^\s<>"']+/gi, redactUrl).replace(
+          /\b((?:set-cookie|cookie|proxy-authorization|authorization)\s*[:=])\s*[^\r\n]*/gi,
+          (_, prefix) => `${prefix} ${REDACTED}`
+        ).replace(/\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi, REDACTED).replace(
+          /(["']?)([A-Za-z][A-Za-z0-9_-]*)\1\s*([=:])\s*(\[REDACTED\]|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;&}\]]+)/g,
+          (match, quote, key, separator) => secretName(key) ? `${quote}${key}${quote}${separator}${REDACTED}` : match
+        );
+      }
+      function redactContext(value) {
+        if (typeof value === "string") return redactText(value);
+        if (Array.isArray(value)) return value.map(redactContext);
+        if (value !== null && typeof value === "object") {
+          return Object.fromEntries(
+            Object.entries(value).map(([key, item]) => [key, secretName(key) ? REDACTED : redactContext(item)])
+          );
+        }
+        return value;
+      }
+      module.exports = { redactText, redactContext };
+    }
+  });
+
+  // src/diagnostics.js
+  var require_diagnostics = __commonJS({
+    "src/diagnostics.js"(exports, module) {
+      "use strict";
+      init_define_SCRIPT_METADATA();
+      var { redactText } = require_log_redaction();
+      var SOURCE = "bella-gif-helper";
+      var FEEDBACK_LIMIT = 2e3;
+      var HEARTBEAT_MS = 1e4;
+      var STALL_MS = 3e4;
+      var MAX_BODY_BYTES = 65536;
+      var QUEUE_LIMIT = 32;
+      var idle = Object.freeze({ stage() {
+      }, progress() {
+      }, finish() {
+      }, fail() {
+      } });
+      function text(value, limit) {
+        if (typeof value !== "string") return void 0;
+        return redactText(value.slice(0, 65536)).replace(/https?:\/\/[^\s<>"']+/gi, (raw) => {
+          try {
+            const url = new URL(raw);
+            return `${url.origin}${url.pathname}`;
+          } catch (_) {
+            return raw.split(/[?#]/, 1)[0];
+          }
+        }).slice(0, limit);
+      }
+      var number = (value) => typeof value === "number" && Number.isFinite(value) ? value : void 0;
+      var fact = (value) => typeof value === "string" ? text(value, 256) : typeof value === "boolean" ? value : number(value);
+      function describe(error) {
+        if (!error || typeof error !== "object") return { message: text(String(error), 512) };
+        const result = { name: text(error.name, 128), message: text(error.message, 512) };
+        if (typeof error.status === "number") result.status = error.status;
+        if (error.code !== void 0) result.code = fact(error.code);
+        return result;
+      }
+      function errorDetail(error) {
+        if (!error || typeof error !== "object") return void 0;
+        const detail = describe(error);
+        const causes = [];
+        const seen = /* @__PURE__ */ new Set([error]);
+        for (let cause = error.cause; cause && causes.length < 3 && !seen.has(cause); cause = cause && cause.cause) {
+          seen.add(cause);
+          causes.push(describe(cause));
+        }
+        if (causes.length) detail.causes = causes;
+        return detail;
+      }
+      var PAGE_HOSTS = ["www.bilibili.com", "bilibili.com", "live.bilibili.com", "m.bilibili.com"];
+      function pageIdentity(value) {
+        try {
+          const url = new URL(value);
+          if (!PAGE_HOSTS.includes(url.hostname)) return void 0;
+          const part = url.searchParams.get("p");
+          return `${url.origin}${url.pathname}${part && /^\d+$/.test(part) ? `?p=${part}` : ""}`.slice(0, 1024);
+        } catch (_) {
+          return void 0;
+        }
+      }
+      function snapshot(details = {}) {
+        const clip = details.clip || {};
+        const selection = details.selection || {};
+        const settings = details.settings || {};
+        return {
+          page: pageIdentity(details.pageUrl),
+          mode: text(details.mode, 32),
+          clip: details.clip ? {
+            kind: text(clip.kind, 32),
+            duration: number(clip.duration),
+            width: number(clip.width),
+            height: number(clip.height)
+          } : void 0,
+          selection: details.selection ? { start: number(selection.start), end: number(selection.end) } : void 0,
+          settings: details.settings ? {
+            fps: number(settings.fps),
+            quality: text(settings.quality, 16),
+            width: number(settings.width),
+            height: number(settings.height),
+            speed: number(settings.speed),
+            loopMode: text(settings.loopMode, 16),
+            cornerRadius: number(settings.cornerRadius),
+            frames: number(settings.frames),
+            textLayers: number(settings.textLayers)
+          } : void 0,
+          estimatedBytes: number(details.estimatedBytes)
+        };
+      }
+      function post(request, endpoint, body) {
+        return new Promise((resolve) => {
+          try {
+            request({
+              method: "POST",
+              url: endpoint,
+              anonymous: true,
+              timeout: 8e3,
+              headers: { "Content-Type": "application/json" },
+              data: body,
+              onload: (result) => resolve(result.status),
+              onerror: () => resolve(0),
+              ontimeout: () => resolve(0),
+              onabort: () => resolve(null)
+            });
+          } catch (_) {
+            resolve(null);
+          }
+        });
+      }
+      async function transferNeedsRetry(request, endpoint, body) {
+        const status = await post(request, endpoint, body);
+        return status === 0 || status === 429 || status >= 500;
+      }
+      function createDiagnosticReporter({
+        endpoint = "",
+        request,
+        version = "0.0.0",
+        userAgent = "",
+        online = () => globalThis.navigator?.onLine !== false,
+        id = () => crypto.randomUUID(),
+        wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+        now = () => performance.now(),
+        clock = () => (/* @__PURE__ */ new Date()).toISOString(),
+        every = (fn, ms) => setInterval(fn, ms),
+        cancelTimer = (timer) => clearInterval(timer),
+        visibility = () => globalThis.document?.visibilityState ?? "unknown"
+      } = {}) {
+        const enabled = Boolean(endpoint) && typeof request === "function";
+        let pending = 0;
+        let dropped = 0;
+        const queue = [];
+        async function send(item) {
+          try {
+            if (await transferNeedsRetry(request, endpoint, item.body)) {
+              await wait(1e3);
+              if (online()) await transferNeedsRetry(request, endpoint, item.body);
+            }
+          } catch (_) {
+          } finally {
+            pending -= 1;
+            pump();
+          }
+        }
+        function pump() {
+          while (pending < 2 && queue.length) {
+            pending += 1;
+            void send(queue.shift());
+          }
+        }
+        function enqueue(item) {
+          if (!online()) {
+            dropped += 1;
+            return;
+          }
+          const obsolete = queue.findIndex((old) => old.operation === item.operation && old.periodic);
+          if (obsolete >= 0) queue.splice(obsolete, 1);
+          if (queue.length >= QUEUE_LIMIT) {
+            const expendable = queue.findIndex((old) => old.periodic);
+            if (item.periodic && expendable < 0) {
+              dropped += 1;
+              return;
+            }
+            queue.splice(Math.max(0, expendable), 1);
+            dropped += 1;
+          }
+          queue.push(item);
+          pump();
+        }
+        function begin(action, details = {}) {
+          if (!enabled) return idle;
+          const context = { ...snapshot(details), stage: "starting", timeline: [] };
+          const operation = id();
+          const started = now();
+          const startedAt = clock();
+          const stageTimes = {};
+          const lifecycle = action === "export";
+          let finished = false;
+          let sequence = 0;
+          let timer;
+          let stageStarted = started;
+          let lastAdvance = started;
+          let signature;
+          let nextHeartbeat = started + HEARTBEAT_MS;
+          function point() {
+            context.timeline.push({
+              elapsedMs: Math.max(0, now() - started),
+              stage: context.stage,
+              fraction: number(context.progress?.fraction),
+              frames: number(context.progress?.frames)
+            });
+            if (context.timeline.length > 60) context.timeline = context.timeline.filter((_, i) => i >= 30 || i % 2 === 0);
+          }
+          function stage(value) {
+            const next = text(value, 64);
+            if (finished || !next || next === context.stage) return;
+            const time = now();
+            stageTimes[context.stage] = (stageTimes[context.stage] ?? 0) + Math.max(0, time - stageStarted);
+            context.stage = next;
+            stageStarted = time;
+            lastAdvance = time;
+            point();
+          }
+          function publish(outcome, message, error, periodic = false) {
+            if (!lifecycle && outcome !== "failed") return;
+            try {
+              const time = now();
+              const elapsedMs = Math.max(0, time - started);
+              point();
+              const runtime = {
+                visibility: visibility(),
+                noAdvanceMs: Math.max(0, time - lastAdvance),
+                timerDelayMs: periodic ? Math.max(0, time - nextHeartbeat) : 0,
+                droppedLogs: dropped,
+                hardwareConcurrency: number(globalThis.navigator?.hardwareConcurrency),
+                deviceMemoryGiB: number(globalThis.navigator?.deviceMemory)
+              };
+              const heap = globalThis.performance?.memory;
+              if (heap) runtime.jsHeapBytes = number(heap.usedJSHeapSize);
+              const payload = {
+                id: `${operation}:${sequence}`,
+                source: SOURCE,
+                event: `${action}_${outcome}`,
+                level: outcome === "failed" ? "error" : outcome === "stalled" ? "warn" : "info",
+                version,
+                message: text(message, 4096) || "运行记录",
+                context: {
+                  ...context,
+                  browser: text(userAgent, 512),
+                  operation: {
+                    id: operation,
+                    action,
+                    outcome,
+                    sequence,
+                    startedAt,
+                    clientAt: clock(),
+                    elapsedMs
+                  },
+                  stageTimes: {
+                    ...stageTimes,
+                    [context.stage]: (stageTimes[context.stage] ?? 0) + Math.max(0, time - stageStarted)
+                  },
+                  runtime,
+                  ...error ? { errorName: text(error.name, 128), error: errorDetail(error), stack: text(error.stack, 8192) } : {}
+                }
+              };
+              sequence += 1;
+              let body = JSON.stringify(payload);
+              if (new TextEncoder().encode(body).byteLength > MAX_BODY_BYTES) {
+                payload.context.stack = void 0;
+                payload.context.truncated = true;
+                payload.message = payload.message.slice(0, 1024);
+                body = JSON.stringify(payload);
+              }
+              if (new TextEncoder().encode(body).byteLength <= MAX_BODY_BYTES) enqueue({ body, operation, periodic });
+            } catch (_) {
+            }
+          }
+          function complete(outcome, message, error) {
+            if (finished) return;
+            finished = true;
+            if (timer !== void 0) cancelTimer(timer);
+            publish(outcome, message, error);
+          }
+          if (lifecycle) {
+            publish("started", "导出开始");
+            timer = every(() => {
+              if (finished) return;
+              const stalled = now() - lastAdvance >= STALL_MS;
+              publish(stalled ? "stalled" : "progress", stalled ? "导出进度暂未推进" : "导出运行中", void 0, true);
+              nextHeartbeat = now() + HEARTBEAT_MS;
+            }, HEARTBEAT_MS);
+            timer?.unref?.();
+          }
+          return {
+            stage,
+            progress(value = {}) {
+              if (finished) return;
+              const next = [value.fraction, value.frames].join(":");
+              if (next !== signature) {
+                signature = next;
+                lastAdvance = now();
+              }
+              context.progress = { fraction: number(value.fraction), frames: number(value.frames) };
+              stage(value.phase);
+            },
+            finish(result = {}) {
+              if (finished) return;
+              context.result = { bytes: number(result.bytes), frames: number(result.frames) };
+              complete("completed", "导出完成");
+            },
+            fail(error, { canceled = false } = {}) {
+              if (canceled || error?.name === "AbortError") complete("canceled", "导出已取消");
+              else complete("failed", error?.message || String(error), error);
+            }
+          };
+        }
+        async function feedback(kind, message, details = {}) {
+          if (!enabled || !["issue", "suggestion"].includes(kind)) return "failed";
+          const body = String(message || "").trim();
+          if (!body) return "failed";
+          const payload = JSON.stringify({
+            id: id(),
+            source: SOURCE,
+            event: `feedback_${kind}`,
+            level: "info",
+            version,
+            message: text(body.slice(0, FEEDBACK_LIMIT), 4096),
+            context: {
+              ...snapshot(details),
+              browser: text(userAgent, 512),
+              clientAt: clock()
+            }
+          });
+          const status = await post(request, endpoint, payload);
+          if (status >= 200 && status < 300) return "sent";
+          return status === 429 ? "rate_limited" : "failed";
+        }
+        return { enabled, canFeedback: enabled, begin, feedback };
+      }
+      module.exports = { createDiagnosticReporter, pageIdentity, FEEDBACK_LIMIT };
     }
   });
 
@@ -1626,6 +2543,9 @@
       var { captureVideoPng, formatScreenshotFileName, installLiveScreenshot } = require_live_screenshot();
       var { createLoopPreviewClock, prepareLoopPreviewFrames } = require_loop_preview();
       var { buildPanelTemplate } = require_panel3();
+      var { enhanceSegmentedSelects, syncSegmentedSelect, bindSheet, bindTabs } = require_controls();
+      var { bindFeedbackForm } = require_feedback();
+      var { createDiagnosticReporter, FEEDBACK_LIMIT } = require_diagnostics();
       var { startPageBridge: startPageBridge2 } = (init_page_bridge(), __toCommonJS(page_bridge_exports));
       var LIVE_REWIND_BUFFER_SECONDS = 75;
       var LIVE_REWIND_TARGET_SECONDS = 60;
@@ -1640,6 +2560,8 @@
       var PANEL_MIN_WIDTH = 160;
       var PANEL_MAX_WIDTH = 720;
       var PANEL_MIN_HEIGHT = 360;
+      var PANEL_PREVIEW_RESERVE = 425;
+      var PANEL_PREVIEW_MIN = 240;
       var EXPORT_PHASE_RANGES = Object.freeze({
         palette: Object.freeze([0, 12]),
         extracting: Object.freeze([12, 68]),
@@ -3849,6 +4771,12 @@
         document.documentElement.appendChild(host);
         const shadow = host.attachShadow({ mode: "open" });
         shadow.innerHTML = buildPanelTemplate(SCRIPT_NAME);
+        enhanceSegmentedSelects(shadow);
+        for (const type of ["keydown", "keyup", "keypress"]) {
+          shadow.addEventListener(type, (event) => {
+            if (event.target?.matches?.("textarea")) event.stopPropagation();
+          });
+        }
         const $ = (selector) => shadow.querySelector(selector);
         const $$ = (selector) => [...shadow.querySelectorAll(selector)];
         const el = {
@@ -3858,6 +4786,13 @@
           header: $(".header"),
           shortcutInput: $("#shortcutInput"),
           closeBtn: $("#closeBtn"),
+          settingsBtn: $("#settingsBtn"),
+          feedbackBtn: $("#feedbackBtn"),
+          settingsSheet: $("#settingsSheet"),
+          settingsCloseBtn: $("#settingsCloseBtn"),
+          feedbackSheet: $("#feedbackSheet"),
+          feedbackCloseBtn: $("#feedbackCloseBtn"),
+          settingsTabs: $(".settings-tabs"),
           editStage: $("#editStage"),
           editorSettingsScroll: $("#editorSettingsScroll"),
           pageSelectionMarker: $("#pageSelectionMarker"),
@@ -3927,6 +4862,30 @@
           status: $("#status"),
           toast: $("#toast")
         };
+        const diagnostics = createDiagnosticReporter({
+          endpoint: true ? "" : "",
+          request: typeof GM_xmlhttpRequest === "function" ? (options) => GM_xmlhttpRequest(options) : void 0,
+          version: define_SCRIPT_METADATA_default.version,
+          userAgent: navigator.userAgent
+        });
+        let closePanelSheets = () => {
+        };
+        function diagnosticDetails(extra = {}) {
+          const clip = state.clip;
+          let mode = "video_record";
+          if (IS_LIVE_PAGE) mode = state.liveCaptureMode === "rewind" ? "live_rewind" : "live_record";
+          return {
+            pageUrl: location.href,
+            mode,
+            clip: clip ? { kind: clip.kind, duration: clip.duration, width: clip.width, height: clip.height } : void 0,
+            selection: clip ? { start: state.trimStart, end: state.trimEnd } : void 0,
+            ...extra
+          };
+        }
+        function reportFailure(action, error) {
+          if (error instanceof CancelledError) return;
+          diagnostics.begin(action, diagnosticDetails()).fail(error);
+        }
         function formatTime(seconds) {
           if (!Number.isFinite(seconds)) return "--:--.---";
           const safe = Math.max(0, seconds);
@@ -3980,6 +4939,7 @@
           if (hasSelectValue(el.cornerRadiusSelect, String(saved.cornerRadius))) {
             el.cornerRadiusSelect.value = String(saved.cornerRadius);
           }
+          [el.fpsSelect, el.qualitySelect, el.cornerRadiusSelect].forEach(syncSegmentedSelect);
         }
         function restoreShortcutPreference() {
           state.shortcut = normalizeShortcut(readPrefs().shortcut) || DEFAULT_SHORTCUT;
@@ -4690,7 +5650,11 @@
         function updatePanelContentLayout() {
           if (el.panel.classList.contains("hidden")) return;
           const rect = el.panel.getBoundingClientRect();
-          const previewSize = Math.min(520, Math.max(1, rect.width - 20), Math.max(100, rect.height - 300));
+          const previewSize = Math.min(
+            520,
+            Math.max(1, rect.width - 24),
+            Math.max(PANEL_PREVIEW_MIN, rect.height - PANEL_PREVIEW_RESERVE)
+          );
           el.panel.style.setProperty("--editor-preview-size", `${previewSize}px`);
           fitCropIntoPreview();
           updateEditorCropBox();
@@ -5135,6 +6099,7 @@
           updateModeUi();
         }
         function closePanel() {
+          closePanelSheets();
           clearEditorViewportAnimation();
           cancelEditorPreviewRender();
           el.panel.classList.add("hidden");
@@ -5195,6 +6160,7 @@
               void ensureTrimPreviewPlaying();
             });
           } catch (error) {
+            reportFailure("live_rewind", error);
             disposeClip();
             state.mode = "capture";
             showToast(friendlyError(error), "error");
@@ -5544,6 +6510,7 @@
           }
         }
         function abortRecordingSession(error) {
+          reportFailure("recording", error);
           const recording = state.recording;
           if (recording) {
             recording.destroy?.();
@@ -5763,6 +6730,7 @@
           state.recording = null;
           el.selectionTimer.textContent = "00:00.0";
           if (recording.error) {
+            reportFailure("recording", recording.error);
             state.mode = "capture";
             updateModeUi();
             setStatus(friendlyError(recording.error), "error");
@@ -5802,6 +6770,7 @@
               showToast(`已达到 ${MAX_RECORD_SECONDS} 秒上限。`, "success");
             }
           } catch (error) {
+            reportFailure("clip_load", error);
             disposeClip();
             state.mode = "capture";
             updateModeUi();
@@ -6531,6 +7500,7 @@
             el.textColor.value = active.textColor;
             el.strokeColor.value = active.strokeColor;
             el.strokeScale.value = String(active.strokeScale);
+            syncSegmentedSelect(el.strokeScale);
             syncTextColorSwatches();
           }
         }
@@ -7667,17 +8637,34 @@
           let exportController = null;
           let frameSource = null;
           let pendingPaletteFrames = [];
+          let exportLog = null;
           const lastUiUpdateAt = { extracting: 0, encoding: 0 };
           const reportExportProgress = (phase, completed, total) => {
             const now = performance.now();
             if (completed < total && now - lastUiUpdateAt[phase] < EXPORT_UI_UPDATE_INTERVAL_MS) return;
             lastUiUpdateAt[phase] = now;
-            setProgress(calculateExportProgress(phase, completed, total));
+            const percent = calculateExportProgress(phase, completed, total);
+            exportLog?.progress({ phase, fraction: percent / 100, frames: completed });
+            setProgress(percent);
             setStatus(phase === "encoding" ? `正在并行编码：${completed}/${total}` : `正在提取画面：${completed}/${total}`);
           };
           try {
             settings = readExportSettings();
             fileName = makeFileName(settings);
+            exportLog = diagnostics.begin("export", diagnosticDetails({
+              settings: {
+                fps: settings.fps,
+                quality: settings.quality,
+                width: settings.outputWidth,
+                height: settings.outputHeight,
+                speed: settings.speed,
+                loopMode: settings.loopMode,
+                cornerRadius: getCornerRadiusRatio(),
+                frames: settings.finalFrames,
+                textLayers: settings.textLayers?.length
+              }
+            }));
+            exportLog.stage("palette");
             stopTrimPreview();
             state.busy = true;
             state.mode = "exporting";
@@ -7703,6 +8690,7 @@
               ...settings,
               onPhase: (phase) => {
                 if (phase === "compressing") {
+                  exportLog?.stage("compressing");
                   setProgress(88);
                   setStatus("正在压缩体积……");
                 }
@@ -7743,11 +8731,13 @@
             const blob = await encodingSession.finish();
             if (exportController.signal.aborted) throw new CancelledError();
             updateEstimatedFileSize({ actualBytes: blob.size });
+            exportLog?.finish({ bytes: blob.size, frames: settings.finalFrames });
             setProgress(100);
             downloadBlob(blob, fileName);
             setStatus(`已导出并下载 · ${formatFileSize(blob.size)}`, "success");
             showToast(`下载完成 · ${formatFileSize(blob.size)}`, "success");
           } catch (error) {
+            exportLog?.fail(error, { canceled: error instanceof CancelledError || Boolean(exportController?.signal.aborted) });
             setStatus(friendlyError(error), error instanceof CancelledError ? "" : "error");
           } finally {
             encodingSession?.destroy();
@@ -7902,6 +8892,37 @@
           handle.addEventListener("keydown", handlePanelResizeKeyDown);
         });
         el.closeBtn.addEventListener("click", closePanel);
+        bindTabs(el.settingsTabs);
+        let settingsSheet = null;
+        let feedbackSheet = null;
+        const feedbackForm = bindFeedbackForm({
+          form: el.feedbackSheet,
+          limit: FEEDBACK_LIMIT,
+          send: (kind, message) => diagnostics.feedback(kind, message, diagnosticDetails()),
+          onSent: (label) => {
+            feedbackSheet?.close();
+            showToast(`${label}已发送，谢谢！`, "success");
+          }
+        });
+        settingsSheet = bindSheet(el.settingsSheet, {
+          openers: [el.settingsBtn],
+          closers: [el.settingsCloseBtn],
+          onOpen: () => feedbackSheet?.close()
+        });
+        feedbackSheet = bindSheet(el.feedbackSheet, {
+          openers: [el.feedbackBtn],
+          closers: [el.feedbackCloseBtn],
+          onOpen: () => {
+            settingsSheet?.close();
+            feedbackForm.reset();
+            feedbackForm.focus();
+          }
+        });
+        closePanelSheets = () => {
+          settingsSheet?.close();
+          feedbackSheet?.close();
+        };
+        el.feedbackBtn.classList.toggle("hidden", !diagnostics.canFeedback);
         el.selectionRecordBtn.addEventListener("click", startRecording);
         el.selectionReselectBtn.addEventListener("click", beginPageSelection);
         el.selectionClearBtn.addEventListener("click", () => clearPageSelection());

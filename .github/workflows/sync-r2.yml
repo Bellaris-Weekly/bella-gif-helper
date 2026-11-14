@@ -44,6 +44,22 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # 仓库里提交的产物不含日志地址；发布版在这里从 Secret 注入
+      # bella-live-clip 日志服务的接收地址与对应 @connect。Secret 缺失时构建失败、不上传。
+      - name: Build release userscript
+        env:
+          LOG_SERVICE_CONFIG: ${{ secrets.LOG_SERVICE_CONFIG }}
+        run: npm run build -- --release
+
       - name: Upload userscript
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}

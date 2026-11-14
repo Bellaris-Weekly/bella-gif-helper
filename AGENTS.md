@@ -10,8 +10,12 @@
 ```
 src/main.js          主体逻辑
 src/header.txt       ==UserScript== 元数据头（@version 的唯一真实来源）
-src/ui/panel.{css,html,js}   面板样式与结构
-scripts/build.mjs    构建
+src/ui/panel.{css,html,js}   面板样式与结构（元素 ID 由 main.js 按 ID 取用，不可改名）
+src/ui/controls.js   分段按钮（原生 select 的皮肤）、覆盖页、页签
+src/ui/feedback.js   反馈表单
+src/diagnostics.js   运行日志与反馈上报（写入 bella-live-clip 日志服务）
+src/log-redaction.js 上报前脱敏（移植自 bella-live-clip）
+scripts/build.mjs    构建（--release 注入日志地址，仅 CI 使用）
 scripts/check-version.mjs    版本号一致性校验
 tests/               测试与真实媒体素材
 ```
@@ -25,7 +29,7 @@ tests/               测试与真实媒体素材
   正文需包含 `说明：` 段落（`commit-msg` 钩子会拦截）。
 - 每次提交前必须通过：
   ```bash
-  npm run verify   # build + node --check + check:version + 72 个测试
+  npm run verify   # build + node --check + check:version + 全部测试
   ```
 
 ### 发布通道：main 即正式发布
@@ -37,6 +41,14 @@ tests/               测试与真实媒体素材
 合并到 main 之前必须通过 `npm run verify`。
 `sync-r2.yml` 里 upload job 的 `needs: test` 不得放宽或绕过。
 
+上传到 R2 的不是仓库里提交的产物，而是 upload job 用 `npm run build -- --release` 重新构建的发布版：
+它从 Secret `LOG_SERVICE_CONFIG`（与 bella-live-clip 共用）注入日志接收地址，并在元数据头补一行
+对应的 `@connect`。除此之外两者完全相同（test job 仍校验提交的产物与源码一致）。
+Secret 缺失或格式不对时发布构建直接失败、不上传，不会静默发出一版没有日志的脚本。
+
+- 日志地址**不得**写进仓库（源码、`header.txt`、提交的产物、文档都不行），只能由 CI 注入。
+- 本仓库需要配置 `LOG_SERVICE_CONFIG` Secret，值与 bella-live-clip 仓库相同。
+
 ## 红线
 
 - 不改动 GIF 调色 / 编码 / 解码算法：`createGifEncodingSession`、
@@ -44,7 +56,8 @@ tests/               测试与真实媒体素材
   `LiveRewindTrack` 及 fMP4 解析函数。这些是踩了 20 多个 bug 才稳下来的。
 - 不升级、不替换 `@resource` 里的四个依赖版本。
 - 不对产物做混淆或压缩（收益接近零，且会阻断上架与调试）。
-- 不改 `@match` 列表、不改分发链路。
+- 不改 `@match` 列表。分发链路（upload job 以 `--release` 构建后上传到同一个 R2 key，
+  见上节）除此之外不做改动。
 - 不把 `@resource` 里的四个依赖自托管、镜像或内联进产物（见下节「许可边界」）。
 - `makeEncodingWorkerSource()` 模板字符串里的 `catch (_) { }` **保持原样**——
   那段代码运行在 Worker 上下文，`debugLog` 不存在。
@@ -74,6 +87,17 @@ tests/               测试与真实媒体素材
 
 升级 `@resource` 依赖版本时，必须同步复核 `THIRD-PARTY-NOTICES.md` 中的版本、
 许可证标识与源码地址。
+
+## 运行日志与反馈
+
+上报写入 bella-live-clip 的日志服务（`POST /v1/logs`），`source` 固定为 `bella-gif-helper`，
+在其 `/admin/` 页面的「来源」框填 `bella-gif-helper` 即可筛选；反馈事件沿用
+`feedback_issue` / `feedback_suggestion`。协议细节（任务编号去重、5 秒心跳限流、64 KiB 上限）
+见 bella-live-clip 的 `server/logs/README.md`，改动 `src/diagnostics.js` 前先读。
+
+- 只有导出记录完整生命周期；回溯、录制、载入只报失败。不要给普通操作加成功日志。
+- 不上报画面、文字图层内容或任何媒体数据；新增字段一律走 `number()` / `text()` 白名单。
+- 上报不得阻塞或打断用户操作，不得在失败时弹窗。
 
 ## 已知缺口
 

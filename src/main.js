@@ -5,6 +5,9 @@ const { captureVideoPng, formatScreenshotFileName, installLiveScreenshot } = req
 const { createLoopPreviewClock, prepareLoopPreviewFrames } = require('./loop-preview.js');
 
 const { buildPanelTemplate } = require('./ui/panel.js');
+const { enhanceSegmentedSelects, syncSegmentedSelect, bindSheet, bindTabs } = require('./ui/controls.js');
+const { bindFeedbackForm } = require('./ui/feedback.js');
+const { createDiagnosticReporter, FEEDBACK_LIMIT } = require('./diagnostics.js');
 
 const { startPageBridge } = require('./page-bridge.js');
 
@@ -21,6 +24,10 @@ const { startPageBridge } = require('./page-bridge.js');
   const PANEL_MIN_WIDTH = 160;
   const PANEL_MAX_WIDTH = 720;
   const PANEL_MIN_HEIGHT = 360;
+  // 预览以外的固定高度（标题栏、工具栏、时间轴、页签设置、底栏）。
+  // 预览高度 = 面板高度 − 该值，保证默认尺寸下设置区不用滚动。
+  const PANEL_PREVIEW_RESERVE = 425;
+  const PANEL_PREVIEW_MIN = 240;
   const EXPORT_PHASE_RANGES = Object.freeze({
     palette: Object.freeze([0, 12]),
     extracting: Object.freeze([12, 68]),
@@ -2386,6 +2393,13 @@ const { startPageBridge } = require('./page-bridge.js');
 
   const shadow = host.attachShadow({ mode: 'open' });
   shadow.innerHTML = buildPanelTemplate(SCRIPT_NAME);
+  enhanceSegmentedSelects(shadow);
+  // 面板内文本框的按键不冒泡到页面，避免触发 B 站播放器快捷键（空格暂停等）。
+  for (const type of ['keydown', 'keyup', 'keypress']) {
+    shadow.addEventListener(type, (event) => {
+      if (event.target?.matches?.('textarea')) event.stopPropagation();
+    });
+  }
 
   const $ = (selector) => shadow.querySelector(selector);
   const $$ = (selector) => [...shadow.querySelectorAll(selector)];
@@ -2397,6 +2411,13 @@ const { startPageBridge } = require('./page-bridge.js');
     header: $('.header'),
     shortcutInput: $('#shortcutInput'),
     closeBtn: $('#closeBtn'),
+    settingsBtn: $('#settingsBtn'),
+    feedbackBtn: $('#feedbackBtn'),
+    settingsSheet: $('#settingsSheet'),
+    settingsCloseBtn: $('#settingsCloseBtn'),
+    feedbackSheet: $('#feedbackSheet'),
+    feedbackCloseBtn: $('#feedbackCloseBtn'),
+    settingsTabs: $('.settings-tabs'),
     editStage: $('#editStage'),
     editorSettingsScroll: $('#editorSettingsScroll'),
     pageSelectionMarker: $('#pageSelectionMarker'),
@@ -2467,6 +2488,34 @@ const { startPageBridge } = require('./page-bridge.js');
     toast: $('#toast'),
   };
 
+  // 发布构建由 CI 注入日志服务地址；仓库产物为空串，上报与反馈均关闭。
+  const diagnostics = createDiagnosticReporter({
+    endpoint: typeof __LOG_SERVICE_ENDPOINT__ === 'string' ? __LOG_SERVICE_ENDPOINT__ : '',
+    request: typeof GM_xmlhttpRequest === 'function' ? (options) => GM_xmlhttpRequest(options) : undefined,
+    version: __SCRIPT_METADATA__.version,
+    userAgent: navigator.userAgent,
+  });
+  let closePanelSheets = () => {};
+
+  function diagnosticDetails(extra = {}) {
+    const clip = state.clip;
+    let mode = 'video_record';
+    if (IS_LIVE_PAGE) mode = state.liveCaptureMode === 'rewind' ? 'live_rewind' : 'live_record';
+    return {
+      pageUrl: location.href,
+      mode,
+      clip: clip ? { kind: clip.kind, duration: clip.duration, width: clip.width, height: clip.height } : undefined,
+      selection: clip ? { start: state.trimStart, end: state.trimEnd } : undefined,
+      ...extra,
+    };
+  }
+
+  // 非导出操作只在真正失败时上报一条。
+  function reportFailure(action, error) {
+    if (error instanceof CancelledError) return;
+    diagnostics.begin(action, diagnosticDetails()).fail(error);
+  }
+
   function formatTime(seconds) {
     if (!Number.isFinite(seconds)) return '--:--.---';
     const safe = Math.max(0, seconds);
@@ -2530,6 +2579,7 @@ const { startPageBridge } = require('./page-bridge.js');
     if (hasSelectValue(el.cornerRadiusSelect, String(saved.cornerRadius))) {
       el.cornerRadiusSelect.value = String(saved.cornerRadius);
     }
+    [el.fpsSelect, el.qualitySelect, el.cornerRadiusSelect].forEach(syncSegmentedSelect);
   }
 
   function restoreShortcutPreference() {
@@ -3318,7 +3368,11 @@ const { startPageBridge } = require('./page-bridge.js');
   function updatePanelContentLayout() {
     if (el.panel.classList.contains('hidden')) return;
     const rect = el.panel.getBoundingClientRect();
-    const previewSize = Math.min(520, Math.max(1, rect.width - 20), Math.max(100, rect.height - 300));
+    const previewSize = Math.min(
+      520,
+      Math.max(1, rect.width - 24),
+      Math.max(PANEL_PREVIEW_MIN, rect.height - PANEL_PREVIEW_RESERVE),
+    );
     el.panel.style.setProperty('--editor-preview-size', `${previewSize}px`);
     fitCropIntoPreview();
     updateEditorCropBox();
@@ -3767,6 +3821,7 @@ const { startPageBridge } = require('./page-bridge.js');
   }
 
   function closePanel() {
+    closePanelSheets();
     clearEditorViewportAnimation();
     cancelEditorPreviewRender();
     el.panel.classList.add('hidden');
@@ -3828,6 +3883,7 @@ const { startPageBridge } = require('./page-bridge.js');
       setStatus('');
       requestAnimationFrame(() => { void ensureTrimPreviewPlaying(); });
     } catch (error) {
+      reportFailure('live_rewind', error);
       disposeClip();
       state.mode = 'capture';
       showToast(friendlyError(error), 'error');
@@ -4206,6 +4262,7 @@ const { startPageBridge } = require('./page-bridge.js');
   }
 
   function abortRecordingSession(error) {
+    reportFailure('recording', error);
     const recording = state.recording;
     if (recording) {
       recording.destroy?.();
@@ -4428,6 +4485,7 @@ const { startPageBridge } = require('./page-bridge.js');
     el.selectionTimer.textContent = '00:00.0';
 
     if (recording.error) {
+      reportFailure('recording', recording.error);
       state.mode = 'capture';
       updateModeUi();
       setStatus(friendlyError(recording.error), 'error');
@@ -4466,6 +4524,7 @@ const { startPageBridge } = require('./page-bridge.js');
         showToast(`已达到 ${MAX_RECORD_SECONDS} 秒上限。`, 'success');
       }
     } catch (error) {
+      reportFailure('clip_load', error);
       disposeClip();
       state.mode = 'capture';
       updateModeUi();
@@ -5217,6 +5276,7 @@ const { startPageBridge } = require('./page-bridge.js');
       el.textColor.value = active.textColor;
       el.strokeColor.value = active.strokeColor;
       el.strokeScale.value = String(active.strokeScale);
+      syncSegmentedSelect(el.strokeScale);
       syncTextColorSwatches();
     }
   }
@@ -6406,12 +6466,15 @@ const { startPageBridge } = require('./page-bridge.js');
     let exportController = null;
     let frameSource = null;
     let pendingPaletteFrames = [];
+    let exportLog = null;
     const lastUiUpdateAt = { extracting: 0, encoding: 0 };
     const reportExportProgress = (phase, completed, total) => {
       const now = performance.now();
       if (completed < total && now - lastUiUpdateAt[phase] < EXPORT_UI_UPDATE_INTERVAL_MS) return;
       lastUiUpdateAt[phase] = now;
-      setProgress(calculateExportProgress(phase, completed, total));
+      const percent = calculateExportProgress(phase, completed, total);
+      exportLog?.progress({ phase, fraction: percent / 100, frames: completed });
+      setProgress(percent);
       setStatus(phase === 'encoding'
         ? `正在并行编码：${completed}/${total}`
         : `正在提取画面：${completed}/${total}`);
@@ -6419,6 +6482,20 @@ const { startPageBridge } = require('./page-bridge.js');
     try {
       settings = readExportSettings();
       fileName = makeFileName(settings);
+      exportLog = diagnostics.begin('export', diagnosticDetails({
+        settings: {
+          fps: settings.fps,
+          quality: settings.quality,
+          width: settings.outputWidth,
+          height: settings.outputHeight,
+          speed: settings.speed,
+          loopMode: settings.loopMode,
+          cornerRadius: getCornerRadiusRatio(),
+          frames: settings.finalFrames,
+          textLayers: settings.textLayers?.length,
+        },
+      }));
+      exportLog.stage('palette');
 
       stopTrimPreview();
       state.busy = true;
@@ -6447,6 +6524,7 @@ const { startPageBridge } = require('./page-bridge.js');
         ...settings,
         onPhase: (phase) => {
           if (phase === 'compressing') {
+            exportLog?.stage('compressing');
             setProgress(88);
             setStatus('正在压缩体积……');
           }
@@ -6490,11 +6568,13 @@ const { startPageBridge } = require('./page-bridge.js');
       if (exportController.signal.aborted) throw new CancelledError();
 
       updateEstimatedFileSize({ actualBytes: blob.size });
+      exportLog?.finish({ bytes: blob.size, frames: settings.finalFrames });
       setProgress(100);
       downloadBlob(blob, fileName);
       setStatus(`已导出并下载 · ${formatFileSize(blob.size)}`, 'success');
       showToast(`下载完成 · ${formatFileSize(blob.size)}`, 'success');
     } catch (error) {
+      exportLog?.fail(error, { canceled: error instanceof CancelledError || Boolean(exportController?.signal.aborted) });
       setStatus(friendlyError(error), error instanceof CancelledError ? '' : 'error');
     } finally {
       encodingSession?.destroy();
@@ -6667,6 +6747,37 @@ const { startPageBridge } = require('./page-bridge.js');
   });
 
   el.closeBtn.addEventListener('click', closePanel);
+  bindTabs(el.settingsTabs);
+  let settingsSheet = null;
+  let feedbackSheet = null;
+  const feedbackForm = bindFeedbackForm({
+    form: el.feedbackSheet,
+    limit: FEEDBACK_LIMIT,
+    send: (kind, message) => diagnostics.feedback(kind, message, diagnosticDetails()),
+    onSent: (label) => {
+      feedbackSheet?.close();
+      showToast(`${label}已发送，谢谢！`, 'success');
+    },
+  });
+  settingsSheet = bindSheet(el.settingsSheet, {
+    openers: [el.settingsBtn],
+    closers: [el.settingsCloseBtn],
+    onOpen: () => feedbackSheet?.close(),
+  });
+  feedbackSheet = bindSheet(el.feedbackSheet, {
+    openers: [el.feedbackBtn],
+    closers: [el.feedbackCloseBtn],
+    onOpen: () => {
+      settingsSheet?.close();
+      feedbackForm.reset();
+      feedbackForm.focus();
+    },
+  });
+  closePanelSheets = () => {
+    settingsSheet?.close();
+    feedbackSheet?.close();
+  };
+  el.feedbackBtn.classList.toggle('hidden', !diagnostics.canFeedback);
   el.selectionRecordBtn.addEventListener('click', startRecording);
   el.selectionReselectBtn.addEventListener('click', beginPageSelection);
   el.selectionClearBtn.addEventListener('click', () => clearPageSelection());
