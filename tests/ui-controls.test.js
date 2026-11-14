@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { JSDOM } = require('jsdom');
-const { enhanceSegmentedSelects, syncSegmentedSelect, bindSheet, bindTabs } = require('../src/ui/controls');
+const { enhanceSegmentedSelects, syncSegmentedSelect, animateSegmentedGroups, bindSheet, bindTabs } = require('../src/ui/controls');
 
 function mount(html) {
   const dom = new JSDOM('<!doctype html><body><div id="host"></div></body>');
@@ -100,6 +100,36 @@ test('options added later are rendered, and arrow keys move the selection', asyn
   options(shadow)[1].disabled = true;
   group.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
   assert.equal(select.value, '8', 'disabled (export-locked) options cannot be chosen');
+});
+
+test('the selection thumb jumps into place first, then slides to newly selected options', async () => {
+  const dom = new JSDOM('<!doctype html><body><div id="host"></div></body>', { pretendToBeVisual: true });
+  const shadow = dom.window.document.getElementById('host').attachShadow({ mode: 'open' });
+  shadow.innerHTML = SELECT;
+  const lay = (button, index) => {
+    for (const [key, value] of Object.entries({ offsetLeft: 2 + index * 40, offsetWidth: 38, offsetTop: 2, offsetHeight: 26 })) {
+      Object.defineProperty(button, key, { configurable: true, get: () => value });
+    }
+  };
+  enhanceSegmentedSelects(shadow);
+  shadow.querySelectorAll('.segmented-option').forEach(lay);
+  const [anim] = animateSegmentedGroups(shadow);
+  const thumb = shadow.querySelector('.segmented > .segmented-thumb');
+  assert.ok(anim && thumb);
+  assert.equal(thumb.style.transform, 'translate(42px, 2px)');
+  assert.equal(thumb.style.width, '38px');
+  assert.equal(thumb.classList.contains('no-transition'), false);
+  assert.equal(animateSegmentedGroups(shadow).length, 0, 'one thumb per group');
+  shadow.querySelectorAll('.segmented-option')[2].click();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(thumb.style.transform, 'translate(82px, 2px)');
+  assert.equal(thumb.classList.contains('no-transition'), false, 'a user pick slides');
+  const extra = dom.window.document.createElement('option');
+  extra.value = '24';
+  extra.textContent = '24';
+  shadow.querySelector('select').appendChild(extra);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.ok(shadow.querySelector('.segmented > .segmented-thumb'), 're-rendering options keeps the thumb');
 });
 
 test('sheet opens from its button, closes from back button and Esc, and returns focus', () => {

@@ -367,9 +367,9 @@
     border: 0;
     border-radius: var(--radius-compact);
     background: transparent;
-    color: var(--color-text-secondary);
+    color: var(--color-text-muted);
     font-size: 12px;
-    font-weight: 500;
+    font-weight: 600;
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
     cursor: pointer;
@@ -381,10 +381,39 @@
   .segmented-option[aria-selected="true"] {
     background: var(--color-surface-solid);
     color: var(--color-text);
-    font-weight: 650;
     box-shadow: var(--shadow-control);
   }
   .segmented-option:disabled { cursor: not-allowed; opacity: .5; }
+  /* 选中滑块：has-thumb 的组里，选中项本身不再画底色，由滑块平移过去 */
+  .segmented.has-thumb { position: relative; isolation: isolate; }
+  .segmented-thumb {
+    position: absolute;
+    left: 0;
+    top: 0;
+    z-index: 0;
+    width: 0;
+    height: 0;
+    border-radius: var(--radius-compact);
+    background: var(--color-surface-solid);
+    box-shadow: var(--shadow-control);
+    opacity: 0;
+    pointer-events: none;
+    transition:
+      transform 260ms cubic-bezier(.32, .72, 0, 1),
+      width 260ms cubic-bezier(.32, .72, 0, 1),
+      opacity 120ms ease-out;
+    will-change: transform, width;
+  }
+  .segmented-thumb.no-transition { transition: none; }
+  .segmented.has-thumb .segmented-option { position: relative; z-index: 1; }
+  .segmented.has-thumb .segmented-option[aria-checked="true"],
+  .segmented.has-thumb .segmented-option[aria-pressed="true"],
+  .segmented.has-thumb .segmented-option[aria-selected="true"] {
+    background: transparent;
+    box-shadow: none;
+  }
+  .segmented.has-thumb .segmented-option:hover { background: transparent; }
+  .segmented:has(.segmented-option:disabled) .segmented-thumb { opacity: .55 !important; }
   .segmented-option:focus-visible { outline-offset: 0; }
   .segmented-source {
     position: absolute !important;
@@ -554,35 +583,53 @@
   /* ---------- 时间轴 ---------- */
   .trim-block {
     display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-columns: 32px minmax(0, 1fr);
     align-items: start;
     column-gap: 10px;
-    row-gap: 4px;
-    padding: 8px 10px 6px;
-    border-radius: var(--radius-card);
-    background: var(--color-surface);
-    box-shadow: 0 0 0 1px var(--color-border);
+    width: min(100%, var(--editor-preview-size, 360px));
+    max-width: 520px;
+    justify-self: center;
+    padding-top: 2px;
   }
+  /* 图标由 CSS 画：data-state 由 main.js 切换 paused / playing */
   .play-btn {
-    height: 40px;
-    min-width: 62px;
-    padding: 0 10px;
+    position: relative;
+    width: 32px;
+    height: 32px;
+    margin-top: 2px;
+    padding: 0;
     border: 0;
-    border-radius: var(--radius-control);
-    background: var(--color-fill);
-    color: var(--color-text);
-    font-size: 12px;
-    font-weight: 600;
-    white-space: nowrap;
+    border-radius: 50%;
+    background: var(--color-text);
+    color: #fff;
     cursor: pointer;
-    transition: background var(--motion-fast);
+    transition: background var(--motion-fast), transform var(--motion-fast);
   }
-  .play-btn:hover { background: var(--color-fill-hover); }
-  .play-btn:disabled { opacity: .5; cursor: not-allowed; }
-  .timeline-col { min-width: 0; padding: 0 7px; }
+  .play-btn::before {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 11px;
+    height: 12px;
+    background: currentColor;
+    clip-path: polygon(0 0, 100% 50%, 0 100%);
+    transform: translate(-38%, -50%);
+  }
+  .play-btn[data-state="playing"]::before {
+    width: 10px;
+    height: 11px;
+    background: linear-gradient(to right, currentColor 0 35%, transparent 35% 65%, currentColor 65%);
+    clip-path: none;
+    transform: translate(-50%, -50%);
+  }
+  .play-btn:hover { background: var(--color-brand-strong); }
+  .play-btn:active { transform: scale(.94); }
+  .play-btn:disabled { opacity: .4; cursor: not-allowed; }
+  .timeline-col { min-width: 0; padding: 0 5px; }
   #timelineTrack {
     position: relative;
-    height: 40px;
+    height: 36px;
     cursor: pointer;
     touch-action: none;
   }
@@ -590,7 +637,7 @@
     position: absolute;
     inset: 0;
     overflow: hidden;
-    border-radius: 8px;
+    border-radius: 6px;
     background: #2a2c31;
     pointer-events: none;
   }
@@ -649,14 +696,14 @@
     position: absolute;
     top: 0;
     z-index: 3;
-    width: 14px;
-    height: 40px;
-    margin-left: -7px;
+    width: 10px;
+    height: 36px;
+    margin-left: -5px;
     padding: 0;
     border: 0;
-    border-radius: 6px;
+    border-radius: 4px;
     background: var(--color-brand);
-    box-shadow: 0 2px 6px rgba(0,0,0,.28);
+    box-shadow: 0 1px 4px rgba(0,0,0,.25);
     cursor: ew-resize;
     touch-action: none;
   }
@@ -666,9 +713,9 @@
     left: 50%;
     top: 50%;
     width: 2px;
-    height: 14px;
+    height: 12px;
     border-radius: 99px;
-    background: rgba(255,255,255,.92);
+    background: rgba(255,255,255,.9);
     transform: translate(-50%, -50%);
   }
   .timeline-handle:hover { background: var(--color-brand-strong); }
@@ -684,7 +731,7 @@
     grid-template-columns: 1fr auto 1fr;
     align-items: center;
     gap: 8px;
-    margin-top: 4px;
+    margin-top: 3px;
     color: var(--color-text-muted);
     font-size: 11px;
     font-variant-numeric: tabular-nums;
@@ -692,10 +739,7 @@
   #trimStartValue { text-align: left; }
   #trimSummary {
     text-align: center;
-    padding: 0 8px;
-    border-radius: 99px;
-    background: var(--color-brand-soft);
-    color: var(--color-brand-text);
+    color: var(--color-text);
     font-weight: 650;
   }
   #trimEndValue { text-align: right; }
@@ -760,6 +804,11 @@
     box-shadow: 0 0 0 1px var(--color-border);
   }
   .settings-tabs { margin-bottom: 8px; }
+  #editorSettingsScroll [role="tabpanel"]:not(.hidden) { animation: panelFade 200ms ease-out; }
+  @keyframes panelFade {
+    from { opacity: 0; transform: translateY(3px); }
+    to { opacity: 1; transform: none; }
+  }
   .settings-tabs .segmented-option { height: 28px; font-size: 12.5px; }
   /* 有文字图层时在「文字」页签上点一个小圆点，提醒导出会带上文字 */
   #editorSettingsScroll:has(#textLayerTabs .text-tab) #settingsTabText::after {
@@ -1323,7 +1372,9 @@
     input { transition-duration: 0.01ms !important; }
     #launcher.recording,
     #pageSelectionMarker.recording,
-    .sheet-layer { animation: none !important; }
+    .sheet-layer,
+    #editorSettingsScroll [role="tabpanel"] { animation: none !important; }
+    .segmented-thumb { transition: none !important; }
     #timelineFilmstrip,
     #timelineTrack.timeline-refitting .timeline-handle,
     #timelineTrack.timeline-refitting #timelineSelected,

@@ -49,7 +49,8 @@ function enhanceSegmentedSelect(select) {
   }
 
   function render() {
-    group.textContent = '';
+    // 只替换选项按钮，保留滑块（.segmented-thumb）。
+    for (const button of buttons()) button.remove();
     for (const option of Array.from(select.options)) {
       const button = doc.createElement('button');
       button.type = 'button';
@@ -172,4 +173,77 @@ function bindTabs(tablist, { onChange } = {}) {
   return { select: (id) => select(tabs.find((tab) => tab.id === id)) };
 }
 
-module.exports = { enhanceSegmentedSelects, enhanceSegmentedSelect, syncSegmentedSelect, bindSheet, bindTabs };
+// 分段按钮的选中滑块：一个独立的 .segmented-thumb 跟随选中项平移、伸缩（CSS transition）。
+// 选中状态仍以按钮的 aria-checked / aria-pressed / aria-selected 为准，这里只观察它们。
+// 首次定位、从隐藏变为可见、尺寸变化时直接就位，不播放动画；只有切换选中项才滑动。
+const SELECTED = '.segmented-option[aria-checked="true"], .segmented-option[aria-pressed="true"], .segmented-option[aria-selected="true"]';
+
+function animateSegmentedGroup(group) {
+  if (!group || group.querySelector(':scope > .segmented-thumb')) return null;
+  const doc = group.ownerDocument;
+  const View = doc.defaultView;
+  const thumb = doc.createElement('span');
+  thumb.className = 'segmented-thumb';
+  thumb.setAttribute('aria-hidden', 'true');
+  group.prepend(thumb);
+  group.classList.add('has-thumb');
+  let placed = null;
+  let frame = 0;
+
+  function place(animate) {
+    const selected = group.querySelector(SELECTED);
+    const width = selected?.offsetWidth || 0;
+    if (!selected || !width) {
+      thumb.style.opacity = '0';
+      placed = null;
+      return;
+    }
+    const left = selected.offsetLeft;
+    const height = selected.offsetHeight;
+    const top = selected.offsetTop;
+    if (placed && placed.left === left && placed.width === width && placed.top === top && placed.height === height) return;
+    const slide = animate && placed !== null;
+    thumb.classList.toggle('no-transition', !slide);
+    thumb.style.width = `${width}px`;
+    thumb.style.height = `${height}px`;
+    thumb.style.transform = `translate(${left}px, ${top}px)`;
+    thumb.style.opacity = '1';
+    placed = { left, width, top, height };
+    if (!slide) {
+      // 强制一次布局，让下次变化恢复过渡。
+      void thumb.offsetWidth;
+      thumb.classList.remove('no-transition');
+    }
+  }
+
+  function schedule(animate) {
+    if (frame) View?.cancelAnimationFrame?.(frame);
+    const run = () => { frame = 0; place(animate); };
+    frame = View?.requestAnimationFrame ? View.requestAnimationFrame(run) : (run(), 0);
+  }
+
+  if (View?.MutationObserver) {
+    new View.MutationObserver(() => schedule(true)).observe(group, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeFilter: ['aria-checked', 'aria-pressed', 'aria-selected', 'disabled'],
+    });
+  }
+  if (View?.ResizeObserver) new View.ResizeObserver(() => schedule(false)).observe(group);
+  place(false);
+  return { place };
+}
+
+function animateSegmentedGroups(root) {
+  return Array.from(root.querySelectorAll('.segmented')).map(animateSegmentedGroup).filter(Boolean);
+}
+
+module.exports = {
+  enhanceSegmentedSelects,
+  enhanceSegmentedSelect,
+  syncSegmentedSelect,
+  animateSegmentedGroups,
+  bindSheet,
+  bindTabs,
+};

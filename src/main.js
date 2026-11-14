@@ -5,7 +5,7 @@ const { captureVideoPng, formatScreenshotFileName, installLiveScreenshot } = req
 const { createLoopPreviewClock, prepareLoopPreviewFrames } = require('./loop-preview.js');
 
 const { buildPanelTemplate } = require('./ui/panel.js');
-const { enhanceSegmentedSelects, syncSegmentedSelect, bindSheet, bindTabs } = require('./ui/controls.js');
+const { enhanceSegmentedSelects, syncSegmentedSelect, animateSegmentedGroups, bindSheet, bindTabs } = require('./ui/controls.js');
 const { bindFeedbackForm } = require('./ui/feedback.js');
 const { createDiagnosticReporter, FEEDBACK_LIMIT } = require('./diagnostics.js');
 
@@ -26,7 +26,7 @@ const { startPageBridge } = require('./page-bridge.js');
   const PANEL_MIN_HEIGHT = 360;
   // 预览以外的固定高度（标题栏、工具栏、时间轴、页签设置、底栏）。
   // 预览高度 = 面板高度 − 该值，保证默认尺寸下设置区不用滚动。
-  const PANEL_PREVIEW_RESERVE = 425;
+  const PANEL_PREVIEW_RESERVE = 410;
   const PANEL_PREVIEW_MIN = 240;
   const EXPORT_PHASE_RANGES = Object.freeze({
     palette: Object.freeze([0, 12]),
@@ -2394,6 +2394,7 @@ const { startPageBridge } = require('./page-bridge.js');
   const shadow = host.attachShadow({ mode: 'open' });
   shadow.innerHTML = buildPanelTemplate(SCRIPT_NAME);
   enhanceSegmentedSelects(shadow);
+  animateSegmentedGroups(shadow);
   // 面板内文本框的按键不冒泡到页面，避免触发 B 站播放器快捷键（空格暂停等）。
   for (const type of ['keydown', 'keyup', 'keypress']) {
     shadow.addEventListener(type, (event) => {
@@ -5001,7 +5002,7 @@ const { startPageBridge } = require('./page-bridge.js');
     const pingpong = normalizeLoopMode(el.loopModeSelect.value) === 'pingpong';
     el.previewPlaybackInfo.classList.toggle('hidden', !state.clip || !pingpong);
     const preview = state.loopPreview;
-    if (preview) el.previewTrimBtn.textContent = preview.playing ? '⏸ 暂停' : '▶ 播放';
+    if (preview) el.previewTrimBtn.dataset.state = preview.playing ? 'playing' : 'paused';
     if (!pingpong) return;
     let direction = 'pending';
     let label = '待预览';
@@ -5122,7 +5123,7 @@ const { startPageBridge } = require('./page-bridge.js');
       try { el.clipVideo.playbackRate = state.previewSnapshot.playbackRate; } catch (error) { debugLog('stopTrimPreview', error); }
       state.previewSnapshot = null;
     }
-    el.previewTrimBtn.textContent = '▶ 播放';
+    el.previewTrimBtn.dataset.state = 'paused';
     if (!keepPosition && state.clip) {
       try { el.clipVideo.currentTime = state.trimStart; } catch (error) { debugLog('stopTrimPreview', error); }
       updateTimelinePlayhead();
@@ -5167,7 +5168,7 @@ const { startPageBridge } = require('./page-bridge.js');
       el.clipVideo.removeEventListener('timeupdate', check);
       if (previewToken === state.trimPreviewToken) {
         state.trimPreviewCleanup = null;
-        el.previewTrimBtn.textContent = '▶ 播放';
+        el.previewTrimBtn.dataset.state = 'paused';
       }
     };
     const check = async () => {
@@ -5205,7 +5206,7 @@ const { startPageBridge } = require('./page-bridge.js');
       if (previewToken !== state.trimPreviewToken) return;
       state.previewSnapshot = { playbackRate: el.clipVideo.playbackRate };
       el.clipVideo.addEventListener('timeupdate', check);
-      el.previewTrimBtn.textContent = '⏸ 暂停';
+      el.previewTrimBtn.dataset.state = 'playing';
       el.clipVideo.playbackRate = Math.max(0.1, Number(el.speedSelect.value) || 1);
       const drawPreview = () => {
         if (stopped) return;
